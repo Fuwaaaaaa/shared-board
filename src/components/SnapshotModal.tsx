@@ -13,21 +13,21 @@ import { useRoomData } from '../lib/roomData'
  */
 const KEEP = 10
 
-/** 保存点に入れるテーブル。付箋と線の関係を保つため、まとめて出し入れする。 */
-const TABLES = [
-  'notes',
-  'strokes',
-  // 線は付箋を指すので、付箋を入れ直したあとに入れる
-  'connectors',
-  'frames',
-  'events',
-  // 「この回だけ」の変更は予定を指すので、予定のあとに入れる
-  'event_overrides',
-  'todos',
-  'images',
-] as const
-
-type TableName = (typeof TABLES)[number]
+/**
+ * 保存点に入れるテーブル。付箋と線の関係を保つため、まとめて出し入れする。
+ *
+ * 並びは復元時に入れ直す順（supabase/schema.sql の restore_snapshot）と同じにしてある。
+ * 線は付箋を、「この回だけ」の変更は予定を指すので、指される側を先に入れる。
+ */
+type TableName =
+  | 'notes'
+  | 'strokes'
+  | 'connectors'
+  | 'frames'
+  | 'events'
+  | 'event_overrides'
+  | 'todos'
+  | 'images'
 type Row = { id: string; room_id: string; author_id: string }
 type Payload = Record<TableName, Row[]>
 

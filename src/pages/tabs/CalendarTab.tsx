@@ -107,7 +107,7 @@ export default function CalendarTab({
     () => (localStorage.getItem(WEEK_START_KEY) === '1' ? 1 : 0),
   )
 
-  const weekOptions = { weekStartsOn: weekStart } as const
+  const weekOptions = useMemo(() => ({ weekStartsOn: weekStart }) as const, [weekStart])
 
   function changeWeekStart(value: WeekStart) {
     localStorage.setItem(WEEK_START_KEY, String(value))
@@ -140,7 +140,7 @@ export default function CalendarTab({
       start: startOfWeek(startOfMonth(cursor), weekOptions),
       end: endOfWeek(endOfMonth(cursor), weekOptions),
     }
-  }, [view, cursor, weekStart])
+  }, [view, cursor, weekOptions])
 
   // 外部カレンダー（読み取り専用で重ねて表示する）
   const feedState = useCalendarFeeds(feeds.rows, range.start, range.end)

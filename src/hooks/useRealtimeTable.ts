@@ -282,6 +282,9 @@ export function useRealtimeTable<T extends Row>(
       })
 
     return () => {
+      // 世代を進めるのが後片付けの仕事そのもの（購読しなおす前の
+      // subscribe コールバックが遅れて届いても無視できるようにする）
+      // eslint-disable-next-line react-hooks/exhaustive-deps
       generationRef.current++
       supabase.removeChannel(channel)
     }

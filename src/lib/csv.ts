@@ -30,7 +30,7 @@ export function toCsv(headers: string[], rows: (string | number | boolean | null
 
   const lines = [headers.map(escape).join(',')]
   for (const row of rows) lines.push(row.map(escape).join(','))
-  return `﻿${lines.join('\r\n')}\r\n`
+  return `\uFEFF${lines.join('\r\n')}\r\n`
 }
 
 /** toCsv が付けた保護用の ' を剥がす（' の直後が数式の先頭文字のときだけ） */
@@ -42,7 +42,7 @@ function unprotect(field: string): string {
 
 /** 引用符とその中の改行に対応した CSV パーサ */
 export function parseCsv(text: string): string[][] {
-  const clean = text.replace(/^﻿/, '')
+  const clean = text.replace(/^\uFEFF/, '')
   const rows: string[][] = []
   let row: string[] = []
   let field = ''

@@ -8,11 +8,11 @@ import {
   toCsv,
 } from '../csv'
 
-const BOM = '﻿'
+const BOM = '\uFEFF'
 
 /** BOM と CRLF を外して行ごとに見る */
 function lines(csv: string): string[] {
-  return csv.replace(/^﻿/, '').replace(/\r\n$/, '').split('\r\n')
+  return csv.replace(/^\uFEFF/, '').replace(/\r\n$/, '').split('\r\n')
 }
 
 describe('toCsv', () => {

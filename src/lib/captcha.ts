@@ -94,12 +94,11 @@ export async function getCaptchaToken(containerId = 'turnstile-slot'): Promise<s
   return new Promise<string>((resolve, reject) => {
     let settled = false
     let widgetId: string | undefined
-    let timer: number | undefined
 
     const finish = (fn: () => void) => {
       if (settled) return
       settled = true
-      if (timer !== undefined) window.clearTimeout(timer)
+      window.clearTimeout(timer)
       // ウィジェットは使い捨て。残すと次に呼んだときに二重に描画される
       if (widgetId !== undefined) {
         try {
@@ -111,7 +110,9 @@ export async function getCaptchaToken(containerId = 'turnstile-slot'): Promise<s
       fn()
     }
 
-    timer = window.setTimeout(
+    // finish はこの timer を止めるので、宣言はそちらの下に置く。
+    // finish が呼ばれるのは render 以降なので、参照の前後は問題にならない
+    const timer = window.setTimeout(
       () =>
         finish(() =>
           reject(

@@ -48,6 +48,9 @@ export default function ContextMenu({ x, y, nodes, label, onClose, fallbackFocus
     openerRef.current = document.activeElement as HTMLElement | null
     return () => {
       const opener = openerRef.current
+      // 戻し先は閉じる瞬間の値でよい（開いた時点の値を控えると、その間に
+      // ボードが差し替わっていたときに、消えた要素へ戻そうとしてしまう）
+      // eslint-disable-next-line react-hooks/exhaustive-deps
       const target = opener?.isConnected ? opener : fallbackFocus?.current
       // 画面外の付箋へ戻すとボードが勝手にスクロールするので preventScroll
       target?.focus({ preventScroll: true })

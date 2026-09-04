@@ -71,7 +71,6 @@ export default function TodoTab({ reminders, focusId, focusNonce, onJump }: Prop
     if (!focusId) return
     const todo = todos.rows.find((t) => t.id === focusId)
     if (todo) setEditing(todo)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusId, focusNonce, todos.rows])
 
   const commentCounts = useMemo(() => {

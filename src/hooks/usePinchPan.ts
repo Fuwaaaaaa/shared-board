@@ -126,7 +126,6 @@ export function usePinchPan(ref: RefObject<HTMLElement>, options: Options) {
       blockingRef.current = false
     }
     // ref.current は enabled の切り替え（一覧 ↔ ボード）と同時に付け替わる
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ref, options.enabled])
 
   // ズームが DOM に反映された直後に、指の中心の下にあった点を同じ画面位置へ戻す
