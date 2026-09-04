@@ -289,7 +289,9 @@
         </thead>
         <tbody>
           <tr><td>Vite 5</td><td>開発サーバーとビルド</td></tr>
-          <tr><td>Vitest 2</td><td>テスト。<code>environment: 'node'</code>、対象は <code>src/**/__tests__/**/*.test.ts</code></td></tr>
+          <tr><td>Vitest 2</td><td>テスト。拡張子で環境が変わる（<code>vitest.workspace.ts</code>）。<code>*.test.ts</code> は node、<code>*.test.tsx</code> は jsdom</td></tr>
+          <tr><td>Playwright</td><td>ブラウザで実際に触るテスト（<code>e2e/</code>）。ローカルの Supabase が要る</td></tr>
+          <tr><td>ESLint 9</td><td><code>eslint.config.js</code>（フラット設定）。<code>npm run lint</code></td></tr>
           <tr><td>Tailwind CSS 4</td><td><code>@tailwindcss/vite</code> 経由。<b><code>tailwind.config.js</code> は無い</b></td></tr>
           <tr><td>TypeScript 5.6</td><td><code>tsc --noEmit</code> を <code>npm run build</code> に含める</td></tr>
         </tbody>
@@ -298,9 +300,10 @@
 
     <div class="note">
       <p>
-        <strong>ESLint と Prettier の設定ファイルはありません。</strong>
-        コードの中に <code>eslint-disable</code> コメントは残っていますが、
-        現状リンタは動いていません。型チェックとテストが品質の担保です。
+        <strong>Prettier は入れていません。</strong>
+        整形の差分でファイル全体が書き換わると、誰が何を変えたのかが追えなくなるためです。
+        ESLint も型を要求しないルールだけにしてあり（型は <code>tsc --noEmit</code> が見ている）、
+        <code>npm run lint</code> は数秒で終わります。
       </p>
     </div>
 
@@ -329,24 +332,31 @@
 │     ├─ DrawLayer.tsx       手描きと図形（canvas 2 枚）
 │     ├─ ImagesLayer.tsx / FramesLayer.tsx / ConnectorsLayer.tsx
 │     ├─ AttachmentsLayer.tsx / CursorsLayer.tsx
-│     ├─ CalendarTab.tsx     月 / 週 / 一覧
+│     ├─ CalendarTab.tsx     月 / 週 / 日 / 一覧
 │     ├─ TodoTab.tsx         リマインド
 │     ├─ UpdatesTab.tsx      更新の時系列
 │     └─ DashboardTab.tsx    集計
 ├─ <b>components/</b>       モーダルとパネル（Modal を土台にする）
 ├─ <b>hooks/</b>            Realtime・楽観的更新・在席・通知・Undo など
-└─ <b>lib/</b>              純粋なロジック。<b>ここがテストの対象</b>
+├─ <b>lib/</b>              純粋なロジック。<b>ここがテストの主な対象</b>
+└─ <b>test/</b>             jsdom の下ごしらえ（ポインタ捕捉など、jsdom に無いもの）
+
+<b>e2e/</b>                  ブラウザで実際に触るテスト（Playwright）
 
 <b>supabase/</b>
 ├─ schema.sql            テーブル・RLS・トリガー・関数（これ 1 本で完結）
-└─ <b>functions/</b>
-   ├─ fetch-ics          外部カレンダーの中継（CORS 回避）
-   ├─ send-reminders     Web Push の送信（pg_cron から毎分）
-   ├─ purge-storage      Storage の実体削除（SQL からは消せないため）
-   └─ _shared/           dates / recurrence / cronAuth（画面と共有）
+├─ cron.sql              定期実行の登録（プッシュ通知・掃除。任意）
+├─ <b>functions/</b>
+│  ├─ fetch-ics          外部カレンダーの中継（CORS 回避）
+│  ├─ send-reminders     Web Push の送信（pg_cron から毎分）
+│  ├─ purge-storage      Storage の実体削除（SQL からは消せないため）
+│  └─ _shared/           dates / recurrence / cronAuth（画面と共有）
+└─ <b>tests/</b>
+   └─ rls.test.sql       権限が効いているかの確認（pgTAP・168 件）
 
 <b>docs/</b>
 ├─ GUIDE.html            利用者向けの紹介ページ
+├─ MANUAL.html           操作手順書（やりたいこと → 手順）
 ├─ OVERVIEW.html         この資料
 └─ SETUP.md              環境構築とデプロイ手順
 </code>
@@ -354,8 +364,9 @@
     <h3>lib に置いてあるもの</h3>
     <p>
       画面から切り離せる判断は <code>src/lib/</code> に集めてあります。
-      <b>Vitest が <code>environment: 'node'</code> で動き、DOM のテスト環境を持たない</b>ため、
-      テストできるのはここだけだからです。13 本のテストで 219 件が通ります。
+      ブラウザを立ち上げずに速く回せるので、ここが今もテストの主戦場です
+      （<b>15 本のテストで 279 件</b>）。DOM が要るものは <code>*.test.tsx</code> として
+      jsdom で書けますが、判断はできるだけこちらへ押し出してください。
     </p>
     <div class="table-scroll">
       <table>
@@ -365,6 +376,8 @@
           <tr><td>recurrence.ts</td><td>繰り返し予定の展開</td></tr>
           <tr><td>holidays.ts</td><td>日本の祝日（1980〜2099 年、外部通信なし）</td></tr>
           <tr><td>ics.ts / icsParse.ts</td><td>.ics の書き出しと読み取り</td></tr>
+          <tr><td>tz.ts</td><td>外部カレンダーの TZID を読むためのゾーン換算（ここだけ Intl に頼る）</td></tr>
+          <tr><td>icsRecurrence.ts</td><td>外部カレンダーの繰り返し。予定自身のゾーンで数え、無い日は飛ばす</td></tr>
           <tr><td>csv.ts</td><td>CSV の読み書き（BOM・CSV インジェクション対策つき）</td></tr>
           <tr><td>search.ts</td><td>横断検索の一致判定と順位付け</td></tr>
           <tr><td>shortcuts.ts</td><td>ショートカットの唯一の定義元</td></tr>
@@ -499,7 +512,7 @@
 
     <h3>カレンダー</h3>
     <ul>
-      <li><b>月 / 週 / 一覧</b>を切り替え。週表示には時間軸があります</li>
+      <li><b>月 / 週 / 日 / 一覧</b>を切り替え。週表示と日表示には時間軸があります</li>
       <li><b>ドラッグで移動</b>。週表示では端をつまんで長さを変えられます</li>
       <li><b>繰り返し</b>は 毎日 / 毎週 / 毎月 / 毎年。終了日も指定できます</li>
       <li>定例を <b>「この回だけ」</b> 動かす・休むことができます（変えた回には ✏️ が付きます）</li>
@@ -577,8 +590,10 @@
         <thead><tr><th>コマンド</th><th>内容</th></tr></thead>
         <tbody>
           <tr><td><code>npm run dev</code></td><td>開発サーバー（<code>localhost:5173</code>）</td></tr>
-          <tr><td><code>npm test</code></td><td>Vitest を 1 回実行</td></tr>
+          <tr><td><code>npm run lint</code></td><td>ESLint（数秒で終わる）</td></tr>
+          <tr><td><code>npm test</code></td><td>Vitest を 1 回実行（node と jsdom の両方）</td></tr>
           <tr><td><code>npm run test:watch</code></td><td>変更を見ながら実行</td></tr>
+          <tr><td><code>npm run test:e2e</code></td><td>ブラウザで実際に触る（<code>supabase start</code> が要る）</td></tr>
           <tr><td><code>npm run build</code></td><td><code>tsc --noEmit</code> のあとビルド</td></tr>
           <tr><td><code>npm run preview</code></td><td>ビルド結果を確認</td></tr>
         </tbody>
@@ -650,9 +665,17 @@
         生きている行だけを見たいときは <code>rows</code> を使ってください。
       </li>
       <li>
-        <b>React コンポーネントのテストは書けません。</b>
-        Vitest が <code>environment: 'node'</code> で、testing-library も入っていません。
-        判断のあるところは <code>src/lib/</code> の純粋関数へ押し出してください。
+        <b>判断のあるところは <code>src/lib/</code> の純粋関数へ押し出してください。</b>
+        コンポーネントのテスト（<code>*.test.tsx</code>・jsdom）もブラウザのテスト
+        （<code>e2e/</code>・Playwright）も書けるようになりましたが、どちらも遅く、
+        壊れやすく、落ちたときに原因が読み取りにくいのは変わりません。
+        そこでしか確かめられないことに絞ってください。
+      </li>
+      <li>
+        <b>ドラッグの確定は、コンポーネントのテストで守っています。</b>
+        「確定前に元の値へ戻す」を忘れると画面上は正常に見え、
+        <kbd>Ctrl</kbd>+<kbd>Z</kbd> が黙って効かなくなるだけなので、
+        目で見ても気づけません（<code>src/pages/tabs/__tests__/</code>）。
       </li>
     </ul>
 
@@ -661,10 +684,36 @@
       <table>
         <thead><tr><th>項目</th><th>内容</th></tr></thead>
         <tbody>
-          <tr><td>添付の移動</td><td>取り消し（undo）が積まれていない</td></tr>
-          <tr><td>.ics の <code>TZID</code></td><td>読み取り側が未対応。海外のカレンダーを購読すると時刻がずれる</td></tr>
-          <tr><td>毎月 31 日の予定</td><td>アプリは 2/28 に丸めるが、書き出した .ics は仕様上 2 月を飛ばす</td></tr>
-          <tr><td>リンタ</td><td>設定ファイルが無く、動いていない</td></tr>
+          <tr>
+            <td>外部カレンダーの <code>RRULE</code></td>
+            <td>
+              <code>FREQ</code> / <code>INTERVAL</code> / <code>COUNT</code> / <code>UNTIL</code> /
+              <code>RDATE</code> / <code>EXDATE</code> だけを見ています。
+              <code>BYDAY</code> などは無視するので、「毎月第 2 火曜」は
+              <code>DTSTART</code> の日付での単純な毎月になります
+            </td>
+          </tr>
+          <tr>
+            <td>知らない <code>TZID</code></td>
+            <td>
+              <code>VTIMEZONE</code> の <code>TZOFFSETTO</code> に退避しますが、
+              そのゾーンの夏時間の切り替えまでは追いません（年間を通して同じずれで読みます）
+            </td>
+          </tr>
+          <tr>
+            <td>毎月 31 日の <code>.ics</code></td>
+            <td>
+              丸めた回を <code>RDATE</code> で補っていますが、終わりの無い繰り返しでは
+              3 年ぶんで区切ります。それより先は書き出し直しが要ります
+            </td>
+          </tr>
+          <tr>
+            <td>CI</td>
+            <td>
+              ありません。<code>npm run lint</code> / <code>npm test</code> /
+              <code>npm run test:e2e</code> / <code>supabase test db</code> は手元で走らせます
+            </td>
+          </tr>
         </tbody>
       </table>
     </div>
