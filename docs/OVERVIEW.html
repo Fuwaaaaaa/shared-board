@@ -1,0 +1,687 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="みんなのボードの技術資料。プロジェクトの成り立ち、使っている言語と道具、画面ごとの操作方法をまとめています。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<title>みんなのボード — 技術資料と操作方法</title>
+<style>
+  /* docs/GUIDE.html と同じ配色にそろえる（あちらは紹介ページ、こちらは技術資料） */
+  :root {
+    color-scheme: light;
+    --panel: #ffffff;
+    --panel-2: #f4f6f9;
+    --line: #dee4eb;
+    --line-2: #edf1f5;
+    --ink: #1c2430;
+    --ink-2: #48556a;
+    --muted: #78849a;
+    --accent: #c67d12;
+    --accent-ink: #8a5405;
+    --accent-soft: #fdf4e0;
+    --code-bg: #f4f6f9;
+
+    --sans: 'Zen Kaku Gothic New', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', Meiryo, system-ui, sans-serif;
+    --mono: 'IBM Plex Mono', 'SFMono-Regular', Consolas, 'Courier New', monospace;
+    --col: 46rem;
+    --col-wide: 66rem;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --panel: #131a24;
+      --panel-2: #1a2430;
+      --line: #2b3644;
+      --line-2: #212b38;
+      --ink: #e6ebf2;
+      --ink-2: #b3becd;
+      --muted: #8593a6;
+      --accent: #e0a341;
+      --accent-ink: #f0c274;
+      --accent-soft: #2a2216;
+      --code-bg: #1a2430;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--panel);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.9;
+    -webkit-font-smoothing: antialiased;
+  }
+  img { max-width: 100%; }
+
+  .wrap { width: min(100% - 40px, var(--col)); margin-inline: auto; }
+  .wrap-wide { width: min(100% - 40px, var(--col-wide)); margin-inline: auto; }
+
+  /* キーボードだけで来た人が本文へ飛べるように */
+  .skip {
+    position: fixed; top: 0; left: 0; z-index: 100;
+    transform: translateY(-120%);
+    padding: 12px 20px;
+    background: var(--panel); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 0 0 10px 0;
+    font-weight: 700; text-decoration: none;
+  }
+  .skip:focus { transform: translateY(0); }
+
+  header.hero {
+    border-bottom: 1px solid var(--line);
+    padding: clamp(40px, 7vw, 72px) 0 clamp(28px, 4vw, 44px);
+    background: var(--panel-2);
+  }
+  .eyebrow {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--accent-ink); margin: 0 0 8px;
+  }
+  h1 { font-size: clamp(26px, 4vw, 38px); line-height: 1.4; margin: 0 0 12px; }
+  .lead { color: var(--ink-2); margin: 0; }
+
+  nav.toc {
+    border-bottom: 1px solid var(--line);
+    padding: 16px 0;
+    font-size: 14px;
+  }
+  nav.toc ul { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 0; padding: 0; list-style: none; }
+  nav.toc a { color: var(--ink-2); text-decoration: none; }
+  nav.toc a:hover, nav.toc a:focus-visible { color: var(--accent-ink); text-decoration: underline; }
+
+  section { padding: clamp(36px, 5vw, 56px) 0; border-bottom: 1px solid var(--line-2); }
+  h2 {
+    font-size: clamp(20px, 2.6vw, 26px); line-height: 1.5;
+    margin: 0 0 6px; scroll-margin-top: 16px;
+  }
+  h3 { font-size: 17px; margin: 32px 0 6px; }
+  .sub { color: var(--muted); font-size: 14px; margin: 0 0 24px; }
+  p { margin: 0 0 16px; color: var(--ink-2); }
+  p b, li b, td b { color: var(--ink); font-weight: 700; }
+  ul, ol { margin: 0 0 16px; padding-left: 1.3em; color: var(--ink-2); }
+  li { margin-bottom: 6px; }
+
+  code, kbd, .tree {
+    font-family: var(--mono);
+    font-size: .86em;
+  }
+  code {
+    background: var(--code-bg); border: 1px solid var(--line-2);
+    border-radius: 5px; padding: .1em .38em; color: var(--ink);
+  }
+  kbd {
+    background: var(--panel-2); border: 1px solid var(--line);
+    border-bottom-width: 2px; border-radius: 5px;
+    padding: .12em .45em; color: var(--ink); white-space: nowrap;
+  }
+  .tree {
+    display: block; overflow-x: auto;
+    background: var(--code-bg); border: 1px solid var(--line);
+    border-radius: 10px; padding: 18px 20px;
+    line-height: 1.75; color: var(--ink-2); white-space: pre;
+    font-size: 13px;
+  }
+  .tree b { color: var(--ink); font-weight: 500; }
+
+  /* 表は横に長くなるので、狭い画面では表だけ横スクロールさせる */
+  .table-scroll { overflow-x: auto; margin: 0 0 20px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; min-width: 30rem; }
+  th, td { text-align: left; padding: 9px 14px 9px 0; border-bottom: 1px solid var(--line-2); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: 12.5px; white-space: nowrap; }
+  td { color: var(--ink-2); }
+  td:first-child { color: var(--ink); white-space: nowrap; }
+
+  .note {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 14px 18px; border-radius: 0 8px 8px 0;
+    margin: 0 0 20px;
+  }
+  .note p:last-child { margin-bottom: 0; }
+  .note strong { color: var(--accent-ink); }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 16px; margin: 24px 0; }
+  .card { border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; background: var(--panel-2); }
+  .card h3 { margin: 0 0 6px; font-size: 15px; }
+  .card p { margin: 0; font-size: 14px; }
+
+  footer { padding: 36px 0 56px; color: var(--muted); font-size: 14px; }
+  footer a { color: var(--ink-2); }
+
+  @media print {
+    :root { color-scheme: light; }
+    nav.toc, .skip { display: none; }
+    body { font-size: 11pt; }
+    section { break-inside: auto; }
+    h2, h3 { break-after: avoid; }
+    .tree, table { break-inside: avoid; }
+    @page { margin: 14mm; }
+  }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">本文へスキップ</a>
+
+<header class="hero">
+  <div class="wrap-wide">
+    <p class="eyebrow">Technical overview</p>
+    <h1>みんなのボード — 技術資料と操作方法</h1>
+    <p class="lead">
+      何のためのアプリか、どんな言語と道具で作られているか、画面をどう操作するか。
+      開発を引き継ぐ人と、機能を隅々まで知りたい人のための資料です。
+      画面ごとの操作手順は <a href="MANUAL.html">MANUAL.html</a>、
+      利用者向けの紹介は <a href="GUIDE.html">GUIDE.html</a>、環境の作り方は
+      <a href="SETUP.md">SETUP.md</a> にあります。
+    </p>
+  </div>
+</header>
+
+<nav class="toc" aria-label="目次">
+  <div class="wrap-wide">
+    <ul>
+      <li><a href="#about">プロジェクトの内容</a></li>
+      <li><a href="#stack">使用言語と道具</a></li>
+      <li><a href="#structure">ファイル構成</a></li>
+      <li><a href="#data">データの持ち方</a></li>
+      <li><a href="#screens">画面と操作方法</a></li>
+      <li><a href="#shortcuts">ショートカット</a></li>
+      <li><a href="#dev">開発の進め方</a></li>
+      <li><a href="#gotchas">引き継ぐ人へ</a></li>
+    </ul>
+  </div>
+</nav>
+
+<main id="main">
+
+<!-- ============================================================ -->
+<section id="about">
+  <div class="wrap-wide">
+    <h2>プロジェクトの内容</h2>
+    <p class="sub">何のためのアプリか</p>
+
+    <p>
+      <b>ログイン不要で、URL を共有するだけで使える共同編集ボード</b>です。
+      ホワイトボード・カレンダー・リマインドの 3 つを 1 つのボードにまとめてあります。
+      利用者は最初に表示名を入れるだけで、メールアドレスもパスワードも要りません。
+    </p>
+
+    <p>
+      中核にあるのは <b>「付箋に書く → やることにする → 予定にする」</b> という流れです。
+      話し合いで出た内容がそのまま担当と期限を持った行動になり、出自
+      （<code>source_note_id</code> / <code>source_event_id</code>）を辿れます。
+    </p>
+
+    <div class="cards">
+      <div class="card">
+        <h3>想定する規模</h3>
+        <p>部活・サークル、家族、小さなお店、3〜5 人の仕事チーム。連絡網を作るほどではないが口頭では回らない集まり。</p>
+      </div>
+      <div class="card">
+        <h3>設計上の制約</h3>
+        <p>常駐サーバーを持たない。アクセス制御はすべて PostgreSQL の RLS に寄せる。</p>
+      </div>
+      <div class="card">
+        <h3>置いていないもの</h3>
+        <p>AI、ビデオ会議、ガントチャート、細かすぎるロール管理。用途をぼかさないため意図的に持たない。</p>
+      </div>
+    </div>
+
+    <div class="note">
+      <p>
+        <strong>ログインが無いことは、機能ではなく前提です。</strong>
+        匿名サインインで得た <code>auth.uid()</code> だけが本人を示す唯一の手がかりなので、
+        「誰が何をしたか」の記録（📣 更新タブ）と、参加の承認・権限の管理が、
+        他のアプリより重い役割を担っています。
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="stack">
+  <div class="wrap-wide">
+    <h2>使用言語と道具</h2>
+    <p class="sub">何で書かれているか</p>
+
+    <h3>言語</h3>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>言語</th><th>使っている場所</th><th>備考</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>TypeScript</td><td>画面の全て（<code>src/</code>）</td><td>約 24,700 行。<code>strict</code> に加えて <code>noUnusedLocals</code> / <code>noUnusedParameters</code> を有効</td></tr>
+          <tr><td>SQL (PostgreSQL)</td><td><code>supabase/schema.sql</code></td><td>2,666 行。テーブル・RLS・トリガー・関数を 1 ファイルに集約。冪等</td></tr>
+          <tr><td>TypeScript (Deno)</td><td><code>supabase/functions/</code></td><td>Edge Function 3 本。ブラウザからできない仕事だけを持つ</td></tr>
+          <tr><td>CSS</td><td>Tailwind ユーティリティ中心</td><td>自前のクラスは <code>src/index.css</code> に 2 つだけ</td></tr>
+          <tr><td>HTML</td><td><code>index.html</code> と <code>docs/</code></td><td>アプリ本体は 1 枚の SPA</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>ライブラリ</h3>
+    <p>依存は意図的に少なく保たれています。実行時の依存は 6 つだけです。</p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>パッケージ</th><th>役割</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>react / react-dom 18</td><td>画面</td></tr>
+          <tr><td>react-router-dom 7</td><td>ホーム画面とルーム画面の振り分け</td></tr>
+          <tr><td>@supabase/supabase-js 2</td><td>DB・Realtime・Storage・匿名サインイン</td></tr>
+          <tr><td>date-fns 4</td><td>日付の表示整形（暦の計算そのものは自前）</td></tr>
+          <tr><td>qrcode-generator</td><td>参加用 QR コード</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>開発用</h3>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>道具</th><th>役割</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Vite 5</td><td>開発サーバーとビルド</td></tr>
+          <tr><td>Vitest 2</td><td>テスト。<code>environment: 'node'</code>、対象は <code>src/**/__tests__/**/*.test.ts</code></td></tr>
+          <tr><td>Tailwind CSS 4</td><td><code>@tailwindcss/vite</code> 経由。<b><code>tailwind.config.js</code> は無い</b></td></tr>
+          <tr><td>TypeScript 5.6</td><td><code>tsc --noEmit</code> を <code>npm run build</code> に含める</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note">
+      <p>
+        <strong>ESLint と Prettier の設定ファイルはありません。</strong>
+        コードの中に <code>eslint-disable</code> コメントは残っていますが、
+        現状リンタは動いていません。型チェックとテストが品質の担保です。
+      </p>
+    </div>
+
+    <h3>基盤</h3>
+    <ul>
+      <li><b>Supabase</b> — PostgreSQL / Realtime / Storage / 匿名サインイン / RLS / pg_cron</li>
+      <li><b>Vercel</b> — 静的ホスティング。<code>vercel.json</code> に CSP とセキュリティヘッダ、SPA のリライトを定義</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="structure">
+  <div class="wrap-wide">
+    <h2>ファイル構成</h2>
+    <p class="sub">どこに何があるか</p>
+
+<code class="tree"><b>src/</b>
+├─ <b>pages/</b>
+│  ├─ HomePage.tsx        ボードを作る・入る
+│  ├─ RoomPage.tsx        タブの切り替え、検索、チャット、通知
+│  └─ <b>tabs/</b>
+│     ├─ WhiteboardTab.tsx   ホワイトボード本体（最大のファイル）
+│     ├─ NotesLayer.tsx      付箋（ボード表示）
+│     ├─ NotesListView.tsx   付箋（一覧表示・スマホ向け）
+│     ├─ DrawLayer.tsx       手描きと図形（canvas 2 枚）
+│     ├─ ImagesLayer.tsx / FramesLayer.tsx / ConnectorsLayer.tsx
+│     ├─ AttachmentsLayer.tsx / CursorsLayer.tsx
+│     ├─ CalendarTab.tsx     月 / 週 / 一覧
+│     ├─ TodoTab.tsx         リマインド
+│     ├─ UpdatesTab.tsx      更新の時系列
+│     └─ DashboardTab.tsx    集計
+├─ <b>components/</b>       モーダルとパネル（Modal を土台にする）
+├─ <b>hooks/</b>            Realtime・楽観的更新・在席・通知・Undo など
+└─ <b>lib/</b>              純粋なロジック。<b>ここがテストの対象</b>
+
+<b>supabase/</b>
+├─ schema.sql            テーブル・RLS・トリガー・関数（これ 1 本で完結）
+└─ <b>functions/</b>
+   ├─ fetch-ics          外部カレンダーの中継（CORS 回避）
+   ├─ send-reminders     Web Push の送信（pg_cron から毎分）
+   ├─ purge-storage      Storage の実体削除（SQL からは消せないため）
+   └─ _shared/           dates / recurrence / cronAuth（画面と共有）
+
+<b>docs/</b>
+├─ GUIDE.html            利用者向けの紹介ページ
+├─ OVERVIEW.html         この資料
+└─ SETUP.md              環境構築とデプロイ手順
+</code>
+
+    <h3>lib に置いてあるもの</h3>
+    <p>
+      画面から切り離せる判断は <code>src/lib/</code> に集めてあります。
+      <b>Vitest が <code>environment: 'node'</code> で動き、DOM のテスト環境を持たない</b>ため、
+      テストできるのはここだけだからです。13 本のテストで 219 件が通ります。
+    </p>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>ファイル</th><th>役割</th></tr></thead>
+        <tbody>
+          <tr><td>dates.ts</td><td>ボードの暦。Asia/Tokyo 固定</td></tr>
+          <tr><td>recurrence.ts</td><td>繰り返し予定の展開</td></tr>
+          <tr><td>holidays.ts</td><td>日本の祝日（1980〜2099 年、外部通信なし）</td></tr>
+          <tr><td>ics.ts / icsParse.ts</td><td>.ics の書き出しと読み取り</td></tr>
+          <tr><td>csv.ts</td><td>CSV の読み書き（BOM・CSV インジェクション対策つき）</td></tr>
+          <tr><td>search.ts</td><td>横断検索の一致判定と順位付け</td></tr>
+          <tr><td>shortcuts.ts</td><td>ショートカットの唯一の定義元</td></tr>
+          <tr><td>boardMenu.ts</td><td>右クリックメニューの項目</td></tr>
+          <tr><td>menuPlacement.ts</td><td>メニューの表示位置</td></tr>
+          <tr><td>boardGeometry.ts</td><td>フレームの当たり判定・外接矩形</td></tr>
+          <tr><td>boardClipboard.ts</td><td>付箋のコピーと貼り付け</td></tr>
+          <tr><td>boardExport.ts</td><td>PNG 書き出し（データから再描画）</td></tr>
+          <tr><td>noteFont.ts</td><td>付箋の文字サイズ</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="data">
+  <div class="wrap-wide">
+    <h2>データの持ち方</h2>
+    <p class="sub">なぜこの形なのか</p>
+
+    <p>
+      テーブルは 27 個。<code>rooms</code> を頂点に、中身は
+      <code>on delete cascade</code> でぶら下がります。
+      主なものは <code>notes</code> / <code>strokes</code> / <code>images</code> /
+      <code>frames</code> / <code>connectors</code> / <code>attachments</code>（ボード）、
+      <code>events</code> / <code>event_overrides</code>（カレンダー）、<code>todos</code>（リマインド）、
+      <code>comments</code> / <code>activities</code> / <code>room_members</code>（共有まわり）です。
+    </p>
+
+    <h3>覚えておきたい 4 つ</h3>
+    <ul>
+      <li>
+        <b>アクセス制御は全部 RLS。</b> 画面側のチェックは親切のためのもので、
+        本当の防御は PostgreSQL にあります。INSERT には
+        <code>author_id = auth.uid()</code> の条件が付くので、
+        <b>他人の行をコピーして入れ直すときは作者を自分に差し替える</b>必要があります。
+      </li>
+      <li>
+        <b>削除はゴミ箱行き。</b> <code>deleted_at</code> を立てるだけで、30 日は戻せます。
+        <code>useWithoutDeleted</code> が <code>rows</code> と <code>trash</code> に分けます。
+        ただし <code>comments</code> にはこの列がありません。
+      </li>
+      <li>
+        <b>暦は Asia/Tokyo 固定。</b> <code>Intl</code> を使わず UTC に +9 時間して計算します。
+        実行環境のタイムゾーン設定に左右されないためで、テストでも
+        <code>TZ=America/New_York</code> にして結果が変わらないことを確かめています。
+      </li>
+      <li>
+        <b>繰り返しの例外は別テーブル。</b> <code>event_overrides</code> が
+        「この回だけ変更・削除」を持ちます。.ics では <code>RECURRENCE-ID</code> /
+        <code>EXDATE</code> に対応します。
+      </li>
+    </ul>
+
+    <h3>共同編集のしくみ</h3>
+    <p>
+      <code>useRealtimeTable</code> が Supabase Realtime を購読し、
+      <code>useOptimisticTable</code> が「先に画面へ出して、失敗したら戻す」を担います。
+      本文とタグの変更だけ <code>updated_at</code> による楽観ロックが掛かり、
+      衝突すると「他の人が先に変更しました」と出して最新に戻します。
+      位置や色の変更にはロックを掛けません（掛けると譲り合いで動かなくなるため）。
+    </p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="screens">
+  <div class="wrap-wide">
+    <h2>画面と操作方法</h2>
+    <p class="sub">どう触るか</p>
+
+    <p>
+      ボードは 5 つのタブでできています。上のタブで切り替えます。
+    </p>
+
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>タブ</th><th>内容</th></tr></thead>
+        <tbody>
+          <tr><td>🖍️ ホワイトボード</td><td>付箋・手描き・画像・フレーム</td></tr>
+          <tr><td>📅 カレンダー</td><td>月 / 週 / 日 / 一覧の 4 表示</td></tr>
+          <tr><td>⏰ リマインド</td><td>期限つきの やること</td></tr>
+          <tr><td>📣 更新</td><td>変更の時系列とゴミ箱</td></tr>
+          <tr><td>📊 ダッシュボード</td><td>集計</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>ホワイトボード — 道具</h3>
+    <p>左上のツールバーで道具を選びます。かっこ内は 1 文字のホットキーです。</p>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>道具</th><th>キー</th><th>何をするか</th></tr></thead>
+        <tbody>
+          <tr><td>🖐 選択</td><td><kbd>V</kbd></td><td>掴んで動かす・範囲をドラッグしてまとめて選ぶ</td></tr>
+          <tr><td>🗒 付箋</td><td><kbd>N</kbd></td><td>クリックした場所に付箋を置く</td></tr>
+          <tr><td>🔤 テキスト</td><td><kbd>T</kbd></td><td>枠なしの見出しを置く</td></tr>
+          <tr><td>🔗 つなぐ</td><td><kbd>C</kbd></td><td>付箋を 2 枚選んで線でつなぐ</td></tr>
+          <tr><td>⬚ フレーム</td><td><kbd>F</kbd></td><td>領域を囲って名前をつける</td></tr>
+          <tr><td>✏️ ペン</td><td><kbd>P</kbd></td><td>手描き（6 色・4 段階の太さ）</td></tr>
+          <tr><td>／ 直線 ・ ➔ 矢印</td><td><kbd>L</kbd> <kbd>A</kbd></td><td>始点と終点の 2 点で引く</td></tr>
+          <tr><td>▭ 四角 ・ ◯ 円</td><td><kbd>R</kbd> <kbd>O</kbd></td><td>同上</td></tr>
+          <tr><td>🧽 消しゴム</td><td><kbd>E</kbd></td><td>手描きの線を消す</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>ホワイトボード — 付箋の触り方</h3>
+    <ul>
+      <li><b>ダブルクリック</b>で本文を編集。<kbd>Esc</kbd> で確定します</li>
+      <li><b>右下の角をドラッグ</b>で大きさを変える</li>
+      <li><b>押しっぱなしにして上下へドラッグ</b>で文字サイズを変える（右上に px が出ます）</li>
+      <li>選ぶと上に小さなツールバーが出ます。色・付箋⇄テキスト・絵文字・コメント・やること・予定・削除・<b>⋯</b></li>
+      <li><kbd>Shift</kbd> か <kbd>Ctrl</kbd> を押しながらクリックで複数選択。背景をドラッグして囲んでも選べます</li>
+    </ul>
+
+    <h3>右クリックメニュー</h3>
+    <p>
+      触りたいものの上で右クリックすると、そこでできることだけが出ます。
+      付箋・画像・フレームのタイトルバー・線・ファイル・何もない場所で、中身が変わります。
+    </p>
+    <div class="note">
+      <p>
+        <strong>右クリックでしかできない操作はありません。</strong>
+        同じ内容に 3 通りの行き方を用意しています ——
+        <b>右クリック</b>（最速）、<b>ツールバーの「⋯」</b>（通常）、<b>キーボード</b>（慣れた人向け）。
+        スマホでは付箋の一覧表示に切り替わり、各行の <b>「⋮」</b> が同じ役目を持ちます。
+        キーボードからは <kbd>Shift</kbd>+<kbd>F10</kbd> で開けます。
+      </p>
+    </div>
+
+    <h3>カレンダー</h3>
+    <ul>
+      <li><b>月 / 週 / 一覧</b>を切り替え。週表示には時間軸があります</li>
+      <li><b>ドラッグで移動</b>。週表示では端をつまんで長さを変えられます</li>
+      <li><b>繰り返し</b>は 毎日 / 毎週 / 毎月 / 毎年。終了日も指定できます</li>
+      <li>定例を <b>「この回だけ」</b> 動かす・休むことができます（変えた回には ✏️ が付きます）</li>
+      <li>日本の祝日は内部で計算します（外部通信なし）</li>
+    </ul>
+
+    <h3>リマインド</h3>
+    <ul>
+      <li>期限で <b>期限切れ / 今日 / 3日以内 / それ以降 / 期限なし / 完了</b> に自動で分かれます</li>
+      <li>担当者・サブタスク・繰り返し・コメントを持てます</li>
+      <li>一覧とカンバンを切り替えられます</li>
+    </ul>
+
+    <h3>共有と権限</h3>
+    <ul>
+      <li>入り方は <b>リンク公開 / 合言葉つき / 承認制</b> の 3 つ</li>
+      <li>配ったあとでも <b>新規参加の停止・人数上限・期限・リンクの作り直し</b> ができます</li>
+      <li>参加者ごとに <b>閲覧のみ / 編集できる</b>。閲覧のみでもコメントと投票はできます</li>
+      <li><b>ボードを終了</b>すると、中身は読めるまま書き込みだけ止まります。あとから再開できます</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="shortcuts">
+  <div class="wrap-wide">
+    <h2>ショートカット</h2>
+    <p class="sub">定義元は <code>src/lib/shortcuts.ts</code> の 1 か所だけ</p>
+
+    <p>
+      アプリ内の一覧（<kbd>?</kbd> で開く）も、右クリックメニューの右端の表記も、
+      すべてこのファイルから作られます。<b>Mac では ⌘ ⇧ ⌥ の記号に自動で置き換わります。</b>
+    </p>
+
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>キー</th><th>操作</th></tr></thead>
+        <tbody>
+          <tr><td><kbd>?</kbd></td><td>ショートカット一覧を開く</td></tr>
+          <tr><td><kbd>Ctrl</kbd>+<kbd>F</kbd></td><td>ボード内を検索</td></tr>
+          <tr><td><kbd>Esc</kbd></td><td>開いている画面を閉じる / 選択を解除</td></tr>
+          <tr><td>右クリック / <kbd>Shift</kbd>+<kbd>F10</kbd></td><td>右クリックメニューを開く</td></tr>
+          <tr><td><kbd>スペース</kbd>+ドラッグ / 中ボタンドラッグ</td><td>画面を掴んで移動</td></tr>
+          <tr><td><kbd>Ctrl</kbd>+ホイール</td><td>拡大・縮小</td></tr>
+          <tr><td>長押し + 上下ドラッグ</td><td>付箋の文字サイズを変える</td></tr>
+          <tr><td><kbd>Shift</kbd>+<kbd>H</kbd></td><td>全体を画面に収める</td></tr>
+          <tr><td><kbd>Ctrl</kbd>+<kbd>A</kbd></td><td>すべての付箋を選択</td></tr>
+          <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd></td><td>元に戻す / やり直す</td></tr>
+          <tr><td><kbd>Delete</kbd></td><td>選択中の付箋を削除</td></tr>
+          <tr><td><kbd>Ctrl</kbd>+<kbd>C</kbd> / <kbd>X</kbd> / <kbd>V</kbd></td><td>コピー / 切り取り / 貼り付け</td></tr>
+          <tr><td><kbd>Ctrl</kbd>+<kbd>D</kbd></td><td>複製</td></tr>
+          <tr><td><kbd>Ctrl</kbd>+<kbd>G</kbd></td><td>選択を囲うフレームを作る</td></tr>
+          <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>]</kbd> / <kbd>[</kbd></td><td>最前面へ / 最背面へ</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note">
+      <p>
+        <strong>取り消しは「自分の操作」だけに効きます。</strong>
+        共同編集なのでボード全体を過去に戻すのではなく、自分が行ったことの打ち消しを積みます。
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="dev">
+  <div class="wrap-wide">
+    <h2>開発の進め方</h2>
+    <p class="sub">動かす・確かめる</p>
+
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>コマンド</th><th>内容</th></tr></thead>
+        <tbody>
+          <tr><td><code>npm run dev</code></td><td>開発サーバー（<code>localhost:5173</code>）</td></tr>
+          <tr><td><code>npm test</code></td><td>Vitest を 1 回実行</td></tr>
+          <tr><td><code>npm run test:watch</code></td><td>変更を見ながら実行</td></tr>
+          <tr><td><code>npm run build</code></td><td><code>tsc --noEmit</code> のあとビルド</td></tr>
+          <tr><td><code>npm run preview</code></td><td>ビルド結果を確認</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>環境変数</h3>
+    <p><code>.env.local</code> に置きます。雛形は <code>.env.example</code> です。</p>
+    <ul>
+      <li><code>VITE_SUPABASE_URL</code> / <code>VITE_SUPABASE_ANON_KEY</code> — 必須</li>
+      <li><code>VITE_VAPID_PUBLIC_KEY</code> — プッシュ通知を使う場合</li>
+      <li><code>VITE_TURNSTILE_SITE_KEY</code> — 参加申請の bot 対策を使う場合</li>
+      <li><code>VITE_LAN=1</code> — 同じ LAN の別端末から見たいときだけ</li>
+    </ul>
+
+    <div class="note">
+      <p>
+        <strong><code>VITE_LAN=1</code> は既定で外してあります。</strong>
+        開発サーバーそのものが攻撃面になるためです（同梱の esbuild には、
+        開発サーバーが任意のファイルを読み出せてしまう既知の問題があります）。
+        またこのとき <code>http://</code> になるので、
+        <code>navigator.clipboard</code> が使えない点にも注意してください。
+      </p>
+    </div>
+
+    <h3>データベースの更新</h3>
+    <p>
+      <code>supabase/schema.sql</code> を Supabase の SQL Editor に貼って実行します。
+      冪等なので何度実行しても同じ状態になります。列を足すときは
+      <code>alter table ... add column if not exists</code> の形で末尾に追記します。
+    </p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="gotchas">
+  <div class="wrap-wide">
+    <h2>引き継ぐ人へ</h2>
+    <p class="sub">知らないと踏む落とし穴</p>
+
+    <ul>
+      <li>
+        <b>ボードは <code>transform: scale()</code> の中にあります。</b>
+        <code>transform</code> は <code>position: fixed</code> の基準になるため、
+        メニューなど画面に固定したいものをこの中に置くと、
+        倍率で拡大縮小されて位置もずれます。ボードの外に置いてください。
+      </li>
+      <li>
+        <b>ダークモードに <code>dark:</code> は使いません。</b>
+        <code>src/index.css</code> が Tailwind のカラー変数そのものを反転させます。
+        <code>bg-white text-slate-800</code> と普通に書けば両方に対応します。
+        逆に <code>bg-slate-800</code> と書くと、ダークで白くなって意図が壊れます。
+      </li>
+      <li>
+        <b><code>useStableHandlers</code> はキーの集合が初回で固定されます。</b>
+        条件でハンドラを出し分けず、関数の中で分岐してください。
+      </li>
+      <li>
+        <b>ドラッグ中に <code>onLocalChange</code> で書き換えたら、確定前に元の値へ戻してください。</b>
+        親の <code>commit*</code> は「いま保持している行」を取り消しの戻り先にするので、
+        書き換えたまま確定すると <kbd>Ctrl</kbd>+<kbd>Z</kbd> が何もしないエントリになります。
+      </li>
+      <li>
+        <b>キーボードの Ctrl 系は <code>if (e.ctrlKey || e.metaKey || e.altKey) return</code> より上に書いてください。</b>
+        下に書くと届きません（<code>WhiteboardTab.tsx</code> のキーハンドラ）。
+      </li>
+      <li>
+        <b><code>getRow()</code> はゴミ箱の行も返します。</b>
+        生きている行だけを見たいときは <code>rows</code> を使ってください。
+      </li>
+      <li>
+        <b>React コンポーネントのテストは書けません。</b>
+        Vitest が <code>environment: 'node'</code> で、testing-library も入っていません。
+        判断のあるところは <code>src/lib/</code> の純粋関数へ押し出してください。
+      </li>
+    </ul>
+
+    <h3>いまの既知の課題</h3>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>項目</th><th>内容</th></tr></thead>
+        <tbody>
+          <tr><td>添付の移動</td><td>取り消し（undo）が積まれていない</td></tr>
+          <tr><td>.ics の <code>TZID</code></td><td>読み取り側が未対応。海外のカレンダーを購読すると時刻がずれる</td></tr>
+          <tr><td>毎月 31 日の予定</td><td>アプリは 2/28 に丸めるが、書き出した .ics は仕様上 2 月を飛ばす</td></tr>
+          <tr><td>リンタ</td><td>設定ファイルが無く、動いていない</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap-wide">
+    <p>
+      みんなのボード — 操作手順は <a href="MANUAL.html">MANUAL.html</a>、
+      利用者向けの紹介は <a href="GUIDE.html">GUIDE.html</a>、
+      環境構築とデプロイは <a href="SETUP.md">SETUP.md</a>、
+      機能の一覧は <a href="../README.md">README.md</a> にあります。
+    </p>
+  </div>
+</footer>
+</body>
+</html>

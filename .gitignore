@@ -1,0 +1,21 @@
+node_modules
+dist
+dist-ssr
+.vite
+
+# 環境変数（Supabase の URL / anon key）
+.env
+.env.local
+.env.*.local
+
+# エディタ / OS
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+Thumbs.db
+*.log
+
+# Supabase CLI が作る作業用ファイル（ローカル起動時のシークレットを含む）
+supabase/.temp/
+supabase/.branches/

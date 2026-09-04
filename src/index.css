@@ -1,0 +1,144 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans:
+    'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Meiryo', system-ui, -apple-system,
+    'Segoe UI', sans-serif;
+}
+
+/*
+ * ダークモード
+ *
+ * 画面はほぼ white と slate だけで組んであるので、Tailwind が使っている
+ * カラー変数そのものを反転させることで、各コンポーネントに dark: を
+ * 書き足さなくても全体が暗くなるようにしている。
+ * （付箋や予定の色は「色紙」なので、あえて明るいまま残す）
+ */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --color-white: #0e1626;
+  --color-slate-50: #131d30;
+  --color-slate-100: #1c2739;
+  --color-slate-200: #2a3548;
+  --color-slate-300: #3f4f68;
+  --color-slate-400: #8593a9;
+  --color-slate-500: #a3aec2;
+  --color-slate-600: #bfc8d8;
+  --color-slate-700: #d8dfea;
+  --color-slate-800: #eaeff7;
+  --color-slate-900: #f6f9fd;
+
+  /* 淡い背景色は暗く、その上に乗る濃い文字色は明るくする */
+  --color-amber-50: #3a2c0c;
+  --color-amber-100: #4a380f;
+  --color-amber-200: #5c4614;
+  --color-amber-600: #fbbf24;
+  --color-amber-700: #fcd34d;
+  --color-amber-800: #fde68a;
+  --color-amber-900: #fef3c7;
+
+  --color-rose-50: #3d1620;
+  --color-rose-100: #4d1b28;
+  --color-rose-200: #63232f;
+  --color-rose-500: #fb7185;
+  --color-rose-600: #fb7185;
+  --color-rose-700: #fda4af;
+  --color-rose-800: #fecdd3;
+
+  --color-blue-500: #60a5fa;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-slate-50);
+  color: var(--color-slate-900);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+
+/* ホワイトボードで意図しない文字選択が起きないように */
+.no-select {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* スマホでツールバーが溢れたときに、横スクロールで全部触れるようにする */
+.toolbar-scroll {
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.toolbar-scroll::-webkit-scrollbar {
+  height: 4px;
+}
+.toolbar-scroll::-webkit-scrollbar-thumb {
+  background: var(--color-slate-300);
+  border-radius: 2px;
+}
+
+/*
+ * 印刷用
+ *
+ * ツールバーやモーダルを隠し、スクロール領域を伸ばして全体が紙に載るようにする。
+ * ダークモードのまま印刷すると読めないので、色は必ず明るい方へ戻す。
+ */
+@media print {
+  :root,
+  :root[data-theme='dark'] {
+    color-scheme: light;
+    --color-white: #ffffff;
+    --color-slate-50: #f8fafc;
+    --color-slate-100: #f1f5f9;
+    --color-slate-200: #e2e8f0;
+    --color-slate-300: #cbd5e1;
+    --color-slate-400: #94a3b8;
+    --color-slate-500: #64748b;
+    --color-slate-600: #475569;
+    --color-slate-700: #334155;
+    --color-slate-800: #1e293b;
+    --color-slate-900: #0f172a;
+  }
+
+  body {
+    background: #fff;
+  }
+
+  /* 画面いっぱいに広げていた箱を、紙の高さに合わせて伸ばす */
+  .h-screen,
+  .h-full {
+    height: auto !important;
+  }
+  .overflow-auto,
+  .overflow-y-auto,
+  .overflow-x-auto {
+    overflow: visible !important;
+  }
+  .max-h-\[60vh\] {
+    max-height: none !important;
+  }
+
+  /* 影と余計な枠は紙では邪魔になる */
+  .shadow-sm,
+  .shadow-md,
+  .shadow-lg,
+  .shadow-xl {
+    box-shadow: none !important;
+  }
+
+  /* 項目が途中で切れないようにする */
+  li,
+  section,
+  tr {
+    break-inside: avoid;
+  }
+
+  @page {
+    margin: 12mm;
+  }
+}

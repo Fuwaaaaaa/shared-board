@@ -1,0 +1,779 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="みんなのボードの操作手順書。画面ごとに、やりたいことから手順を引けるようにまとめています。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<title>みんなのボード — 操作手順書</title>
+<style>
+  /* docs/GUIDE.html・OVERVIEW.html と同じ配色 */
+  :root {
+    color-scheme: light;
+    --panel: #ffffff;
+    --panel-2: #f4f6f9;
+    --line: #dee4eb;
+    --line-2: #edf1f5;
+    --ink: #1c2430;
+    --ink-2: #48556a;
+    --muted: #78849a;
+    --accent: #c67d12;
+    --accent-ink: #8a5405;
+    --accent-soft: #fdf4e0;
+    --code-bg: #f4f6f9;
+    --sans: 'Zen Kaku Gothic New', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', Meiryo, system-ui, sans-serif;
+    --mono: 'IBM Plex Mono', 'SFMono-Regular', Consolas, 'Courier New', monospace;
+    --col-wide: 62rem;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --panel: #131a24; --panel-2: #1a2430; --line: #2b3644; --line-2: #212b38;
+      --ink: #e6ebf2; --ink-2: #b3becd; --muted: #8593a6;
+      --accent: #e0a341; --accent-ink: #f0c274; --accent-soft: #2a2216; --code-bg: #1a2430;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--panel); color: var(--ink);
+    font-family: var(--sans); font-size: 16px; line-height: 1.9;
+    -webkit-font-smoothing: antialiased;
+  }
+  img { max-width: 100%; }
+  .wrap { width: min(100% - 40px, var(--col-wide)); margin-inline: auto; }
+
+  .skip {
+    position: fixed; top: 0; left: 0; z-index: 100; transform: translateY(-120%);
+    padding: 12px 20px; background: var(--panel); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 0 0 10px 0;
+    font-weight: 700; text-decoration: none;
+  }
+  .skip:focus { transform: translateY(0); }
+
+  header.hero {
+    border-bottom: 1px solid var(--line); background: var(--panel-2);
+    padding: clamp(36px, 6vw, 64px) 0 clamp(24px, 4vw, 40px);
+  }
+  .eyebrow {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--accent-ink); margin: 0 0 8px;
+  }
+  h1 { font-size: clamp(25px, 4vw, 36px); line-height: 1.4; margin: 0 0 12px; }
+  .lead { color: var(--ink-2); margin: 0; }
+
+  nav.toc { border-bottom: 1px solid var(--line); padding: 16px 0; font-size: 14px; }
+  nav.toc ul { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 0; padding: 0; list-style: none; }
+  nav.toc a { color: var(--ink-2); text-decoration: none; }
+  nav.toc a:hover, nav.toc a:focus-visible { color: var(--accent-ink); text-decoration: underline; }
+
+  section { padding: clamp(34px, 5vw, 52px) 0; border-bottom: 1px solid var(--line-2); }
+  h2 { font-size: clamp(20px, 2.6vw, 25px); margin: 0 0 4px; scroll-margin-top: 16px; line-height: 1.5; }
+  .where { color: var(--muted); font-size: 13.5px; margin: 0 0 26px; font-family: var(--mono); }
+  p { margin: 0 0 14px; color: var(--ink-2); }
+  p b, li b, td b, dd b { color: var(--ink); font-weight: 700; }
+
+  /* 手順のまとまり。「やりたいこと」を見出しにして、下に番号つきの手順を置く */
+  .task {
+    border: 1px solid var(--line); border-radius: 12px;
+    padding: 18px 22px; margin: 0 0 16px; background: var(--panel-2);
+  }
+  .task > h3 {
+    margin: 0 0 10px; font-size: 16px; color: var(--ink);
+    display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  }
+  .task > h3 .tag {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .06em;
+    color: var(--accent-ink); background: var(--accent-soft);
+    border: 1px solid var(--line); border-radius: 999px; padding: 1px 9px;
+    font-weight: 500;
+  }
+  .task ol { margin: 0; padding-left: 1.4em; color: var(--ink-2); }
+  .task ul { margin: 10px 0 0; padding-left: 1.3em; color: var(--ink-2); }
+  .task li { margin-bottom: 5px; }
+  .task li:last-child { margin-bottom: 0; }
+  .task p:last-child { margin-bottom: 0; }
+  .task .after {
+    margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line);
+    font-size: 14px; color: var(--muted);
+  }
+
+  code, kbd { font-family: var(--mono); font-size: .86em; }
+  code { background: var(--code-bg); border: 1px solid var(--line-2); border-radius: 5px; padding: .1em .38em; color: var(--ink); }
+  kbd {
+    background: var(--panel); border: 1px solid var(--line); border-bottom-width: 2px;
+    border-radius: 5px; padding: .12em .45em; color: var(--ink); white-space: nowrap;
+  }
+
+  .note {
+    border-left: 3px solid var(--accent); background: var(--accent-soft);
+    padding: 13px 18px; border-radius: 0 8px 8px 0; margin: 0 0 18px;
+  }
+  .note p:last-child { margin-bottom: 0; }
+  .note strong { color: var(--accent-ink); }
+
+  .table-scroll { overflow-x: auto; margin: 0 0 18px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; min-width: 28rem; }
+  th, td { text-align: left; padding: 9px 14px 9px 0; border-bottom: 1px solid var(--line-2); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: 12.5px; white-space: nowrap; }
+  td { color: var(--ink-2); }
+  td:first-child { color: var(--ink); white-space: nowrap; }
+
+  footer { padding: 34px 0 56px; color: var(--muted); font-size: 14px; }
+  footer a { color: var(--ink-2); }
+
+  @media print {
+    :root { color-scheme: light; }
+    nav.toc, .skip { display: none; }
+    body { font-size: 10.5pt; line-height: 1.7; }
+    .task { break-inside: avoid; background: none; }
+    h2 { break-after: avoid; }
+    table { break-inside: avoid; }
+    @page { margin: 14mm; }
+  }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">本文へスキップ</a>
+
+<header class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Step by step</p>
+    <h1>みんなのボード — 操作手順書</h1>
+    <p class="lead">
+      画面ごとに「やりたいこと → 手順」の形で並べています。頭から読む必要はありません。
+      アプリの成り立ちと技術は <a href="OVERVIEW.html">OVERVIEW.html</a>、
+      利用者向けの紹介は <a href="GUIDE.html">GUIDE.html</a> にあります。
+    </p>
+  </div>
+</header>
+
+<nav class="toc" aria-label="目次">
+  <div class="wrap">
+    <ul>
+      <li><a href="#start">はじめる</a></li>
+      <li><a href="#header">ヘッダー</a></li>
+      <li><a href="#board">ホワイトボード</a></li>
+      <li><a href="#list">付箋の一覧（スマホ）</a></li>
+      <li><a href="#calendar">カレンダー</a></li>
+      <li><a href="#todo">リマインド</a></li>
+      <li><a href="#updates">更新・ゴミ箱</a></li>
+      <li><a href="#share">共有と権限</a></li>
+      <li><a href="#settings">ボードの設定</a></li>
+      <li><a href="#trouble">困ったとき</a></li>
+    </ul>
+  </div>
+</nav>
+
+<main id="main">
+
+<!-- ============================================================ -->
+<section id="start">
+  <div class="wrap">
+    <h2>はじめる</h2>
+    <p class="where">ホーム画面</p>
+
+    <div class="task">
+      <h3>表示名を決める <span class="tag">初回だけ</span></h3>
+      <ol>
+        <li>アプリを開くと、名前の入力だけが出ます。</li>
+        <li>呼ばれたい名前を入れます（例：たなか）。</li>
+        <li><b>はじめる</b> を押します。</li>
+      </ol>
+      <p class="after">メールアドレスもパスワードも聞かれません。名前はあとから変えられます。</p>
+    </div>
+
+    <div class="task">
+      <h3>新しいボードを作る</h3>
+      <ol>
+        <li><b>ボード名</b>を入れます（例：開発チーム / 家族の予定）。</li>
+        <li><b>入り方</b>を 3 つから選びます。
+          <ul>
+            <li>🌐 <b>リンク公開</b> — URL を知っている人は誰でもすぐ参加できます</li>
+            <li>🔑 <b>合言葉つき</b> — 合言葉を知っている人は、承認を待たずに入れます。選ぶと合言葉の入力欄が出ます</li>
+            <li>🔒 <b>承認制</b> — 作った人が承認した人だけが入れます</li>
+          </ul>
+        </li>
+        <li><b>最初のレイアウト</b>を選びます（白紙 / KPT / カンバン / ブレスト / 会議メモ）。</li>
+        <li><b>ボードを作成</b> を押します。</li>
+      </ol>
+      <p class="after">入り方とレイアウトは、あとからでも変えられます（レイアウトはテンプレートの追加という形）。</p>
+    </div>
+
+    <div class="task">
+      <h3>作ったボードに人を呼ぶ</h3>
+      <ol>
+        <li>ボードが開いたら、ヘッダーの <b>👥 参加者</b> の隣にある共有の入口を開きます。</li>
+        <li>出てきた <b>URL をコピー</b> して、相手に送ります。</li>
+        <li>その場にいる人には <b>QR コード</b> を読み取ってもらえます。</li>
+      </ol>
+      <p class="after">合言葉つきにした場合は、URL と合言葉の両方を伝えてください。</p>
+    </div>
+
+    <div class="task">
+      <h3>前に使ったボードに戻る</h3>
+      <ol>
+        <li>ホーム画面の下に <b>参加中のボード</b> が並びます。</li>
+        <li>よく使うものは ⭐ を押して <b>お気に入り</b> に入れると、上のタブで絞り込めます。</li>
+      </ol>
+      <p class="after">🔑 が付いているものは合言葉つきか承認制、灰色のものは終了したボード（読めますが書き込めません）です。</p>
+    </div>
+
+    <div class="task">
+      <h3>スマホのホーム画面に置く <span class="tag">任意</span></h3>
+      <ol>
+        <li>ホーム画面の右上に <b>インストール</b> が出ていれば押します。</li>
+        <li>出ていない場合は、ブラウザのメニューから「ホーム画面に追加」を選びます。</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="header">
+  <div class="wrap">
+    <h2>ヘッダー</h2>
+    <p class="where">どの画面でも上に出ています</p>
+
+    <p>左にタブ、右に道具のボタンが並びます。狭い画面では右側が横スクロールします。</p>
+
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>ボタン</th><th>できること</th></tr></thead>
+        <tbody>
+          <tr><td>🏠 ホームに戻る</td><td>ボードの一覧へ</td></tr>
+          <tr><td>🔍 ボード内を検索</td><td>付箋・予定・やること・コメントをまとめて探す（<kbd>Ctrl</kbd>+<kbd>F</kbd>）</td></tr>
+          <tr><td>👥 参加者</td><td>参加の承認、権限の変更、アクセスの取り消し</td></tr>
+          <tr><td>💬 チャット</td><td>ボードごとの会話。未読は数字が付く</td></tr>
+          <tr><td>🔔 通知</td><td>名指し・担当の指名・参加申請など</td></tr>
+          <tr><td>🗳 日程調整</td><td>候補日を出して ○△× を集める</td></tr>
+          <tr><td>⚙️ ボードの設定</td><td>名前の変更、複製、終了、削除、書き出し、ゴミ箱など</td></tr>
+          <tr><td>👤 表示名を変更</td><td>自分の名前を変える</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="task">
+      <h3>ボード全体から探す</h3>
+      <ol>
+        <li><kbd>Ctrl</kbd>+<kbd>F</kbd>（Mac は <kbd>⌘</kbd>+<kbd>F</kbd>）を押すか、🔍 を押します。</li>
+        <li>キーワードを入れると、付箋・予定・やること・コメントから探して並べます。</li>
+        <li>結果を押すと、そのタブに切り替わって対象が選ばれます。</li>
+      </ol>
+      <p class="after">
+        タイトルが一致したものが上に出ます。「ガッコウ」で「がっこう」も見つかります。
+        タグは <code>#タグ名</code> でも <code>タグ名</code> でも引けます。
+      </p>
+    </div>
+
+    <div class="task">
+      <h3>日程調整をする</h3>
+      <ol>
+        <li>ヘッダーの <b>🗳 日程調整</b> を開きます。</li>
+        <li><b>＋ 新しい日程調整をつくる</b> を押し、件名を入れます。</li>
+        <li>候補の日時を <b>追加</b> で並べます。</li>
+        <li>参加者それぞれが ○ △ × を押します。</li>
+        <li>決まったら、その候補の <b>この日に決める</b> を押します。</li>
+      </ol>
+      <p class="after">決めたあとで <b>決定を取り消して再調整する</b> こともできます。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="board">
+  <div class="wrap">
+    <h2>ホワイトボード</h2>
+    <p class="where">🖍️ タブ（パソコン向けの表示）</p>
+
+    <div class="task">
+      <h3>付箋を置いて書く</h3>
+      <ol>
+        <li>ツールバーの <b>🗒 付箋</b> を押します（キーは <kbd>N</kbd>）。</li>
+        <li>ボードの置きたい場所をクリックします。</li>
+        <li>そのまま文字を入れ、<kbd>Esc</kbd> か外側をクリックで確定します。</li>
+      </ol>
+      <p class="after">
+        あとから書き直すときは<b>ダブルクリック</b>。
+        何もない場所で<b>右クリック → ここに付箋を作る</b>でも置けます。
+      </p>
+    </div>
+
+    <div class="task">
+      <h3>付箋の見た目を変える</h3>
+      <ol>
+        <li>付箋をクリックして選びます。上に小さなツールバーが出ます。</li>
+        <li><b>色</b>は 6 つの丸から選びます。</li>
+        <li><b>大きさ</b>は右下の角をドラッグします。</li>
+        <li><b>文字の大きさ</b>は、付箋を押しっぱなしにして上下へドラッグします。右上に現在の px が出ます。</li>
+        <li>🔤 を押すと、枠のない<b>テキスト</b>に変わります（もう一度押すと戻ります）。</li>
+      </ol>
+      <p class="after">どれも <kbd>Ctrl</kbd>+<kbd>Z</kbd> で取り消せます。</p>
+    </div>
+
+    <div class="task">
+      <h3>まとめて選んで並べる</h3>
+      <ol>
+        <li><b>🖐 選択</b>（<kbd>V</kbd>）にします。</li>
+        <li>何もない場所からドラッグして、付箋を囲みます。<kbd>Shift</kbd> を押しながらクリックでも足せます。</li>
+        <li>上に出るツールバーから <b>左をそろえる / 上をそろえる / 横に並べる / 縦に並べる / グリッドにそろえる</b> を選びます。</li>
+      </ol>
+      <p class="after"><kbd>Ctrl</kbd>+<kbd>A</kbd> で全部の付箋を選べます。</p>
+    </div>
+
+    <div class="task">
+      <h3>付箋を「やること」や「予定」にする <span class="tag">このアプリの中心</span></h3>
+      <ol>
+        <li>付箋を選びます（複数でも可）。</li>
+        <li>ツールバーの <b>⏰</b>（やること）か <b>📅</b>（予定）を押します。</li>
+        <li>出てきた画面で、担当と期限を決めます。</li>
+        <li><b>作成</b> を押します。</li>
+      </ol>
+      <p class="after">
+        できた予定・やることには「この付箋から生まれました」と出ます。
+        付箋の側にも <b>⏰1</b> のような印が付き、押すとその一覧へ飛べます。
+      </p>
+    </div>
+
+    <div class="task">
+      <h3>複製・重なり順・画像化 <span class="tag">右クリック</span></h3>
+      <ol>
+        <li>付箋の上で<b>右クリック</b>します（または選んでツールバーの <b>⋯</b>）。</li>
+        <li>やりたい項目を選びます。
+          <ul>
+            <li><b>コピー / 切り取り / 複製</b></li>
+            <li><b>色をコピー / 色を貼り付け</b> — 1 枚の色を他へ移す</li>
+            <li><b>最前面へ / 最背面へ</b> — 隠れた付箋を前に出す</li>
+            <li><b>選択を囲うフレームを作る</b> — 複数選んでいるとき</li>
+            <li><b>PNG としてコピー / PNG で保存</b> — 選んだ付箋だけを画像に</li>
+          </ul>
+        </li>
+      </ol>
+      <p class="after">
+        キーボードだけでも <kbd>Shift</kbd>+<kbd>F10</kbd> で開けます。矢印キーで選び <kbd>Enter</kbd> で実行します。
+      </p>
+    </div>
+
+    <div class="task">
+      <h3>手描き・図形を引く</h3>
+      <ol>
+        <li>ツールバーから <b>✏️ ペン</b>（<kbd>P</kbd>）、<b>／ 直線</b>（<kbd>L</kbd>）、<b>➔ 矢印</b>（<kbd>A</kbd>）、<b>▭ 四角</b>（<kbd>R</kbd>）、<b>◯ 円</b>（<kbd>O</kbd>）を選びます。</li>
+        <li>色と太さを選びます（6 色・4 段階）。</li>
+        <li>ボードをドラッグして引きます。</li>
+        <li>消すときは <b>🧽 消しゴム</b>（<kbd>E</kbd>）でなぞります。</li>
+      </ol>
+    </div>
+
+    <div class="task">
+      <h3>画像・ファイルを貼る</h3>
+      <ol>
+        <li>画像は <kbd>Ctrl</kbd>+<kbd>V</kbd> で貼れます。ボードへの<b>ドラッグ＆ドロップ</b>でも入ります。</li>
+        <li>ツールバーのボタンからファイルを選ぶこともできます。</li>
+        <li>置いたあとは、ドラッグで移動、右下の角で拡大縮小できます。</li>
+      </ol>
+    </div>
+
+    <div class="task">
+      <h3>付箋をつなぐ・フレームで囲む</h3>
+      <ol>
+        <li><b>🔗 つなぐ</b>（<kbd>C</kbd>）にして、付箋を 2 枚続けてクリックすると線が引かれます。</li>
+        <li>線を選ぶと、矢印⇄直線の切り替えと削除ができます。</li>
+        <li><b>⬚ フレーム</b>（<kbd>F</kbd>）で領域を囲み、タイトルバーに名前を付けられます。</li>
+        <li>フレームのタイトルバーを掴むと、<b>中の付箋ごと</b>動きます。</li>
+      </ol>
+      <p class="after">
+        フレームのタイトルバーの <b>⋯</b> から「中の付箋を選択」ができます。
+      </p>
+    </div>
+
+    <div class="task">
+      <h3>画面を動かす・拡大する</h3>
+      <ul>
+        <li><kbd>スペース</kbd>を押しながらドラッグ、または<b>マウスの中ボタン</b>でドラッグ</li>
+        <li><kbd>Ctrl</kbd>+ホイールで拡大・縮小</li>
+        <li><kbd>Shift</kbd>+<kbd>H</kbd> で全体を画面に収める</li>
+        <li>タッチ画面では 2 本指で移動・拡大縮小</li>
+      </ul>
+    </div>
+
+    <div class="task">
+      <h3>ボードを画像にする</h3>
+      <ol>
+        <li>ツールバーの <b>📥</b> でボード全体を PNG として保存します。</li>
+        <li><b>🖼</b> を押すと、保存せずクリップボードへコピーします。そのままチャットに貼れます。</li>
+      </ol>
+      <p class="after">選んだ付箋だけを画像にしたいときは、右クリックメニューから選びます。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="list">
+  <div class="wrap">
+    <h2>付箋の一覧</h2>
+    <p class="where">画面幅が 640px 未満のとき自動で切り替わります（スマホ向け）</p>
+
+    <p>
+      指ではドラッグや範囲選択が扱いにくいため、狭い画面では付箋を 1 列に並べた一覧になります。
+      パソコンでもツールバーの <b>📋</b> から切り替えられます。戻すときは <b>🖍️ ボードで開く</b> です。
+    </p>
+
+    <div class="task">
+      <h3>一覧で付箋を扱う</h3>
+      <ol>
+        <li>行をタップすると本文を編集できます。</li>
+        <li><b>▲ ▼</b> で並べ替えます（隣の付箋と位置を入れ替えます）。</li>
+        <li><b>⋮</b> を押すと、その付箋にできることが開きます。
+          <ul>
+            <li>色を変える</li>
+            <li>💬 コメント・タグ</li>
+            <li>コピー / 複製 / 色をコピー / 色を貼り付け</li>
+            <li>PNG としてコピー / PNG で保存</li>
+            <li>⏰ やることにする / 📅 予定にする</li>
+            <li>🗑 削除</li>
+          </ul>
+        </li>
+        <li>いちばん下の <b>＋</b> で新しい付箋を足します。</li>
+      </ol>
+      <p class="after">手描き・画像・フレームは、この表示では扱えません。パソコンのボード表示に切り替えてください。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="calendar">
+  <div class="wrap">
+    <h2>カレンダー</h2>
+    <p class="where">📅 タブ</p>
+
+    <div class="task">
+      <h3>表示を切り替える</h3>
+      <ol>
+        <li>右上の <b>月 / 週 / 日 / リスト</b> で切り替えます。</li>
+        <li><b>今日</b> を押すと今日に戻ります。</li>
+        <li>週の始まりを日曜／月曜で切り替えるボタンもあります。</li>
+      </ol>
+    </div>
+
+    <div class="task">
+      <h3>予定を作る</h3>
+      <ol>
+        <li>日付のマスをクリック（または週表示で時間帯をドラッグ）します。</li>
+        <li>件名を入れます。</li>
+        <li>必要なら <b>＋ 終了日時を指定</b> で終わりの時刻を足します。終日にもできます。</li>
+        <li><b>繰り返し</b>（毎日 / 毎週 / 毎月 / 毎年）と、必要なら終了日を選びます。</li>
+        <li><b>通知</b>（15 分前など）を選びます。</li>
+        <li><b>保存</b> を押します。</li>
+      </ol>
+    </div>
+
+    <div class="task">
+      <h3>予定を動かす</h3>
+      <ul>
+        <li><b>月表示</b> — 別の日へドラッグします</li>
+        <li><b>週表示</b> — 上下にドラッグで時間を変え、端をつまんで長さを変えます</li>
+        <li>細かく直すときは予定を開いて <b>保存</b> します</li>
+      </ul>
+    </div>
+
+    <div class="task">
+      <h3>繰り返しの「この回だけ」を変える <span class="tag">つまずきやすい</span></h3>
+      <ol>
+        <li>繰り返している予定の、<b>変えたい回</b>を開きます。</li>
+        <li>時刻や件名を直して <b>保存</b> します。</li>
+        <li>「この回だけ変えるか、これ以降すべてか」を聞かれたら選びます。</li>
+      </ol>
+      <p class="after">
+        変えた回には <b>✏️</b> が付きます。ドラッグで動かした場合も「その回だけ」に効きます。
+        休みにしたい回は、その回を開いて <b>削除</b> します（他の回は残ります）。
+      </p>
+    </div>
+
+    <div class="task">
+      <h3>予定から「準備すること」を作る</h3>
+      <ol>
+        <li>予定を開きます。</li>
+        <li><b>＋ 準備することを追加</b> を押します。</li>
+        <li>やることの内容と期限を決めて保存します。</li>
+      </ol>
+      <p class="after">リマインドタブに追加され、どの予定のためのものかが残ります。</p>
+    </div>
+
+    <div class="task">
+      <h3>外部のカレンダーを重ねて表示する</h3>
+      <ol>
+        <li>カレンダー右上の <b>外部カレンダーの取り込み</b> を開きます。</li>
+        <li>公開されている <code>.ics</code> の URL と、表示名を入れます。</li>
+        <li><b>追加</b> を押すと、そのカレンダーの予定が重なって出ます。</li>
+      </ol>
+      <p class="after">読み取り専用です。こちらから編集はできません。</p>
+    </div>
+
+    <div class="task">
+      <h3>カレンダーアプリに取り込む</h3>
+      <ol>
+        <li>カレンダー右上の <b>カレンダーアプリ用に書き出す (.ics)</b> を押します。</li>
+        <li>できたファイルを Google カレンダーや iPhone のカレンダーで開きます。</li>
+      </ol>
+      <p class="after">「この回だけ変更・削除」も保たれます。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="todo">
+  <div class="wrap">
+    <h2>リマインド</h2>
+    <p class="where">⏰ タブ</p>
+
+    <div class="task">
+      <h3>やることを足す</h3>
+      <ol>
+        <li>上の入力欄に「やること・忘れたくないこと」を入れて確定します。</li>
+        <li>行を開いて、<b>期限</b>・<b>担当</b>・<b>通知</b>・<b>繰り返し</b>を決めます。</li>
+        <li>細かい手順があれば <b>小項目を追加</b> でチェックリストにします（「3/5」と進み具合が出ます）。</li>
+        <li><b>保存</b> を押します。</li>
+      </ol>
+      <p class="after">期限は自動で <b>期限切れ / 今日 / 3日以内 / それ以降 / 期限なし / 完了</b> に分類されます。</p>
+    </div>
+
+    <div class="task">
+      <h3>表示と絞り込みを変える</h3>
+      <ul>
+        <li>右上で <b>一覧</b> と <b>カンバン</b> を切り替えます</li>
+        <li><b>自分の担当</b> を押すと、自分の分だけに絞れます</li>
+        <li>タグで絞り込めます</li>
+        <li>カンバンでは、カードを列へドラッグして状態を変えます（完了の列に入れると完了になります）</li>
+      </ul>
+    </div>
+
+    <div class="task">
+      <h3>カレンダーにも出す</h3>
+      <ol>
+        <li>やることを開きます。</li>
+        <li><b>⏰ カレンダーに締切として出す</b> を選びます。</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="updates">
+  <div class="wrap">
+    <h2>更新・ゴミ箱</h2>
+    <p class="where">📣 タブ ／ ⚙️ 設定の中</p>
+
+    <div class="task">
+      <h3>何が変わったかを見る</h3>
+      <ol>
+        <li><b>📣 更新</b> タブを開きます。</li>
+        <li>付箋・予定・やること・コメント・参加者の動きが、新しい順に並びます。</li>
+        <li>上の <b>すべて / 🖍️ 付箋 / 📅 予定 / ⏰ やること / 💬 コメント / 👥 参加・権限</b> で絞り込めます。</li>
+      </ol>
+      <p class="after">未読には印が付きます。ログインが無いぶん、「いつ誰が入ってきたか」もここに残ります。</p>
+    </div>
+
+    <div class="task">
+      <h3>消したものを戻す <span class="tag">30 日以内</span></h3>
+      <ol>
+        <li>ヘッダーの <b>⚙️ ボードの設定</b> を開きます。</li>
+        <li><b>🗑 ゴミ箱</b> を選びます。</li>
+        <li>戻したいものの <b>戻す</b> を押します。</li>
+      </ol>
+      <p class="after">
+        <b>他の人が消したものも戻せます。</b>
+        完全に消したいときは <b>完全に消す</b> を選びます（こちらは元に戻せません）。
+      </p>
+    </div>
+
+    <div class="task">
+      <h3>いまの状態を控えておく</h3>
+      <ol>
+        <li><b>⚙️ ボードの設定 → 📸 保存した状態</b> を開きます。</li>
+        <li><b>📸 いまの状態を保存</b> を押します。</li>
+        <li>戻したくなったら、一覧から <b>この状態に戻す</b> を押します。</li>
+      </ol>
+      <p class="after">大きく作り替える前に控えておくと安心です。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="share">
+  <div class="wrap">
+    <h2>共有と権限</h2>
+    <p class="where">共有画面 ／ 👥 参加者</p>
+
+    <div class="task">
+      <h3>入り方をあとから変える</h3>
+      <ol>
+        <li>共有画面を開きます。</li>
+        <li><b>🚪 入り方</b> で リンク公開 / 合言葉つき / 承認制 を選び直します。</li>
+        <li>合言葉つきにする場合は、合言葉を入れます。</li>
+      </ol>
+    </div>
+
+    <div class="task">
+      <h3>参加を承認する <span class="tag">承認制のとき</span></h3>
+      <ol>
+        <li>申請が来ると、ヘッダーの <b>👥</b> に 🔴 が付きます。</li>
+        <li><b>👥 参加者</b> を開きます。</li>
+        <li><b>承認（編集できる）</b> か <b>承認（閲覧のみ）</b> を選びます。断るときは <b>却下</b>。</li>
+      </ol>
+      <p class="after">承認すると、相手の画面はリロードなしでボードに切り替わります。</p>
+    </div>
+
+    <div class="task">
+      <h3>配ったあとで締める</h3>
+      <p>共有画面の <b>🔐 参加の条件</b> でできます。</p>
+      <ul>
+        <li><b>新しく参加できる期限</b> を決める</li>
+        <li><b>人数の上限</b> を決める</li>
+        <li><b>受付を停止</b> する</li>
+        <li><b>🔄 リンクを作り直す</b> — 前の URL では入れなくなります</li>
+        <li><b>⛔ いったん全員を締め出す</b> — 参加者を全員外します</li>
+      </ul>
+      <p class="after">
+        期限は「新しく参加できる期限」です。すでに入っている人が使えなくなるわけではありません。
+      </p>
+    </div>
+
+    <div class="task">
+      <h3>特定の人の権限を変える・外す</h3>
+      <ol>
+        <li><b>👥 参加者</b> を開きます。</li>
+        <li>その人の行で <b>閲覧のみ / 編集できる</b> を切り替えます。</li>
+        <li>外すときは <b>アクセスを取り消す</b> を押します。</li>
+      </ol>
+      <p class="after">閲覧のみの人も、コメントと投票はできます。</p>
+    </div>
+
+    <div class="note">
+      <p>
+        <strong>オーナー復帰リンクは、自分だけで保管してください。</strong>
+        共有画面にある、端末を変えたときなどにボードの管理を取り戻すためのものです。
+        人に渡すものではありません。漏れたときは <b>復帰リンクを作り直す</b> で無効にできます。
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="settings">
+  <div class="wrap">
+    <h2>ボードの設定</h2>
+    <p class="where">⚙️ ボードの設定</p>
+
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>項目</th><th>できること</th></tr></thead>
+        <tbody>
+          <tr><td>名前の変更</td><td>ボード名を変える</td></tr>
+          <tr><td>ボードを複製</td><td>中身ごと写した別のボードを作る</td></tr>
+          <tr><td>ボードを終了 / 再開</td><td>読めるまま、書き込みだけを止める。あとから戻せる</td></tr>
+          <tr><td>🗑 ゴミ箱</td><td>消したものを 30 日以内に戻す</td></tr>
+          <tr><td>📸 保存した状態</td><td>「この時点」を控える・戻す</td></tr>
+          <tr><td>📊 書き出し・取り込み</td><td>予定とやることを CSV でやり取りする</td></tr>
+          <tr><td>🖨 印刷 / PDF 保存</td><td>いまの画面を紙面向けに整えて出す</td></tr>
+          <tr><td>このボードから退出</td><td>自分だけ抜ける</td></tr>
+          <tr><td>ボードを削除</td><td>作った人だけ。中身ごと消える</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="task">
+      <h3>CSV でやり取りする</h3>
+      <ol>
+        <li><b>⚙️ → 📊 書き出し・取り込み</b> を開きます。</li>
+        <li><b>書き出し</b>：予定・やることを CSV として保存します。Excel でそのまま開けます。</li>
+        <li><b>取り込み</b>：ファイルを選ぶと、「タイトル」と「開始」の列を見て取り込みます。</li>
+      </ol>
+      <p class="after">
+        取り込むファイルは <b>UTF-8</b> で保存してください。文字化けが見つかった場合は、
+        取り込まずに知らせます。
+      </p>
+    </div>
+
+    <div class="task">
+      <h3>別の端末でも同じ自分として使う <span class="tag">任意</span></h3>
+      <ol>
+        <li>ホーム画面の <b>📱 ほかの端末でも使う</b> を開きます。</li>
+        <li>メールアドレスを入れて <b>確認メールを送る</b> を押します。</li>
+        <li>届いたメールのリンクを、使いたい端末で開きます。</li>
+      </ol>
+      <p class="after">
+        使わなくてもボードの機能はすべて動きます。あとから <b>切り離す</b> ことも、
+        <b>自分のデータを消す</b> こともできます。
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="trouble">
+  <div class="wrap">
+    <h2>困ったとき</h2>
+    <p class="where">よくある詰まりどころ</p>
+
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>症状</th><th>見るところ</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>書き込めない</td>
+            <td>権限が「閲覧のみ」か、ボードが終了しています。👥 参加者 か ⚙️ 設定で確かめてください</td>
+          </tr>
+          <tr>
+            <td>付箋が見つからない</td>
+            <td><kbd>Ctrl</kbd>+<kbd>F</kbd> で探すか、<kbd>Shift</kbd>+<kbd>H</kbd> で全体を表示。消していたならゴミ箱に 30 日残っています</td>
+          </tr>
+          <tr>
+            <td>右クリックメニューが出ない</td>
+            <td>文字を入力している最中は、変換候補を優先するため出ません。付箋の外側で押してください</td>
+          </tr>
+          <tr>
+            <td>スマホで手描きができない</td>
+            <td>狭い画面では一覧表示になります。ツールバーの <b>🖍️ ボードで開く</b> に切り替えてください</td>
+          </tr>
+          <tr>
+            <td>取り消したいのに戻らない</td>
+            <td><kbd>Ctrl</kbd>+<kbd>Z</kbd> は<b>自分の操作だけ</b>に効きます。他の人の操作は、ゴミ箱か「保存した状態」から戻します</td>
+          </tr>
+          <tr>
+            <td>CSV が文字化けする</td>
+            <td>UTF-8 で保存し直してください。書き出したファイルは Excel でそのまま開けます</td>
+          </tr>
+          <tr>
+            <td>相手の画面に反映されない</td>
+            <td>通信が切れている可能性があります。ヘッダーに同期の状態が出ます。復帰すると自動で追いつきます</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note">
+      <p>
+        <strong>毎月 31 日の予定を書き出すときは注意してください。</strong>
+        このアプリは 2 月を 28 日に丸めますが、書き出した <code>.ics</code> を
+        Google カレンダーや Apple カレンダーで開くと、仕様の違いから 2 月が飛びます。
+      </p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>
+      みんなのボード — 技術資料は <a href="OVERVIEW.html">OVERVIEW.html</a>、
+      紹介ページは <a href="GUIDE.html">GUIDE.html</a>、
+      環境構築は <a href="SETUP.md">SETUP.md</a> にあります。
+      アプリ内では <kbd>?</kbd> でショートカット一覧を開けます。
+    </p>
+  </div>
+</footer>
+</body>
+</html>

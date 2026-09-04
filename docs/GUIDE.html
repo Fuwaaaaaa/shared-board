@@ -1,0 +1,1516 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="ホワイトボード・カレンダー・リマインドを、リンクの共有だけで。ログイン不要で始められる共同編集ボードの紹介ページです。">
+<!--
+  フォントの実体は fonts.gstatic.com にある。preconnect が無いと、
+  googleapis の CSS を読み終わってから gstatic への接続を始めることになり、
+  文字が出るまでに往復が 1 回ぶん余計にかかる。
+  gstatic 側は CORS 越しに取得するので crossorigin が要る。
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@700&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<title>みんなのボード — リンクを送るだけで、みんなで書ける</title>
+<style>
+  /* ---------------------------------------------------------------
+     ホワイトボードの道具箱から取った色。
+     付箋とペンの色は、アプリ本体で使っている値をそのまま使っている。
+     --------------------------------------------------------------- */
+  :root {
+    color-scheme: light;
+
+    --board: #fbfbfa;
+    --grid: #e6eaee;
+    --panel: #ffffff;
+    --panel-2: #f4f6f9;
+    --line: #dee4eb;
+    --line-2: #edf1f5;
+    --ink: #1c2430;
+    --ink-2: #48556a;
+    --muted: #78849a;
+    --accent: #c67d12;
+    --accent-ink: #8a5405;
+    --accent-soft: #fdf4e0;
+
+    /* 付箋とペン（テーマが変わっても同じ色） */
+    --sy: #fef3c7; --syb: #f5c542;
+    --sb: #dbeafe; --sbb: #7fb0f0;
+    --sg: #dcfce7; --sgb: #7cd6a0;
+    --sp: #ede9fe; --spb: #b3a4f5;
+    --sk: #fce7f3; --skb: #f0a6cd;
+    --mark: #fef3c7;
+    --pen-red: #ef4444;
+    --pen-blue: #3b82f6;
+    --pen-green: #22c55e;
+    --pen-purple: #a855f7;
+    --on-sticky: #2b3444;
+
+    --shadow-s: 0 1px 2px rgba(28, 36, 48, .05);
+    --shadow-m: 0 1px 2px rgba(28, 36, 48, .05), 0 10px 28px -16px rgba(28, 36, 48, .35);
+
+    --sans: "Zen Kaku Gothic New", "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, system-ui, sans-serif;
+    --display: "Zen Maru Gothic", "Hiragino Maru Gothic ProN", "Zen Kaku Gothic New", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+
+    --col: 1000px;
+    --col-wide: 1180px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --board: #11151b;
+      --grid: #1f262f;
+      --panel: #171d25;
+      --panel-2: #1d242e;
+      --line: #2c3540;
+      --line-2: #232b35;
+      --ink: #e9eef4;
+      --ink-2: #b6c2d0;
+      --muted: #8a97a8;
+      --accent: #f0ab3f;
+      --accent-ink: #f6c775;
+      --accent-soft: #2a2114;
+      --mark: rgba(240, 171, 63, .30);
+      --shadow-s: 0 1px 2px rgba(0, 0, 0, .45);
+      --shadow-m: 0 1px 2px rgba(0, 0, 0, .45), 0 14px 34px -18px rgba(0, 0, 0, .85);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --board: #11151b;
+    --grid: #1f262f;
+    --panel: #171d25;
+    --panel-2: #1d242e;
+    --line: #2c3540;
+    --line-2: #232b35;
+    --ink: #e9eef4;
+    --ink-2: #b6c2d0;
+    --muted: #8a97a8;
+    --accent: #f0ab3f;
+    --accent-ink: #f6c775;
+    --accent-soft: #2a2114;
+    --mark: rgba(240, 171, 63, .30);
+    --shadow-s: 0 1px 2px rgba(0, 0, 0, .45);
+    --shadow-m: 0 1px 2px rgba(0, 0, 0, .45), 0 14px 34px -18px rgba(0, 0, 0, .85);
+  }
+
+  /* ---------------------------------------------------------------
+     下地。ボードの面に見えるよう、うっすらドットを敷く
+     --------------------------------------------------------------- */
+  body {
+    background-color: var(--board);
+    background-image: radial-gradient(var(--grid) 1px, transparent 1px);
+    background-size: 22px 22px;
+    background-position: -1px -1px;
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.85;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+
+  h1, h2, h3 { font-family: var(--display); font-weight: 700; text-wrap: balance; line-height: 1.4; margin: 0; }
+  p { margin: 0; }
+  ul { margin: 0; padding: 0; list-style: none; }
+
+  a { color: var(--accent-ink); text-underline-offset: 3px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+
+  .wrap { width: min(100% - 40px, var(--col)); margin-inline: auto; }
+  .wrap-wide { width: min(100% - 40px, var(--col-wide)); margin-inline: auto; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--accent-ink);
+    margin: 0;
+  }
+
+  /* ---------------------------------------------------------------
+     見出し
+     --------------------------------------------------------------- */
+  .hero { padding: clamp(56px, 9vw, 104px) 0 clamp(40px, 6vw, 72px); }
+  .hero-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+    gap: clamp(32px, 5vw, 64px);
+    align-items: center;
+  }
+  .hero h1 {
+    font-size: clamp(34px, 5.4vw, 60px);
+    line-height: 1.28;
+    letter-spacing: -.01em;
+    margin: 14px 0 0;
+  }
+  .hero h1 .mark {
+    background: linear-gradient(transparent 62%, var(--mark) 62%, var(--mark) 94%, transparent 94%);
+    padding-inline: 2px;
+  }
+  .hero-sub {
+    margin: 16px 0 0;
+    font-size: clamp(17px, 1.9vw, 22px);
+    font-weight: 700;
+    color: var(--accent-ink);
+    letter-spacing: -.01em;
+  }
+  .hero .lead {
+    margin-top: 20px;
+    font-size: clamp(15px, 1.3vw, 17px);
+    color: var(--ink-2);
+    max-width: 34em;
+  }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 26px; }
+  .chip {
+    font-size: 13px;
+    padding: 5px 13px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--ink-2);
+    box-shadow: var(--shadow-s);
+  }
+
+  /* ---------------------------------------------------------------
+     セクション
+     --------------------------------------------------------------- */
+  section { padding-block: clamp(44px, 6vw, 76px); }
+  .section-head { max-width: 40em; }
+  .section-head h2 { font-size: clamp(24px, 3vw, 32px); margin-top: 10px; }
+  .section-head p { margin-top: 12px; color: var(--ink-2); }
+
+  .rule { height: 1px; background: var(--line); border: 0; margin: 0; }
+
+  /* 用途カード */
+  .scenes {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 16px;
+    margin-top: 34px;
+  }
+  .scene {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 22px;
+    box-shadow: var(--shadow-s);
+  }
+  .scene h3 { font-size: 17px; }
+  .scene p { margin-top: 8px; font-size: 14.5px; color: var(--ink-2); line-height: 1.8; }
+  .scene .tape {
+    display: block;
+    width: 46px; height: 5px;
+    border-radius: 3px;
+    margin-bottom: 16px;
+  }
+
+  /* 道具（ホワイトボード・カレンダー・リマインド） */
+  .tool {
+    display: grid;
+    grid-template-columns: minmax(0, 4fr) minmax(0, 5fr);
+    gap: clamp(28px, 4.5vw, 60px);
+    align-items: center;
+    padding-block: clamp(34px, 4.5vw, 54px);
+  }
+  .tool + .tool { border-top: 1px solid var(--line-2); }
+  .tool.flip > .tool-figure { order: -1; }
+  .tool h3 { font-size: clamp(21px, 2.4vw, 27px); margin-top: 10px; }
+  .tool > div > p { margin-top: 12px; color: var(--ink-2); font-size: 15px; }
+  .feat { margin-top: 22px; display: grid; gap: 11px; }
+  .feat li { position: relative; padding-left: 26px; font-size: 15px; line-height: 1.75; }
+  .feat li::before {
+    content: "";
+    position: absolute;
+    left: 2px; top: 11px;
+    width: 9px; height: 9px;
+    border-radius: 3px;
+    background: var(--dot, var(--syb));
+  }
+  .feat li b { font-weight: 700; }
+  kbd {
+    font-family: var(--mono);
+    font-size: .82em;
+    border: 1px solid var(--line);
+    border-bottom-width: 2px;
+    border-radius: 5px;
+    padding: 1px 6px;
+    background: var(--panel-2);
+    color: var(--ink);
+    white-space: nowrap;
+  }
+
+  .figure {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 14px;
+    box-shadow: var(--shadow-m);
+    overflow: hidden;
+  }
+  .figure figcaption {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .04em;
+    color: var(--muted);
+    padding: 10px 4px 2px;
+  }
+  /* fill は svg 側に置いて「継承」にする。
+     .mock text {} のように直接狙うと、CSS 宣言は SVG の
+     fill="..." 属性より強いため、図の中の白抜き文字が全部つぶれる */
+  .mock { display: block; width: 100%; height: auto; font-family: var(--sans); fill: var(--ink); }
+  .mock .panel { fill: var(--panel); }
+  .mock .surf { fill: var(--panel-2); }
+  .mock .stroke-line { stroke: var(--line); fill: none; }
+  .mock .fill-line { fill: var(--line); }
+  .mock .fill-line-2 { fill: var(--line-2); }
+  .mock .mut { fill: var(--muted); }
+  .mock .sticky-txt { fill: var(--on-sticky); }
+
+  /* 同時作業・共有 */
+  .split {
+    display: grid;
+    grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+    gap: clamp(28px, 4.5vw, 60px);
+    align-items: center;
+    margin-top: 34px;
+  }
+  .plain { display: grid; gap: 14px; margin-top: 24px; }
+  .plain li { font-size: 15px; color: var(--ink-2); line-height: 1.75; }
+  .plain li b { color: var(--ink); font-weight: 700; }
+
+  /* はじめかた — ここだけは本当に順番があるので番号を振る */
+  .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 18px; margin-top: 34px; counter-reset: s; }
+  .step {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 24px 22px;
+    box-shadow: var(--shadow-s);
+    position: relative;
+  }
+  .step::before {
+    counter-increment: s;
+    content: counter(s);
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 500;
+    display: grid;
+    place-items: center;
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+    margin-bottom: 14px;
+  }
+  .step h3 { font-size: 17px; }
+  .step p { margin-top: 8px; font-size: 14.5px; color: var(--ink-2); line-height: 1.8; }
+
+  /* 知っておくこと */
+  .caveats {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: clamp(24px, 3.5vw, 38px);
+    margin-top: 30px;
+    display: grid;
+    gap: 18px;
+  }
+  .caveat { display: grid; grid-template-columns: auto 1fr; gap: 16px; align-items: start; }
+  .caveat .pin { width: 10px; height: 10px; border-radius: 50%; margin-top: 12px; background: var(--muted); }
+  .caveat p { font-size: 14.5px; color: var(--ink-2); line-height: 1.8; }
+  .caveat b { color: var(--ink); }
+
+  footer {
+    border-top: 1px solid var(--line);
+    padding-block: 40px 56px;
+    color: var(--muted);
+    font-size: 14px;
+  }
+  footer .foot { display: flex; flex-wrap: wrap; gap: 10px 26px; align-items: baseline; }
+  footer .name { font-family: var(--display); font-size: 17px; color: var(--ink); }
+
+  /* ---------------------------------------------------------------
+     カーソルが少しだけ動く。ボードは「誰かが今いる」場所なので
+     --------------------------------------------------------------- */
+  @keyframes drift-a {
+    0%, 100% { transform: translate(0, 0); }
+    50% { transform: translate(16px, -11px); }
+  }
+  @keyframes drift-b {
+    0%, 100% { transform: translate(0, 0); }
+    50% { transform: translate(-13px, 9px); }
+  }
+  .cursor-a { animation: drift-a 9s ease-in-out infinite; }
+  .cursor-b { animation: drift-b 11s ease-in-out infinite; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .cursor-a, .cursor-b { animation: none; }
+  }
+
+  @media (max-width: 860px) {
+    .hero-grid, .tool, .split { grid-template-columns: minmax(0, 1fr); }
+    .tool.flip > .tool-figure { order: 0; }
+    .hero { padding-top: 44px; }
+  }
+</style>
+<style>
+  /* ブラウザ既定の余白を消す（ページ側の CSS が下地を全部描くため） */
+  body { margin: 0; }
+  img { max-width: 100%; }
+
+  /*
+    キーボードで来た人が、長い本文を飛ばして読み始められるようにする。
+    ふだんは画面の外に置き、Tab でフォーカスが来たときだけ現れる。
+  */
+  .skip {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 100;
+    transform: translateY(-120%);
+    padding: 12px 20px;
+    background: var(--panel);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: 0 0 10px 0;
+    font-weight: 700;
+    text-decoration: none;
+  }
+  .skip:focus { transform: translateY(0); }
+
+  /* 章のリンク。脚注の並びとして footer の中に置く */
+  .foot-nav ul {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 20px;
+    margin: 0 0 14px;
+    padding: 0;
+    list-style: none;
+  }
+  .foot-nav a { color: var(--ink-2); text-decoration: none; }
+  .foot-nav a:hover,
+  .foot-nav a:focus-visible { color: var(--accent-ink); text-decoration: underline; }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">本文へスキップ</a>
+
+<div class="page">
+
+  <!-- ============================================================ -->
+  <!--  見出し                                                       -->
+  <!-- ============================================================ -->
+  <header class="hero">
+    <div class="wrap-wide hero-grid">
+      <div>
+        <p class="eyebrow">Shared board</p>
+        <h1>リンクを送るだけで、<br><span class="mark">みんなで書ける。</span></h1>
+        <p class="hero-sub">話したことが、そのまま予定とやることになる。</p>
+        <p class="lead">
+          ホワイトボードと、カレンダーと、やることリスト。
+          3つをひとつのページにまとめた、共同作業のための場所です。
+          ログインはありません。名前を入れたら、その場で始められます。
+        </p>
+        <div class="chips">
+          <span class="chip">ログイン不要</span>
+          <span class="chip">書いた瞬間に相手の画面へ</span>
+          <span class="chip">付箋がそのまま予定になる</span>
+          <span class="chip">右クリックで手が届く</span>
+          <span class="chip">スマホでも使える</span>
+        </div>
+      </div>
+
+      <figure class="figure" style="margin:0">
+        <svg class="mock" viewBox="0 0 640 420" role="img" aria-label="ボードの画面イメージ。上にタブが並び、下に付箋を貼ったホワイトボードが広がっている">
+          <rect x="1" y="1" width="638" height="418" rx="13" class="panel"/>
+          <rect x="1.5" y="1.5" width="637" height="417" rx="12.5" class="stroke-line"/>
+
+          <!-- ヘッダー -->
+          <rect x="1" y="1" width="638" height="52" rx="13" class="panel"/>
+          <path d="M1 53 H639" class="stroke-line"/>
+          <text x="22" y="26" font-size="14" font-weight="700">9月の部活</text>
+          <text x="22" y="43" font-size="10.5" class="mut">🌐 リンク公開</text>
+
+          <g font-size="11.5">
+            <rect x="118" y="14" width="92" height="26" rx="8" fill="var(--ink)"/>
+            <text x="164" y="31" text-anchor="middle" fill="var(--panel)">🖍️ ボード</text>
+            <text x="228" y="31" class="mut">📅 カレンダー</text>
+            <text x="318" y="31" class="mut">⏰ リマインド</text>
+            <text x="404" y="31" class="mut">📣 更新</text>
+            <circle cx="446" cy="21" r="6" fill="var(--pen-red)"/>
+            <text x="446" y="24.5" font-size="8" text-anchor="middle" fill="#fff">3</text>
+          </g>
+
+          <g>
+            <circle cx="486" cy="27" r="11" fill="var(--pen-blue)"/>
+            <text x="486" y="31" font-size="10" text-anchor="middle" fill="#fff">ゆ</text>
+            <circle cx="504" cy="27" r="11" fill="var(--pen-green)"/>
+            <text x="504" y="31" font-size="10" text-anchor="middle" fill="#fff">け</text>
+            <circle cx="522" cy="27" r="11" fill="var(--pen-purple)"/>
+            <text x="522" y="31" font-size="10" text-anchor="middle" fill="#fff">み</text>
+          </g>
+          <rect x="548" y="11" width="70" height="24" rx="7" fill="var(--accent-soft)"/>
+          <text x="583" y="27" font-size="11" text-anchor="middle" fill="var(--accent-ink)">🔗 共有</text>
+          <!-- 書いたものが届いているか -->
+          <text x="583" y="46" font-size="9" text-anchor="middle" class="mut">✓ 保存済み</text>
+
+          <!-- ボード面 -->
+          <rect x="1" y="53" width="638" height="366" class="surf"/>
+          <g class="fill-line-2">
+            <g>
+              <circle cx="40" cy="90" r="1.4"/><circle cx="80" cy="90" r="1.4"/><circle cx="120" cy="90" r="1.4"/>
+              <circle cx="160" cy="90" r="1.4"/><circle cx="200" cy="90" r="1.4"/><circle cx="240" cy="90" r="1.4"/>
+              <circle cx="280" cy="90" r="1.4"/><circle cx="320" cy="90" r="1.4"/><circle cx="360" cy="90" r="1.4"/>
+              <circle cx="400" cy="90" r="1.4"/><circle cx="440" cy="90" r="1.4"/><circle cx="480" cy="90" r="1.4"/>
+              <circle cx="520" cy="90" r="1.4"/><circle cx="560" cy="90" r="1.4"/><circle cx="600" cy="90" r="1.4"/>
+            </g>
+            <g transform="translate(0,40)">
+              <circle cx="40" cy="90" r="1.4"/><circle cx="80" cy="90" r="1.4"/><circle cx="120" cy="90" r="1.4"/>
+              <circle cx="160" cy="90" r="1.4"/><circle cx="200" cy="90" r="1.4"/><circle cx="240" cy="90" r="1.4"/>
+              <circle cx="280" cy="90" r="1.4"/><circle cx="320" cy="90" r="1.4"/><circle cx="360" cy="90" r="1.4"/>
+              <circle cx="400" cy="90" r="1.4"/><circle cx="440" cy="90" r="1.4"/><circle cx="480" cy="90" r="1.4"/>
+              <circle cx="520" cy="90" r="1.4"/><circle cx="560" cy="90" r="1.4"/><circle cx="600" cy="90" r="1.4"/>
+            </g>
+            <g transform="translate(0,80)">
+              <circle cx="40" cy="90" r="1.4"/><circle cx="80" cy="90" r="1.4"/><circle cx="120" cy="90" r="1.4"/>
+              <circle cx="160" cy="90" r="1.4"/><circle cx="200" cy="90" r="1.4"/><circle cx="240" cy="90" r="1.4"/>
+              <circle cx="280" cy="90" r="1.4"/><circle cx="320" cy="90" r="1.4"/><circle cx="360" cy="90" r="1.4"/>
+              <circle cx="400" cy="90" r="1.4"/><circle cx="440" cy="90" r="1.4"/><circle cx="480" cy="90" r="1.4"/>
+              <circle cx="520" cy="90" r="1.4"/><circle cx="560" cy="90" r="1.4"/><circle cx="600" cy="90" r="1.4"/>
+            </g>
+            <g transform="translate(0,160)">
+              <circle cx="40" cy="90" r="1.4"/><circle cx="80" cy="90" r="1.4"/><circle cx="120" cy="90" r="1.4"/>
+              <circle cx="160" cy="90" r="1.4"/><circle cx="200" cy="90" r="1.4"/><circle cx="240" cy="90" r="1.4"/>
+              <circle cx="280" cy="90" r="1.4"/><circle cx="320" cy="90" r="1.4"/><circle cx="360" cy="90" r="1.4"/>
+              <circle cx="400" cy="90" r="1.4"/><circle cx="440" cy="90" r="1.4"/><circle cx="480" cy="90" r="1.4"/>
+              <circle cx="520" cy="90" r="1.4"/><circle cx="560" cy="90" r="1.4"/><circle cx="600" cy="90" r="1.4"/>
+            </g>
+            <g transform="translate(0,240)">
+              <circle cx="40" cy="90" r="1.4"/><circle cx="80" cy="90" r="1.4"/><circle cx="120" cy="90" r="1.4"/>
+              <circle cx="160" cy="90" r="1.4"/><circle cx="200" cy="90" r="1.4"/><circle cx="240" cy="90" r="1.4"/>
+              <circle cx="280" cy="90" r="1.4"/><circle cx="320" cy="90" r="1.4"/><circle cx="360" cy="90" r="1.4"/>
+              <circle cx="400" cy="90" r="1.4"/><circle cx="440" cy="90" r="1.4"/><circle cx="480" cy="90" r="1.4"/>
+              <circle cx="520" cy="90" r="1.4"/><circle cx="560" cy="90" r="1.4"/><circle cx="600" cy="90" r="1.4"/>
+            </g>
+          </g>
+
+          <!-- 枠（フレーム） -->
+          <rect x="34" y="80" width="290" height="200" rx="10" fill="none" stroke="var(--sbb)" stroke-width="1.5" stroke-dasharray="5 4"/>
+          <rect x="34" y="66" width="96" height="20" rx="6" fill="var(--sb)"/>
+          <text x="45" y="80" font-size="11" class="sticky-txt">今週やること</text>
+
+          <!-- つなぐ線 -->
+          <path d="M172 148 C205 148 205 196 236 196" fill="none" stroke="var(--pen-blue)" stroke-width="1.8"/>
+          <path d="M231 191 L240 196 L231 201 Z" fill="var(--pen-blue)"/>
+
+          <!-- 付箋 -->
+          <g transform="rotate(-1.6 110 140)">
+            <rect x="54" y="106" width="118" height="76" rx="5" fill="var(--sy)" stroke="var(--syb)"/>
+            <text x="66" y="130" font-size="12" class="sticky-txt">コート予約を</text>
+            <text x="66" y="148" font-size="12" class="sticky-txt">出す</text>
+            <text x="66" y="171" font-size="10" class="sticky-txt" opacity=".65">ゆうき</text>
+          </g>
+          <g transform="rotate(1.4 296 214)">
+            <rect x="240" y="160" width="112" height="76" rx="5" fill="var(--sg)" stroke="var(--sgb)"/>
+            <text x="252" y="184" font-size="12" class="sticky-txt">部費の集金</text>
+            <text x="252" y="202" font-size="12" class="sticky-txt">9/20 まで</text>
+            <rect x="252" y="212" width="42" height="17" rx="8.5" fill="#fff" opacity=".72"/>
+            <text x="273" y="224" font-size="10" text-anchor="middle" class="sticky-txt">👍 4</text>
+          </g>
+          <g transform="rotate(-2.4 448 132)">
+            <rect x="396" y="96" width="112" height="72" rx="5" fill="var(--sk)" stroke="var(--skb)"/>
+            <text x="408" y="120" font-size="12" class="sticky-txt">新入生の</text>
+            <text x="408" y="138" font-size="12" class="sticky-txt">歓迎会どうする</text>
+          </g>
+          <g transform="rotate(2 480 258)">
+            <rect x="424" y="222" width="112" height="72" rx="5" fill="var(--sp)" stroke="var(--spb)"/>
+            <text x="436" y="246" font-size="12" class="sticky-txt">合宿の候補地</text>
+            <text x="436" y="264" font-size="12" class="sticky-txt">3案あります</text>
+          </g>
+
+          <!-- 手描き -->
+          <path d="M104 316 C142 288 176 340 214 306 S284 296 318 322" fill="none" stroke="var(--pen-red)" stroke-width="2.6" stroke-linecap="round"/>
+          <text x="336" y="326" font-size="12" fill="var(--pen-red)">ここ大事</text>
+
+          <!-- いま見ている人のカーソル -->
+          <g class="cursor-a">
+            <path d="M372 176 L372 202 L379 195 L384 205 L389 202 L384 192 L393 192 Z" fill="var(--pen-green)"/>
+            <rect x="392" y="182" width="52" height="19" rx="6" fill="var(--pen-green)"/>
+            <text x="418" y="195" font-size="10.5" text-anchor="middle" fill="#fff">けいこ</text>
+          </g>
+          <g class="cursor-b">
+            <path d="M196 252 L196 278 L203 271 L208 281 L213 278 L208 268 L217 268 Z" fill="var(--pen-purple)"/>
+            <rect x="216" y="258" width="46" height="19" rx="6" fill="var(--pen-purple)"/>
+            <text x="239" y="271" font-size="10.5" text-anchor="middle" fill="#fff">みなみ</text>
+          </g>
+        </svg>
+        <figcaption>画面イメージ — 3人が同時に開いているところ</figcaption>
+      </figure>
+    </div>
+  </header>
+
+  <hr class="rule">
+
+  <!-- ============================================================ -->
+  <!--  こんなときに                                                 -->
+  <!-- ============================================================ -->
+  <main id="main">
+
+  <section id="scenes">
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">Who it is for</p>
+        <h2>連絡網を作るほどではないけれど、口頭では回らない。</h2>
+        <p>そのくらいの規模の集まりに向いています。誰かがまとめ役になって全部を引き受けなくても、それぞれが自分で書き込めます。</p>
+      </div>
+
+      <div class="scenes">
+        <article class="scene">
+          <span class="tape" style="background:var(--syb)"></span>
+          <h3>部活・サークル</h3>
+          <p>次の練習日、持ち物、当番。カレンダーに入れておけば、前の日に通知が出ます。</p>
+        </article>
+        <article class="scene">
+          <span class="tape" style="background:var(--sgb)"></span>
+          <h3>家族</h3>
+          <p>買い物メモ、旅行の日程、ゴミ出し当番。冷蔵庫に貼る紙のかわりに。</p>
+        </article>
+        <article class="scene">
+          <span class="tape" style="background:var(--sbb)"></span>
+          <h3>小さなお店</h3>
+          <p>シフトの希望日、発注のメモ、次に入る人への申し送り。</p>
+        </article>
+        <article class="scene">
+          <span class="tape" style="background:var(--spb)"></span>
+          <h3>チームのふりかえり</h3>
+          <p>KPT やカンバンの雛形を選べば、付箋を貼るところから始められます。</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule">
+
+  <!-- ============================================================ -->
+  <!--  3つの道具                                                    -->
+  <!-- ============================================================ -->
+  <section id="tools">
+    <div class="wrap-wide">
+      <div class="section-head" style="width:min(100%,40em)">
+        <p class="eyebrow">Three tools, one page</p>
+        <h2>上のタブを切り替えるだけ。<br>3つは同じボードの中にあります。</h2>
+        <p>付箋に書いたことを、その場でカレンダーとやることリストに送れます。別のサービスを行き来する必要はありません。ほかに、ボードで起きたことがまとまる<b>更新</b>タブと、「誰にいくつ残っているか」「今週は何があるか」だけを出す<b>ダッシュボード</b>もあります。</p>
+      </div>
+
+      <!-- ホワイトボード -->
+      <div class="tool" style="--dot:var(--syb)">
+        <div>
+          <p class="eyebrow">01 — Whiteboard</p>
+          <h3>ホワイトボード</h3>
+          <p>思いついたことを、まず置いておく場所。並べ替えているうちに、話がまとまります。</p>
+          <ul class="feat">
+            <li><b>付箋</b>を貼る、動かす、大きさを変える。6色から選べます</li>
+            <li><b>ペンと図形</b>で囲んだり、矢印を引いたり。画像も貼れます</li>
+            <li>範囲をドラッグで<b>まとめて囲んで</b>、整列させたり色を揃えたり</li>
+            <li>付箋に <b>👍</b> を入れて、多いものから優先順位を決められます</li>
+            <li>付箋を選んで <b>⏰ やること</b> / <b>📅 予定</b> / <b>⏰ 締切</b> に。担当と期限もその場で</li>
+            <li>スマホでは<b>付箋の一覧</b>に切り替わります。タップで編集、▲▼ で並べ替え</li>
+            <li><b>右クリック</b>すると、その場所・その付箋にできることが出ます</li>
+            <li>付箋を<b>長押しして上下に動かす</b>と、文字の大きさを変えられます</li>
+            <li><kbd>Ctrl</kbd>+<kbd>Z</kbd> で自分の操作を取り消せます。消したものは<b>ゴミ箱</b>から戻せます</li>
+            <li>ボード全体を、あるいは<b>選んだ付箋だけを</b>画像にして保存・コピーできます</li>
+          </ul>
+        </div>
+
+        <figure class="figure tool-figure" style="margin:0">
+          <svg class="mock" viewBox="0 0 560 340" role="img" aria-label="ホワイトボードの画面イメージ。左に道具のならんだ列、右に付箋と手描きの線">
+            <rect x="1" y="1" width="558" height="338" rx="11" class="surf"/>
+            <rect x="1.5" y="1.5" width="557" height="337" rx="10.5" class="stroke-line"/>
+
+            <!-- 道具箱 -->
+            <rect x="14" y="14" width="46" height="264" rx="10" class="panel"/>
+            <rect x="14.5" y="14.5" width="45" height="263" rx="9.5" class="stroke-line"/>
+            <g font-size="15" text-anchor="middle">
+              <rect x="21" y="21" width="32" height="32" rx="8" fill="var(--ink)"/>
+              <text x="37" y="43" fill="var(--panel)">📌</text>
+              <text x="37" y="80" >🔤</text>
+              <text x="37" y="117">🖊️</text>
+              <text x="37" y="154">📐</text>
+              <text x="37" y="191">🖼️</text>
+              <text x="37" y="228">🗳️</text>
+              <text x="37" y="265">📥</text>
+            </g>
+
+            <!-- ペンの色 -->
+            <g>
+              <circle cx="88" cy="30" r="8" fill="var(--pen-red)"/>
+              <circle cx="112" cy="30" r="8" fill="var(--pen-blue)"/>
+              <circle cx="136" cy="30" r="8" fill="var(--pen-green)"/>
+              <circle cx="160" cy="30" r="8" fill="var(--pen-purple)"/>
+              <circle cx="184" cy="30" r="8" fill="#f59e0b"/>
+              <circle cx="208" cy="30" r="8" fill="var(--ink)"/>
+              <circle cx="208" cy="30" r="11.5" fill="none" stroke="var(--ink)" stroke-width="1.5"/>
+            </g>
+
+            <!-- 付箋 -->
+            <g transform="rotate(-1.8 156 118)">
+              <rect x="90" y="76" width="132" height="84" rx="5" fill="var(--sy)" stroke="var(--syb)"/>
+              <text x="103" y="102" font-size="12.5" class="sticky-txt">アンケートの</text>
+              <text x="103" y="121" font-size="12.5" class="sticky-txt">項目を決める</text>
+              <rect x="103" y="132" width="46" height="18" rx="9" fill="#fff" opacity=".7"/>
+              <text x="126" y="145" font-size="10" text-anchor="middle" class="sticky-txt">#準備</text>
+            </g>
+            <g transform="rotate(1.2 314 116)">
+              <rect x="248" y="74" width="132" height="84" rx="5" fill="var(--sb)" stroke="var(--sbb)"/>
+              <text x="261" y="100" font-size="12.5" class="sticky-txt">告知の文面</text>
+              <text x="261" y="119" font-size="12.5" class="sticky-txt">たたき台</text>
+              <rect x="261" y="130" width="48" height="18" rx="9" fill="#fff" opacity=".7"/>
+              <text x="285" y="143" font-size="10" text-anchor="middle" class="sticky-txt">👍 6</text>
+            </g>
+            <g transform="rotate(-2.6 462 132)">
+              <rect x="400" y="88" width="126" height="84" rx="5" fill="var(--sg)" stroke="var(--sgb)"/>
+              <text x="412" y="114" font-size="12.5" class="sticky-txt">写真をあとで</text>
+              <text x="412" y="133" font-size="12.5" class="sticky-txt">差し替える</text>
+            </g>
+
+            <!-- 手描きの丸と矢印 -->
+            <ellipse cx="180" cy="232" rx="72" ry="38" fill="none" stroke="var(--pen-red)" stroke-width="2.4"/>
+            <text x="180" y="238" font-size="13" text-anchor="middle" fill="var(--pen-red)">まずここから</text>
+            <path d="M262 226 L338 210" fill="none" stroke="var(--ink)" stroke-width="2"/>
+            <path d="M332 204 L344 209 L333 216 Z" fill="var(--ink)"/>
+            <rect x="350" y="192" width="176" height="60" rx="8" fill="none" stroke="var(--ink)" stroke-width="2"/>
+            <text x="438" y="228" font-size="13" text-anchor="middle">来週の会議で決める</text>
+
+            <!-- 選択範囲 -->
+            <rect x="82" y="66" width="308" height="104" rx="6" fill="var(--pen-blue)" opacity=".07"/>
+            <rect x="82" y="66" width="308" height="104" rx="6" fill="none" stroke="var(--pen-blue)" stroke-dasharray="4 3"/>
+            <rect x="82" y="290" width="132" height="30" rx="8" class="panel"/>
+            <rect x="82.5" y="290.5" width="131" height="29" rx="7.5" class="stroke-line"/>
+            <text x="148" y="310" font-size="11.5" text-anchor="middle">2件を選択中 ⇥ 整列</text>
+          </svg>
+          <figcaption>画面イメージ — 付箋・手描き・まとめて選択</figcaption>
+        </figure>
+      </div>
+
+      <!-- カレンダー -->
+      <div class="tool flip" style="--dot:var(--sbb)">
+        <div>
+          <p class="eyebrow">02 — Calendar</p>
+          <h3>カレンダー</h3>
+          <p>月・週・リストの3つの見え方。ドラッグで日や時間帯を動かせます。</p>
+          <ul class="feat">
+            <li><b>日本の祝日</b>が入っています。振替休日も出ます</li>
+            <li><b>毎週・毎月の繰り返し</b>に対応。定例を登録するのは一度だけ</li>
+            <li>繰り返しのうち<b>「この回だけ」</b>ずらす・休むもできます。<br>今週だけ午後、祝日の回だけ休み、といった調整が効きます</li>
+            <li><b>15分前・1時間前</b>などの事前通知</li>
+            <li>Google カレンダーや iPhone に<b>取り込める形</b>で書き出せます</li>
+            <li><b>📅 予定</b>と<b>⏰ 締切</b>を分けて置けます。締切は終日の欄に <b>⏰ …〆</b> と控えめに並びます</li>
+            <li>やることリストの期限も、うすい枠で重ねて表示されます</li>
+            <li>予定を開いて <b>＋ 準備することを追加</b>。やることリストに送れます</li>
+            <li>付箋から作った予定には <b>「この付箋から生まれました」</b> が出ます。元が変わったときは、反映するか選べます</li>
+          </ul>
+        </div>
+
+        <figure class="figure tool-figure" style="margin:0">
+          <svg class="mock" viewBox="0 0 560 380" role="img" aria-label="カレンダーの月表示の画面イメージ。予定が入った9月のカレンダー">
+            <rect x="1" y="1" width="558" height="378" rx="11" class="panel"/>
+            <rect x="1.5" y="1.5" width="557" height="377" rx="10.5" class="stroke-line"/>
+
+            <text x="20" y="34" font-size="15" font-weight="700">2026年 9月</text>
+            <rect x="112" y="19" width="44" height="22" rx="7" class="surf"/>
+            <text x="134" y="34" font-size="11" text-anchor="middle" class="mut">今日</text>
+            <g font-size="11">
+              <rect x="404" y="18" width="46" height="24" rx="7" fill="var(--ink)"/>
+              <text x="427" y="34" text-anchor="middle" fill="var(--panel)">月</text>
+              <text x="470" y="34" class="mut">週</text>
+              <text x="508" y="34" class="mut">リスト</text>
+            </g>
+            <path d="M1 56 H559" class="stroke-line"/>
+
+            <!-- 曜日 -->
+            <g font-size="11" text-anchor="middle">
+              <text x="53" y="76" fill="var(--pen-red)">日</text>
+              <text x="130" y="76" class="mut">月</text>
+              <text x="207" y="76" class="mut">火</text>
+              <text x="284" y="76" class="mut">水</text>
+              <text x="361" y="76" class="mut">木</text>
+              <text x="438" y="76" class="mut">金</text>
+              <text x="515" y="76" fill="var(--pen-blue)">土</text>
+            </g>
+
+            <!-- 罫線 -->
+            <g class="stroke-line">
+              <path d="M15 86 H545"/><path d="M15 158 H545"/><path d="M15 230 H545"/><path d="M15 302 H545"/><path d="M15 366 H545"/>
+              <path d="M15 86 V366"/><path d="M92 86 V366"/><path d="M169 86 V366"/><path d="M246 86 V366"/>
+              <path d="M323 86 V366"/><path d="M400 86 V366"/><path d="M477 86 V366"/><path d="M545 86 V366"/>
+            </g>
+
+            <!-- 日付 -->
+            <g font-size="10.5" class="mut">
+              <text x="22" y="102" fill="var(--pen-red)">6</text><text x="99" y="102">7</text><text x="176" y="102">8</text>
+              <text x="253" y="102">9</text><text x="330" y="102">10</text><text x="407" y="102">11</text>
+              <text x="484" y="102" fill="var(--pen-blue)">12</text>
+
+              <text x="22" y="174" fill="var(--pen-red)">13</text><text x="99" y="174">14</text><text x="176" y="174">15</text>
+              <text x="253" y="174">16</text><text x="330" y="174">17</text><text x="407" y="174">18</text>
+              <text x="484" y="174" fill="var(--pen-blue)">19</text>
+
+              <text x="22" y="246" fill="var(--pen-red)">20</text><text x="176" y="246">22</text>
+              <text x="253" y="246">23</text><text x="330" y="246">24</text><text x="407" y="246">25</text>
+              <text x="484" y="246" fill="var(--pen-blue)">26</text>
+
+              <text x="22" y="318" fill="var(--pen-red)">27</text><text x="99" y="318">28</text><text x="176" y="318">29</text>
+              <text x="253" y="318">30</text>
+            </g>
+
+            <!-- 祝日 -->
+            <text x="99" y="246" font-size="10.5" fill="var(--pen-red)">21</text>
+            <text x="118" y="246" font-size="9" fill="var(--pen-red)">敬老の日</text>
+
+            <!-- 今日 -->
+            <circle cx="337" cy="170" r="10" fill="var(--ink)"/>
+            <text x="337" y="174" font-size="10.5" text-anchor="middle" fill="var(--panel)">17</text>
+
+            <!-- 予定 -->
+            <g font-size="9.5">
+              <rect x="97" y="108" width="68" height="16" rx="3" fill="var(--sb)"/>
+              <text x="102" y="120" class="sticky-txt">🔁 練習 18:00</text>
+
+              <rect x="97" y="180" width="68" height="16" rx="3" fill="var(--sb)"/>
+              <text x="102" y="192" class="sticky-txt">🔁 練習 18:00</text>
+
+              <rect x="251" y="180" width="68" height="16" rx="3" fill="var(--sk)"/>
+              <text x="256" y="192" class="sticky-txt">保護者会</text>
+
+              <!-- この回だけ動かした回 -->
+              <rect x="328" y="180" width="68" height="16" rx="3" fill="var(--sy)"/>
+              <text x="333" y="192" class="sticky-txt">🔁✏️ 練習 14:00</text>
+
+              <rect x="97" y="252" width="68" height="16" rx="3" fill="var(--sg)"/>
+              <text x="102" y="264" class="sticky-txt">合宿説明会</text>
+
+              <rect x="328" y="252" width="68" height="16" rx="3" fill="var(--sb)"/>
+              <text x="333" y="264" class="sticky-txt">🔁 練習 18:00</text>
+
+              <!-- 締切（点線の枠。色の帯の「予定」とは別物） -->
+              <rect x="251" y="200" width="68" height="16" rx="3" fill="none" class="stroke-line" stroke-dasharray="3 2"/>
+              <text x="256" y="212" class="mut">⏰ 部費の集金 〆</text>
+
+              <rect x="97" y="200" width="68" height="16" rx="3" fill="none" class="stroke-line" stroke-dasharray="3 2"/>
+              <text x="102" y="212" class="mut">⏰ しおり入稿 〆</text>
+            </g>
+
+            <!-- 動かしている途中の予定 -->
+            <rect x="405" y="176" width="68" height="24" rx="4" fill="var(--sy)" stroke="var(--syb)" opacity=".75"/>
+            <text x="410" y="192" font-size="9.5" class="sticky-txt" opacity=".85">ドラッグ中…</text>
+          </svg>
+          <figcaption>
+            画面イメージ — 色の帯が 📅 予定、点線が ⏰ 締切。✏️ は「この回だけ」変えた予定
+          </figcaption>
+        </figure>
+      </div>
+
+      <!-- リマインド -->
+      <div class="tool" style="--dot:var(--sgb)">
+        <div>
+          <p class="eyebrow">03 — Reminders</p>
+          <h3>リマインド</h3>
+          <p>期限つきのやること。並べ替えなくても、急ぐものが上に来ます。</p>
+          <ul class="feat">
+            <li><b>期限切れ / 今日 / 3日以内 / それ以降</b> に自動でまとまります</li>
+            <li><b>担当者</b>を参加者から選んで、「自分の担当」だけに絞れます</li>
+            <li>小項目のチェックリストで、進み具合が <b>3/5</b> のように出ます</li>
+            <li>終わらせると<b>次回分が自動で作られる</b>繰り返しタスク</li>
+            <li>ひとつずつに<b>コメント</b>を付けられます</li>
+            <li>担当に選ばれた人には<b>お知らせが届きます</b></li>
+            <li><b>⏰ カレンダーに締切として出す</b> で、その日の終日欄へ（予定とは分けて出ます）</li>
+          </ul>
+        </div>
+
+        <figure class="figure tool-figure" style="margin:0">
+          <svg class="mock" viewBox="0 0 560 340" role="img" aria-label="リマインドの画面イメージ。期限切れ・今日・3日以内にまとまったやることリスト">
+            <rect x="1" y="1" width="558" height="338" rx="11" class="panel"/>
+            <rect x="1.5" y="1.5" width="557" height="337" rx="10.5" class="stroke-line"/>
+
+            <rect x="18" y="16" width="112" height="26" rx="8" class="surf"/>
+            <text x="30" y="33" font-size="11.5" class="mut">＋ 新しいやること</text>
+            <rect x="140" y="16" width="88" height="26" rx="8" fill="var(--ink)"/>
+            <text x="184" y="33" font-size="11.5" text-anchor="middle" fill="var(--panel)">自分の担当</text>
+            <text x="470" y="33" font-size="11.5" class="mut">残り 7 件</text>
+            <path d="M1 56 H559" class="stroke-line"/>
+
+            <!-- 期限切れ -->
+            <text x="20" y="82" font-size="11.5" font-weight="700" fill="var(--pen-red)">期限切れ　1</text>
+            <rect x="18" y="92" width="524" height="46" rx="9" class="surf"/>
+            <rect x="18" y="92" width="3.5" height="46" rx="2" fill="var(--pen-red)"/>
+            <circle cx="44" cy="115" r="8" fill="none" class="stroke-line" stroke-width="1.6"/>
+            <text x="62" y="112" font-size="13">部費の集金を締める</text>
+            <text x="62" y="129" font-size="10.5" fill="var(--pen-red)">9月10日（木）を過ぎています</text>
+            <rect x="430" y="106" width="52" height="19" rx="9.5" fill="var(--sp)"/>
+            <text x="456" y="119" font-size="10" text-anchor="middle" class="sticky-txt">ゆうき</text>
+            <text x="500" y="119" font-size="10.5" class="mut">💬 2</text>
+
+            <!-- 今日 -->
+            <text x="20" y="166" font-size="11.5" font-weight="700">今日　2</text>
+            <rect x="18" y="176" width="524" height="46" rx="9" class="surf"/>
+            <rect x="18" y="176" width="3.5" height="46" rx="2" fill="var(--syb)"/>
+            <circle cx="44" cy="199" r="8" fill="none" class="stroke-line" stroke-width="1.6"/>
+            <text x="62" y="196" font-size="13">合宿のしおりを作る</text>
+            <text x="62" y="213" font-size="10.5" class="mut">今日 17:00 まで</text>
+            <rect x="360" y="190" width="48" height="19" rx="9.5" fill="var(--sg)"/>
+            <text x="384" y="203" font-size="10" text-anchor="middle" class="sticky-txt">3/5</text>
+            <rect x="430" y="190" width="52" height="19" rx="9.5" fill="var(--sb)"/>
+            <text x="456" y="203" font-size="10" text-anchor="middle" class="sticky-txt">けいこ</text>
+
+            <rect x="18" y="228" width="524" height="46" rx="9" class="surf"/>
+            <rect x="18" y="228" width="3.5" height="46" rx="2" fill="var(--syb)"/>
+            <circle cx="44" cy="251" r="8" fill="none" class="stroke-line" stroke-width="1.6"/>
+            <text x="62" y="248" font-size="13">体育館の鍵を借りる</text>
+            <text x="62" y="265" font-size="10.5" class="mut">🔁 毎週 月曜</text>
+            <rect x="430" y="242" width="52" height="19" rx="9.5" fill="var(--sk)"/>
+            <text x="456" y="255" font-size="10" text-anchor="middle" class="sticky-txt">みなみ</text>
+
+            <!-- 完了したもの -->
+            <text x="20" y="302" font-size="11.5" font-weight="700" class="mut">完了　4</text>
+            <circle cx="44" cy="320" r="8" fill="var(--sgb)"/>
+            <path d="M40.5 320 L43 322.5 L48 317" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/>
+            <text x="62" y="324" font-size="13" class="mut" text-decoration="line-through">コート予約を出す</text>
+          </svg>
+          <figcaption>画面イメージ — 急ぐものから自動でまとまる</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule">
+
+
+  <!-- ============================================================ -->
+  <!--  右クリックとキーボード                                        -->
+  <!-- ============================================================ -->
+  <section id="board-ops">
+    <div class="wrap-wide">
+      <div class="section-head" style="width:min(100%,40em)">
+        <p class="eyebrow">Right click</p>
+        <h2>迷ったら、右クリック。</h2>
+        <p>道具をツールバーから探さなくても、触りたいものの上で右クリックすれば、そこでできることだけが並びます。付箋の上、線の上、何もない場所。それぞれ中身が変わります。</p>
+      </div>
+
+      <div class="tool" style="--dot:var(--spb)">
+        <div>
+          <ul class="feat">
+            <li>付箋の上で<b>右クリック</b>。コピー・複製・色の貼り付け・削除がその場に出ます</li>
+            <li>何枚か選んでから右クリックすると、<b>「3 件を複製」</b>のように、まとめて扱えます</li>
+            <li><b>重なり順</b>を変えられます。隠れてしまった付箋を最前面へ、目立ちすぎるものを最背面へ</li>
+            <li>選んだ付箋を<b>フレームで囲む</b>。話題のまとまりに枠と名前を付けられます</li>
+            <li>選んだ付箋だけを <b>PNG でコピー</b>。そのままチャットに貼れます</li>
+            <li>何もない場所で右クリックすれば、<b>その位置に</b>付箋・テキスト・フレームを作れます</li>
+            <li>キーボードだけでも開けます（<kbd>Shift</kbd>+<kbd>F10</kbd>）。矢印キーで選び、<kbd>Enter</kbd> で実行</li>
+          </ul>
+
+          <ul class="plain">
+            <li><b>文字の大きさは長押しで。</b>付箋を押したまま少し待つと、上下に動かすだけで文字が大きく・小さくなります。いま何 px かはその場に出ます。<kbd>Ctrl</kbd>+<kbd>Z</kbd> で戻せます</li>
+            <li><b>入力中は、いつものメニューのまま。</b>付箋の本文を書いている最中の右クリックでは、日本語変換の候補が出ます。独自のメニューが変換の邪魔をすることはありません</li>
+          </ul>
+        </div>
+
+        <figure class="figure" style="margin:0">
+          <svg class="mock" viewBox="0 0 560 380" role="img" aria-label="付箋の上で右クリックしたときのメニュー。コピー、複製、選択を囲うフレームを作る、最前面へ、削除が縦に並んでいる">
+            <rect x="1" y="1" width="558" height="378" rx="13" class="panel"/>
+            <rect x="1.5" y="1.5" width="557" height="377" rx="12.5" class="stroke-line"/>
+
+            <rect x="14" y="14" width="532" height="352" rx="8" class="surf"/>
+
+            <g transform="rotate(-2 108 128)">
+              <rect x="44" y="86" width="128" height="84" rx="6" fill="var(--sy)" stroke="var(--syb)"/>
+              <text x="58" y="112" font-size="12" class="sticky-txt">会場の候補</text>
+              <text x="58" y="132" font-size="12" class="sticky-txt">3案ある</text>
+            </g>
+
+            <g>
+              <rect x="150" y="150" width="128" height="84" rx="6" fill="var(--sb)" stroke="var(--sbb)"/>
+              <text x="164" y="176" font-size="12" class="sticky-txt">予算どうする</text>
+              <rect x="147" y="147" width="134" height="90" rx="8" fill="none" stroke="var(--accent)" stroke-width="2"/>
+            </g>
+
+            <path d="M286 224 L286 250 L293 243 L298 253 L303 250 L298 240 L307 240 Z" fill="var(--ink)"/>
+
+            <rect x="300" y="234" width="196" height="128" rx="9" class="panel"/>
+            <rect x="300.5" y="234.5" width="195" height="127" rx="8.5" class="stroke-line"/>
+
+            <text x="314" y="254" font-size="11.5">コピー</text>
+            <text x="482" y="254" font-size="10" text-anchor="end" class="mut">Ctrl + C</text>
+
+            <text x="314" y="274" font-size="11.5">複製</text>
+            <text x="482" y="274" font-size="10" text-anchor="end" class="mut">Ctrl + D</text>
+
+            <rect x="300" y="283" width="196" height="1" class="fill-line-2"/>
+
+            <text x="314" y="303" font-size="11.5">選択を囲うフレームを作る</text>
+
+            <rect x="300" y="312" width="196" height="1" class="fill-line-2"/>
+
+            <text x="314" y="332" font-size="11.5">最前面へ</text>
+            <text x="482" y="332" font-size="10" text-anchor="end" class="mut">Ctrl + Shift + ]</text>
+
+            <text x="314" y="352" font-size="11.5" fill="var(--pen-red)">削除</text>
+            <text x="482" y="352" font-size="10" text-anchor="end" class="mut">Delete</text>
+          </svg>
+          <figcaption>付箋の上で右クリックしたところ。何もない場所で押せば、中身は「ここに付箋を作る」に変わります。</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule">
+
+  <!-- ============================================================ -->
+  <!--  付箋が行動になる                                             -->
+  <!-- ============================================================ -->
+  <section id="flow">
+    <div class="wrap-wide">
+      <div class="section-head" style="width:min(100%,40em)">
+        <p class="eyebrow">From note to action</p>
+        <h2>書いた付箋を、<br>そのまま「やること」にできます。</h2>
+        <p>3つのタブが並んでいるだけではありません。付箋を選んで ⏰ か 📅 を押すと、担当と期限を決めてリマインドやカレンダーに送れます。もとの付箋は残るので、あとから「これはどこから出た話だっけ」を辿れます。</p>
+      </div>
+
+      <div class="split">
+        <ul class="plain">
+          <li>付箋を選んで <b>⏰ やることにする</b>。担当と期限をその場で決められます</li>
+          <li><b>📅 予定にする</b> か <b>⏰ 締切にする</b> を選べば、カレンダーにも入ります</li>
+          <li>予定を開いて <b>＋ 準備することを追加</b>。逆向きにもつながります</li>
+          <li>できた予定・やることには <b>「この付箋から生まれました」</b> が出ます</li>
+          <li>付箋の側にも <b>⏰ 1</b> のような印が付き、押すとその一覧へ飛びます</li>
+          <li>まとめて選んだ付箋を、一度に「やること」にもできます</li>
+          <li>作ったあとは<b>それぞれ別のもの</b>になります。付箋を直しても勝手には変わらず、<b>「元が変更されています」</b>と出るので、<b>反映する</b>か<b>このままにする</b>かを選べます</li>
+        </ul>
+
+        <figure class="figure" style="margin:0">
+          <svg class="mock" viewBox="0 0 560 300" role="img" aria-label="付箋がやることになり、さらに予定になる流れの図">
+            <rect x="1" y="1" width="558" height="298" rx="11" class="surf"/>
+            <rect x="1.5" y="1.5" width="557" height="297" rx="10.5" class="stroke-line"/>
+
+            <!-- 1. 付箋 -->
+            <text x="40" y="44" font-size="11" class="mut">① ホワイトボード</text>
+            <g transform="rotate(-1.5 106 96)">
+              <rect x="40" y="58" width="132" height="76" rx="5" fill="var(--sy)" stroke="var(--syb)"/>
+              <text x="53" y="84" font-size="12.5" class="sticky-txt">部費の集金</text>
+              <text x="53" y="103" font-size="12.5" class="sticky-txt">9/20 まで</text>
+              <text x="53" y="124" font-size="10" class="sticky-txt" opacity=".65">みなみ</text>
+            </g>
+
+            <!-- 付箋のツールバー -->
+            <rect x="40" y="146" width="132" height="26" rx="6" class="panel"/>
+            <rect x="40.5" y="146.5" width="131" height="25" rx="5.5" class="stroke-line"/>
+            <text x="106" y="163" font-size="11" text-anchor="middle">⏰ やることにする</text>
+
+            <!-- 矢印 1 -->
+            <path d="M180 96 H222" class="stroke-line" stroke-width="1.5"/>
+            <path d="M216 91 L223 96 L216 101 Z" class="fill-line"/>
+
+            <!-- 2. やること -->
+            <text x="232" y="44" font-size="11" class="mut">② リマインド</text>
+            <rect x="232" y="58" width="140" height="76" rx="7" class="panel"/>
+            <rect x="232.5" y="58.5" width="139" height="75" rx="6.5" class="stroke-line"/>
+            <circle cx="250" cy="82" r="7" fill="none" stroke="var(--line)" stroke-width="1.5"/>
+            <text x="264" y="86" font-size="12">部費の集金</text>
+            <text x="246" y="108" font-size="10.5" class="mut">担当 ゆうき</text>
+            <rect x="246" y="115" width="60" height="15" rx="7.5" fill="var(--accent-soft)"/>
+            <text x="276" y="126" font-size="9.5" text-anchor="middle" fill="var(--accent-ink)">9/20 期限</text>
+
+            <!-- 矢印 2 -->
+            <path d="M380 96 H422" class="stroke-line" stroke-width="1.5"/>
+            <path d="M416 91 L423 96 L416 101 Z" class="fill-line"/>
+
+            <!-- 3. カレンダー -->
+            <text x="432" y="44" font-size="11" class="mut">③ カレンダー</text>
+            <rect x="432" y="58" width="92" height="76" rx="7" class="panel"/>
+            <rect x="432.5" y="58.5" width="91" height="75" rx="6.5" class="stroke-line"/>
+            <text x="478" y="82" font-size="11" text-anchor="middle" class="mut">9月</text>
+            <rect x="442" y="90" width="72" height="16" rx="4" fill="var(--sb)" stroke="var(--sbb)"/>
+            <text x="478" y="102" font-size="9.5" text-anchor="middle" class="sticky-txt">20 集金</text>
+            <rect x="442" y="112" width="72" height="12" rx="3" class="fill-line-2"/>
+
+            <!-- 戻りの線（出自をたどる） -->
+            <path d="M302 148 V186 H106 V180" class="stroke-line" stroke-width="1.5" stroke-dasharray="4 4"/>
+            <path d="M101 186 L106 179 L111 186 Z" class="fill-line"/>
+            <rect x="20" y="200" width="256" height="26" rx="6" class="panel"/>
+            <rect x="20.5" y="200.5" width="255" height="25" rx="5.5" class="stroke-line"/>
+            <text x="148" y="217" font-size="10.5" text-anchor="middle">🖍️「部費の集金」から生まれました</text>
+
+            <!-- 元が変わったときの知らせ（勝手には書き換えない） -->
+            <rect x="292" y="192" width="248" height="42" rx="7" fill="var(--sy)" stroke="var(--syb)"/>
+            <text x="304" y="209" font-size="10.5" class="sticky-txt">元の付箋が変更されています</text>
+            <rect x="304" y="215" width="62" height="15" rx="7.5" fill="var(--ink)"/>
+            <text x="335" y="226" font-size="9.5" text-anchor="middle" fill="var(--panel)">反映する</text>
+            <rect x="372" y="215" width="76" height="15" rx="7.5" fill="#fff" opacity=".8"/>
+            <text x="410" y="226" font-size="9.5" text-anchor="middle" class="sticky-txt">このままにする</text>
+
+            <text x="282" y="262" font-size="11" text-anchor="middle" class="mut">もとの付箋は残ります。作ったあとは別々に動き、変わったときだけ知らせます。</text>
+          </svg>
+          <figcaption>
+            画面イメージ — 付箋 → やること → 予定 と、出自をたどる線／元が変わったときの知らせ
+          </figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule">
+
+  <!-- ============================================================ -->
+  <!--  みんなで同時に                                               -->
+  <!-- ============================================================ -->
+  <section id="together">
+    <div class="wrap-wide">
+      <div class="section-head" style="width:min(100%,40em)">
+        <p class="eyebrow">Everyone at once</p>
+        <h2>誰かの編集を待つ必要はありません。</h2>
+        <p>同じボードを何人で開いていても大丈夫です。書いた内容はその場で相手の画面に出ます。</p>
+      </div>
+
+      <div class="split">
+        <ul class="plain">
+          <li><b>いま誰が見ているか</b>が、右上に顔として並びます</li>
+          <li>相手の<b>カーソルが名前つき</b>で動くので、どこを見ているかがわかります</li>
+          <li>ボード全体の<b>チャット</b>と、付箋・予定・やることごとの<b>コメント</b></li>
+          <li><b>@名前</b> と書いて呼ぶと、その人にお知らせが届きます。<b>@全員</b> もあります</li>
+          <li><b>更新</b>タブに、誰が何を変えたか・話したかが時系列で並びます</li>
+          <li>同じ<b>更新</b>タブに、<b>誰が入ってきたか・誰の権限を変えたか</b>も残ります（あとから書き換えられません）</li>
+          <li>消してしまったものは<b>ゴミ箱</b>から戻せます（他の人が消したものも）</li>
+          <li>右上に <b>✓ 保存済み / ↻ 同期中 / ⚠ オフライン</b> が出るので、「いま届いているか」がわかります</li>
+          <li><b>⚠ オフラインのあいだに書いたものは保存されません。</b>つながってから書き直してください</li>
+          <li>設定すれば、<b>タブを閉じていても通知</b>が届きます</li>
+        </ul>
+
+        <figure class="figure" style="margin:0">
+          <svg class="mock" viewBox="0 0 560 300" role="img" aria-label="チャット画面のイメージ。メンションで呼ばれたメッセージにお知らせが付いている">
+            <rect x="1" y="1" width="558" height="298" rx="11" class="surf"/>
+            <rect x="1.5" y="1.5" width="557" height="297" rx="10.5" class="stroke-line"/>
+
+            <!-- 在席 -->
+            <rect x="1" y="1" width="558" height="48" rx="11" class="panel"/>
+            <path d="M1 49 H559" class="stroke-line"/>
+            <text x="20" y="30" font-size="12.5" class="mut">いま開いている人</text>
+            <g>
+              <circle cx="140" cy="25" r="12" fill="var(--pen-blue)"/><text x="140" y="29" font-size="10.5" text-anchor="middle" fill="#fff">ゆ</text>
+              <circle cx="162" cy="25" r="12" fill="var(--pen-green)"/><text x="162" y="29" font-size="10.5" text-anchor="middle" fill="#fff">け</text>
+              <circle cx="184" cy="25" r="12" fill="var(--pen-purple)"/><text x="184" y="29" font-size="10.5" text-anchor="middle" fill="#fff">み</text>
+            </g>
+            <text x="440" y="30" font-size="14">💬</text>
+            <circle cx="452" cy="20" r="7" fill="var(--pen-red)"/>
+            <text x="452" y="23.5" font-size="9" text-anchor="middle" fill="#fff">3</text>
+            <text x="482" y="30" font-size="14">🔔</text>
+            <circle cx="494" cy="20" r="7" fill="var(--pen-red)"/>
+            <text x="494" y="23.5" font-size="9" text-anchor="middle" fill="#fff">1</text>
+
+            <!-- 会話 -->
+            <circle cx="34" cy="82" r="11" fill="var(--pen-green)"/><text x="34" y="86" font-size="10" text-anchor="middle" fill="#fff">け</text>
+            <text x="54" y="78" font-size="10.5" class="mut">けいこ　15:02</text>
+            <rect x="54" y="86" width="248" height="30" rx="9" class="panel"/>
+            <text x="68" y="106" font-size="12.5">しおりの表紙、案を3つ置きました</text>
+
+            <circle cx="34" cy="140" r="11" fill="var(--pen-purple)"/><text x="34" y="144" font-size="10" text-anchor="middle" fill="#fff">み</text>
+            <text x="54" y="136" font-size="10.5" class="mut">みなみ　15:04</text>
+            <rect x="54" y="144" width="300" height="30" rx="9" fill="var(--accent-soft)"/>
+            <text x="68" y="164" font-size="12.5"><tspan fill="var(--accent-ink)" font-weight="700">@ゆうき</tspan> 集金の締め切り、来週まで延ばせますか</text>
+
+            <!-- お知らせ -->
+            <rect x="366" y="128" width="176" height="62" rx="10" class="panel"/>
+            <rect x="366.5" y="128.5" width="175" height="61" rx="9.5" class="stroke-line"/>
+            <rect x="366" y="128" width="4" height="62" rx="2" fill="var(--accent)"/>
+            <text x="384" y="150" font-size="11" fill="var(--accent-ink)">お知らせ</text>
+            <text x="384" y="169" font-size="11.5">みなみ さんが呼びました</text>
+            <text x="384" y="183" font-size="10.5" class="mut">タップで会話へ</text>
+
+            <!-- 自分の発言 -->
+            <rect x="258" y="204" width="284" height="30" rx="9" fill="var(--ink)"/>
+            <text x="272" y="224" font-size="12.5" fill="var(--panel)">大丈夫です。カレンダーの日付も直しました</text>
+            <text x="470" y="248" font-size="10.5" class="mut">ゆうき　15:06</text>
+
+            <!-- 入力欄 -->
+            <rect x="18" y="256" width="440" height="30" rx="9" class="panel"/>
+            <rect x="18.5" y="256.5" width="439" height="29" rx="8.5" class="stroke-line"/>
+            <text x="32" y="276" font-size="12" class="mut">メッセージを書く…</text>
+            <rect x="468" y="256" width="74" height="30" rx="9" fill="var(--ink)"/>
+            <text x="505" y="276" font-size="12" text-anchor="middle" fill="var(--panel)">送信</text>
+          </svg>
+          <figcaption>画面イメージ — @名前 で呼ぶと相手にお知らせが出る</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule">
+
+
+  <!-- ============================================================ -->
+  <!--  見落とさないための仕組み                                      -->
+  <!-- ============================================================ -->
+  <section id="keeping-up">
+    <div class="wrap-wide">
+      <div class="section-head" style="width:min(100%,40em)">
+        <p class="eyebrow">Catching up</p>
+        <h2>しばらく見ていなくても、追いつけます。</h2>
+        <p>全員がいつも見ているわけではありません。あとから開いた人が「何が変わったのか」を自分で辿れるようにしてあります。</p>
+      </div>
+
+      <div class="scenes">
+        <article class="scene">
+          <span class="tape" style="background:var(--syb)"></span>
+          <h3>📣 更新</h3>
+          <p>付箋・予定・やること・コメント・参加者の動きが、1本の時系列に並びます。種類で絞り込めて、未読には印が付きます。</p>
+        </article>
+        <article class="scene">
+          <span class="tape" style="background:var(--sbb)"></span>
+          <h3>横断検索</h3>
+          <p><kbd>Ctrl</kbd>+<kbd>F</kbd> で、付箋・予定・やること・コメント・タグをまとめて探して、その場所へ飛べます。</p>
+        </article>
+        <article class="scene">
+          <span class="tape" style="background:var(--sgb)"></span>
+          <h3>ゴミ箱</h3>
+          <p>消した付箋・予定・やること・画像は 30 日ぶん残ります。<b>他の人が消したもの</b>も戻せます。</p>
+        </article>
+        <article class="scene">
+          <span class="tape" style="background:var(--spb)"></span>
+          <h3>チャットと通知</h3>
+          <p>ボードごとの会話。@ で名指しされたとき、担当に指名されたとき、参加の申請が来たときに通知が出ます。</p>
+        </article>
+      </div>
+
+      <ul class="plain">
+        <li><b>タグ</b>を付箋・予定・やることに付けて、あとから絞り込めます</li>
+        <li><b>保存した状態</b>——「この時点」を控えておいて、あとから丸ごと戻せます。大きく作り替える前に</li>
+        <li><b>日程調整</b>——候補日を出して ○ △ × を集められます。決まったらそのまま予定に</li>
+        <li><b>在席表示</b>といま動いているカーソルで、誰が見ているかがわかります</li>
+        <li><b>プッシュ通知</b>（任意）——タブを閉じていても届きます</li>
+      </ul>
+    </div>
+  </section>
+
+  <hr class="rule">
+
+  <!-- ============================================================ -->
+  <!--  持ち出す・持ち込む                                            -->
+  <!-- ============================================================ -->
+  <section id="inout">
+    <div class="wrap-wide">
+      <div class="section-head" style="width:min(100%,40em)">
+        <p class="eyebrow">Import &amp; export</p>
+        <h2>中身は、いつでも持ち出せます。</h2>
+        <p>このボードの中だけで完結させるつもりはありません。ふだん使っているカレンダーや表計算ソフトと行き来できます。</p>
+      </div>
+
+      <div class="split">
+        <ul class="plain">
+          <li><b>画像にする</b>——ボード全体、または選んだ付箋だけを PNG で保存・コピー。議事録に貼るときに</li>
+          <li><b>.ics で書き出す</b>——予定を Google カレンダーや iPhone に取り込めます</li>
+          <li><b>外部カレンダーを重ねる</b>——公開されている .ics の URL を登録すると、学校や職場の予定を並べて見られます</li>
+        </ul>
+        <ul class="plain">
+          <li><b>CSV でやり取り</b>——予定とやることを表計算ソフトと行き来できます</li>
+          <li><b>QR コード</b>——その場にいる人はカメラで読み取って参加できます</li>
+          <li><b>ダークモード</b>——ライト / ダーク / OS に合わせる、から選べます</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule">
+
+  <!-- ============================================================ -->
+  <!--  共有と権限                                                   -->
+  <!-- ============================================================ -->
+  <section id="share">
+    <div class="wrap-wide">
+      <div class="section-head" style="width:min(100%,40em)">
+        <p class="eyebrow">Who gets in</p>
+        <h2>入り方は 3 つ。リンク公開、合言葉つき、承認制。</h2>
+        <p>作るときに選んで、あとから共有画面で切り替えられます。リンクを配ったあとでも、条件を足したり作り直したりできます。</p>
+      </div>
+
+      <div class="split">
+        <ul class="plain">
+          <li><b>🌐 リンク公開</b> — 入り方は <b>URL だけ</b>。知っていれば誰でもすぐ参加できます。名前を入れるだけです</li>
+          <li><b>🔑 合言葉つき</b> — 入り方は <b>URL ＋ 合言葉</b>。合言葉が合えば、承認を待たずにその場で入れます</li>
+          <li><b>🔒 承認制</b> — 入り方は <b>作った人の承認</b>。リンクを開いた人には申請の画面が出て、承認するまで中身は見えません</li>
+          <li>入り方の切り替えは<b>共有画面の 1 か所</b>にまとめてあります。ヘッダーにも、いまどれなのかが出ています</li>
+          <li>承認するときに <b>「編集できる」か「閲覧のみ」</b> を選べます</li>
+          <li>閲覧のみの人も、<b>コメントと投票はできます</b>。読むだけではなく、話には入れます</li>
+          <li>承認すると、相手の画面は<b>読み込み直さなくても</b>ボードに切り替わります</li>
+          <li>申請が来たら、ボードを開いていなくても<b>お知らせが届きます</b></li>
+        </ul>
+
+        <figure class="figure" style="margin:0">
+          <svg class="mock" viewBox="0 0 560 300" role="img" aria-label="承認制のボードの参加申請と承認の画面イメージ">
+            <rect x="1" y="1" width="558" height="298" rx="11" class="surf"/>
+            <rect x="1.5" y="1.5" width="557" height="297" rx="10.5" class="stroke-line"/>
+
+            <text x="20" y="34" font-size="13" font-weight="700">👥 参加者</text>
+            <rect x="106" y="20" width="60" height="20" rx="10" fill="var(--pen-red)"/>
+            <text x="136" y="34" font-size="10.5" text-anchor="middle" fill="#fff">承認待ち 1</text>
+            <path d="M1 56 H559" class="stroke-line"/>
+
+            <!-- 申請 -->
+            <rect x="18" y="72" width="524" height="82" rx="11" class="panel"/>
+            <rect x="18.5" y="72.5" width="523" height="81" rx="10.5" class="stroke-line"/>
+            <rect x="18" y="72" width="4" height="82" rx="2" fill="var(--accent)"/>
+            <circle cx="52" cy="104" r="14" fill="var(--syb)"/>
+            <text x="52" y="109" font-size="12" text-anchor="middle" fill="#fff">た</text>
+            <text x="78" y="98" font-size="13.5" font-weight="700">たかし</text>
+            <text x="78" y="118" font-size="11.5" class="mut">「2年の田中です。参加させてください」</text>
+            <text x="78" y="138" font-size="10.5" class="mut">9月17日 14:22 に申請</text>
+
+            <rect x="332" y="90" width="94" height="30" rx="9" fill="var(--ink)"/>
+            <text x="379" y="110" font-size="11.5" text-anchor="middle" fill="var(--panel)">編集できる</text>
+            <rect x="434" y="90" width="94" height="30" rx="9" class="panel"/>
+            <rect x="434.5" y="90.5" width="93" height="29" rx="8.5" class="stroke-line"/>
+            <text x="481" y="110" font-size="11.5" text-anchor="middle">閲覧のみ</text>
+            <text x="481" y="138" font-size="10.5" text-anchor="middle" class="mut">どちらかを選んで承認</text>
+
+            <!-- 参加中 -->
+            <text x="20" y="184" font-size="11.5" font-weight="700" class="mut">参加中　3人</text>
+
+            <g font-size="12.5">
+              <circle cx="38" cy="210" r="12" fill="var(--pen-blue)"/><text x="38" y="214" font-size="10.5" text-anchor="middle" fill="#fff">ゆ</text>
+              <text x="60" y="215">ゆうき</text>
+              <rect x="452" y="199" width="90" height="22" rx="11" fill="var(--sy)"/>
+              <text x="497" y="214" font-size="10.5" text-anchor="middle" class="sticky-txt">作った人</text>
+
+              <circle cx="38" cy="246" r="12" fill="var(--pen-green)"/><text x="38" y="250" font-size="10.5" text-anchor="middle" fill="#fff">け</text>
+              <text x="60" y="251">けいこ</text>
+              <rect x="452" y="235" width="90" height="22" rx="11" class="surf"/>
+              <text x="497" y="250" font-size="10.5" text-anchor="middle" class="mut">編集できる</text>
+
+              <circle cx="38" cy="282" r="12" fill="var(--pen-purple)"/><text x="38" y="286" font-size="10.5" text-anchor="middle" fill="#fff">み</text>
+              <text x="60" y="287">みなみ</text>
+              <rect x="452" y="271" width="90" height="22" rx="11" class="surf"/>
+              <text x="497" y="286" font-size="10.5" text-anchor="middle" class="mut">閲覧のみ</text>
+            </g>
+          </svg>
+          <figcaption>画面イメージ — 承認制のボードの承認</figcaption>
+        </figure>
+      </div>
+
+      <figure class="figure" style="margin: clamp(28px, 4vw, 40px) 0 0">
+        <svg class="mock" viewBox="0 0 720 200" role="img" aria-label="共有画面の「入り方」の選択イメージ。リンク公開・合言葉つき・承認制の3つが並んでいる">
+          <rect x="1" y="1" width="718" height="198" rx="11" class="panel"/>
+          <rect x="1.5" y="1.5" width="717" height="197" rx="10.5" class="stroke-line"/>
+
+          <text x="24" y="34" font-size="13" font-weight="700">🚪 入り方</text>
+          <text x="100" y="34" font-size="10.5" class="mut">いつでも切り替えられます</text>
+          <path d="M1 50 H719" class="stroke-line"/>
+
+          <!-- 選ばれているもの -->
+          <rect x="24" y="68" width="212" height="108" rx="10" class="surf"/>
+          <rect x="24.5" y="68.5" width="211" height="107" rx="9.5" fill="none" stroke="var(--ink)" stroke-width="1.6"/>
+          <text x="44" y="96" font-size="18">🌐</text>
+          <text x="72" y="97" font-size="13" font-weight="700">リンク公開</text>
+          <rect x="44" y="108" width="86" height="18" rx="9" fill="var(--accent-soft)"/>
+          <text x="87" y="121" font-size="10" text-anchor="middle" fill="var(--accent-ink)">入り方：URL だけ</text>
+          <text x="44" y="145" font-size="10.5" class="mut">リンクを知っている人は</text>
+          <text x="44" y="161" font-size="10.5" class="mut">誰でもすぐ参加できます。</text>
+
+          <rect x="254" y="68" width="212" height="108" rx="10" class="panel"/>
+          <rect x="254.5" y="68.5" width="211" height="107" rx="9.5" class="stroke-line"/>
+          <text x="274" y="96" font-size="18">🔑</text>
+          <text x="302" y="97" font-size="13" font-weight="700">合言葉つき</text>
+          <rect x="274" y="108" width="116" height="18" rx="9" class="surf"/>
+          <text x="332" y="121" font-size="10" text-anchor="middle" class="mut">入り方：URL ＋ 合言葉</text>
+          <text x="274" y="145" font-size="10.5" class="mut">合言葉が合えば、承認を</text>
+          <text x="274" y="161" font-size="10.5" class="mut">待たずにその場で入れます。</text>
+
+          <rect x="484" y="68" width="212" height="108" rx="10" class="panel"/>
+          <rect x="484.5" y="68.5" width="211" height="107" rx="9.5" class="stroke-line"/>
+          <text x="504" y="96" font-size="18">🔒</text>
+          <text x="532" y="97" font-size="13" font-weight="700">承認制</text>
+          <rect x="504" y="108" width="112" height="18" rx="9" class="surf"/>
+          <text x="560" y="121" font-size="10" text-anchor="middle" class="mut">入り方：作った人の承認</text>
+          <text x="504" y="145" font-size="10.5" class="mut">承認するまで、中身は</text>
+          <text x="504" y="161" font-size="10.5" class="mut">相手に見えません。</text>
+        </svg>
+        <figcaption>画面イメージ — 共有画面の「入り方」。この 3 つ以外の呼び方は使いません</figcaption>
+      </figure>
+
+      <div class="section-head" style="width:min(100%,40em); margin-top: clamp(36px, 5vw, 56px)">
+        <p class="eyebrow">After you share</p>
+        <h2>配ったあとでも、締められます。</h2>
+        <p>リンクは一度送ると取り返せません。あとから条件を足せるようにしてあります。条件を足すだけなら、<b>いま参加している人はそのまま使えます</b>。知らない人に転送されてしまったときのために、<b>全員を外す</b>手段も用意しました。使い終わったボードは、消さずに<b>終了</b>して、読むだけの状態にもできます。</p>
+      </div>
+
+      <div class="caveats" style="margin-top:24px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 21em), 1fr)); column-gap: 34px">
+        <div class="caveat">
+          <span class="pin" style="background:var(--syb)"></span>
+          <p><b>🔑 入り方を変える</b><br>あとから合言葉つきや承認制に切り替えられます。<b>読める人を絞れるのはこれだけです。</b></p>
+        </div>
+        <div class="caveat">
+          <span class="pin" style="background:var(--sbb)"></span>
+          <p><b>⏳ 新しく参加できる期限</b><br>この日時を過ぎると、新しく参加できなくなります。リンクそのものが使えなくなるわけではありません。</p>
+        </div>
+        <div class="caveat">
+          <span class="pin" style="background:var(--sgb)"></span>
+          <p><b>👥 人数の上限</b><br>参加できる人数を決められます。</p>
+        </div>
+        <div class="caveat">
+          <span class="pin" style="background:var(--spb)"></span>
+          <p><b>⏸ 受付を止める</b><br>新しい参加だけを一時的に止めます。</p>
+        </div>
+        <div class="caveat">
+          <span class="pin" style="background:var(--skb)"></span>
+          <p><b>🔄 リンクを作り直す</b><br>古い URL が開けなくなります。参加している人は新しい URL から入れます。</p>
+        </div>
+        <div class="caveat">
+          <span class="pin" style="background:var(--pen-blue)"></span>
+          <p><b>📱 QR コード</b><br>共有画面に出せます。その場にいる人はカメラで読み取るだけです。</p>
+        </div>
+        <div class="caveat">
+          <span class="pin" style="background:var(--pen-red)"></span>
+          <p><b>⛔ いったん全員を締め出す</b><br>いま参加している人を全員外し、入り方を承認制（合言葉つきなら合言葉つき）に切り替えます。リンクも同時に作り直せます。付箋や予定は消えません。</p>
+        </div>
+        <div class="caveat">
+          <span class="pin" style="background:var(--spb)"></span>
+          <p><b>👤 一人だけ外す</b><br>参加者一覧から「アクセスを取り消す」を選べます。リンク公開のままだと入り直せるので、その場合は注意が出ます。</p>
+        </div>
+        <div class="caveat">
+          <span class="pin" style="background:var(--pen-green)"></span>
+          <p><b>🔚 ボードを終了する</b><br>合宿や文化祭が終わったあとに。中身はそのまま読めて、新しい書き込みだけができなくなります。「削除する」と「使い続ける」の間の状態です。あとから再開できます。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule">
+
+  <!-- ============================================================ -->
+  <!--  はじめかた（本当に順番があるので番号を振る）                  -->
+  <!-- ============================================================ -->
+  <section id="start">
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">Getting started</p>
+        <h2>3つで始められます。</h2>
+        <p>アカウントを作る手順も、パスワードを決める場面もありません。</p>
+      </div>
+
+      <div class="steps">
+        <article class="step">
+          <h3>名前を入れる</h3>
+          <p>表示名だけです。メールアドレスもパスワードも聞かれません。あとから変えられます。</p>
+        </article>
+        <article class="step">
+          <h3>ボードを作る</h3>
+          <p>入り方（リンク公開・合言葉つき・承認制）と、最初の形（白紙・KPT・カンバン・ブレスト・会議メモ）を選びます。</p>
+        </article>
+        <article class="step">
+          <h3>リンクを送る</h3>
+          <p>出てきた共有リンクを、一緒に使いたい人に送るだけ。相手も名前を入れれば、すぐ書き込めます。目の前にいる人には、QR コードを見せても入れます。</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule">
+
+  <!-- ============================================================ -->
+  <!--  知っておくこと                                               -->
+  <!-- ============================================================ -->
+  <section id="caveats">
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">Good to know</p>
+        <h2>先に知っておいてほしいこと。</h2>
+        <p>手軽さと引き換えになっている部分です。使いはじめる前に目を通しておくと、あとで困りません。</p>
+      </div>
+
+      <div class="caveats">
+        <div class="caveat">
+          <span class="pin" style="background:var(--pen-red)"></span>
+          <p><b>名前は自己申告です。</b>本人確認の仕組みはありません。誰が書いたかを厳密に証明する必要がある用途には向きません。</p>
+        </div>
+        <div class="caveat">
+          <span class="pin" style="background:var(--syb)"></span>
+          <p><b>使っている人は、ブラウザごとに別の人として扱われます。</b>同じ人でも、家のパソコンとスマホでは別人になります。ボードを作った人の権限を引き継ぐための「オーナー復帰リンク」が共有画面にあるので、これは控えておいてください。</p>
+        </div>
+        <div class="caveat">
+          <span class="pin" style="background:var(--pen-red)"></span>
+          <p><b>つながっていないあいだに書いたものは、保存されません。</b>電波が切れると上に <b>⚠ オフライン</b> の帯が出ます。そのあいだも画面には書けてしまいますが、読み込み直すと消えます。あとでまとめて送る仕組みは、あえて入れていません。誰かが戻ってきた瞬間に古い内容で上書きされ、どれが生きているのか誰にも分からなくなるからです。つながってから書き直してください。</p>
+        </div>
+        <div class="caveat">
+          <span class="pin" style="background:var(--pen-green)"></span>
+          <p><b>終了したボードは、読めますが書けません。</b>作った人を含めて、誰も新しく書き込めなくなります。付箋・予定・やることはそのまま残り、読むことも、書き出すことも、複製することもできます。もう一度使いたくなったら、いつでも<b>再開</b>できます。</p>
+        </div>
+        <div class="caveat">
+          <span class="pin" style="background:var(--sbb)"></span>
+          <p><b>取り消し（<kbd>Ctrl</kbd>+<kbd>Z</kbd>）は、自分がそのタブでした操作だけが対象です。</b>他の人の操作は取り消せませんし、タブを閉じると取り消せる範囲も消えます。ただし消した付箋・予定・やること・画像は 30 日ゴミ箱に残るので、他の人が消したものもそこから戻せます。</p>
+        </div>
+        <div class="caveat">
+          <span class="pin" style="background:var(--sgb)"></span>
+          <p><b>繰り返し予定を「すべての回」で大きく変えると、「この回だけ」の調整は取り消されます。</b>開始日や繰り返し方を変えたときだけで、時刻だけの変更なら残ります。保存する前に確認が出ます。</p>
+        </div>
+        <div class="caveat">
+          <span class="pin" style="background:var(--skb)"></span>
+          <p><b>リンク公開のままでは、期限や人数の条件は「読める人」を絞りません。</b>URL を知っている人は中身を読めてしまうので、条件が効くのは「新しく参加者として登録できるか」までです。読める人を絞りたいときは、入り方を<b>合言葉つき</b>か<b>承認制</b>に変えてください。条件を足すだけなら、いま参加している人は締め出されません。</p>
+        </div>
+        <div class="caveat">
+          <span class="pin" style="background:var(--sbb)"></span>
+          <p><b>付箋から作った「やること」「予定」は、作ったあとは別のものになります。</b>付箋を直しても自動では変わりません。代わりに「元が変更されています」と出るので、<b>反映する</b>か<b>このままにする</b>かをその場で選べます。勝手に書き換わって、誰の変更なのか分からなくなるのを避けるためです。</p>
+        </div>
+        <div class="caveat">
+          <span class="pin" style="background:var(--sgb)"></span>
+          <p><b>カレンダーの「予定」と「締切」は別のものです。</b>予定はその日時に集まる・行うこと、締切はその日までに終えることです。締切は終日の欄に <b>⏰ …〆</b> として控えめに並びます。やることを「カレンダーに締切として出す」と、同じものが二重に出ないよう期限の重ね表示は消えます。</p>
+        </div>
+        <div class="caveat">
+          <span class="pin" style="background:var(--syb)"></span>
+          <p><b>別の端末でも同じ自分として使いたいときは、メールアドレスを結びつけられます。</b>ホーム画面の 📱 から設定できます。送る前に何が起きるかの確認が出ます。あとから<b>切り離す</b>ことも、<b>自分のデータを消す</b>こともできます。使わなくてもボードの機能はすべて動くので、必要な人だけどうぞ。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <!--
+        各 section には前から id が付いていたが、そこへ行く手段が無かった。
+        章の一覧をここに置いて、深いリンクを共有できるようにする。
+      -->
+      <nav class="foot-nav" aria-label="章の一覧">
+        <ul>
+          <li><a href="#scenes">こんなときに</a></li>
+          <li><a href="#tools">3つの道具</a></li>
+          <li><a href="#board-ops">右クリック</a></li>
+          <li><a href="#flow">付箋から予定へ</a></li>
+          <li><a href="#together">みんなで同時に</a></li>
+          <li><a href="#keeping-up">あとから追いつく</a></li>
+          <li><a href="#inout">持ち出す・持ち込む</a></li>
+          <li><a href="#share">共有のしかた</a></li>
+          <li><a href="#start">始めかた</a></li>
+          <li><a href="#caveats">先に知っておいてほしいこと</a></li>
+        </ul>
+      </nav>
+
+      <div class="foot">
+        <span class="name">みんなのボード</span>
+        <span>ホワイトボード・カレンダー・リマインドを、リンクの共有だけで。</span>
+        <span style="margin-left:auto">
+          くわしい操作手順は <a href="MANUAL.html">操作手順書</a>、
+          技術的な内容は <a href="OVERVIEW.html">技術資料</a> と
+          <a href="../README.md">README</a>、導入手順は <a href="SETUP.md">SETUP.md</a> に
+        </span>
+      </div>
+    </div>
+  </footer>
+
+</div>
+</body>
+</html>

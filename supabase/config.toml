@@ -1,0 +1,31 @@
+# Supabase CLI の設定。
+#
+# ここに置いている一番の目的は、Edge Function の JWT 検証を
+# 「デプロイ時に --no-verify-jwt を付け忘れないこと」ではなく、
+# リポジトリ側で宣言的に固定することです。
+#
+# fetch-ics は外部 URL を取りに行く中継なので、必ずログイン済みの人だけに開きます。
+# send-reminders / purge-storage は pg_cron から service_role で叩くので、
+# エッジでの JWT 検証は外し、関数の中で共有シークレットを照合します
+# （supabase/functions/*/index.ts と supabase/cron.sql を参照）。
+#
+# 書いていない項目は CLI の既定値が使われます。
+
+project_id = "shared-board"
+
+[auth]
+# 本番と同じく、ローカルでも匿名サインインを有効にしておく
+# （docs/SETUP.md「3. 匿名サインインを有効にする」と対応）
+enable_anonymous_sign_ins = true
+
+[functions.fetch-ics]
+# 外部 .ics の取得中継。匿名でもよいが「サインイン済み」であることは必須。
+verify_jwt = true
+
+[functions.send-reminders]
+# pg_cron から呼ぶ。認証は関数内の CRON_SHARED_SECRET で行う。
+verify_jwt = false
+
+[functions.purge-storage]
+# 同上。
+verify_jwt = false

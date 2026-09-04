@@ -1,0 +1,92 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import {
+  allDayEndIso,
+  allDayStartIso,
+  boardDateTimeIso,
+  boardStamp,
+  daysInMonth,
+  fromBoardParts,
+  occurrenceKeyDate,
+  reminderKey,
+  toBoardDate,
+  toBoardParts,
+  untilLimit,
+} from '../dates'
+
+describe('dates（ボードの暦 = Asia/Tokyo）', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('終日予定の開始は JST 0:00（= 前日 15:00Z）', () => {
+    expect(allDayStartIso('2026-09-01')).toBe('2026-08-31T15:00:00.000Z')
+    expect(allDayEndIso('2026-09-01')).toBe('2026-09-01T14:59:00.000Z')
+  })
+
+  it('日付と時刻を JST として ISO にする', () => {
+    expect(boardDateTimeIso('2026-09-01', '10:30')).toBe('2026-09-01T01:30:00.000Z')
+    expect(boardDateTimeIso('2026-01-01', '00:00')).toBe('2025-12-31T15:00:00.000Z')
+  })
+
+  it('toBoardDate は ISO 文字列でも Date でも同じ日付を返し、往復できる', () => {
+    expect(toBoardDate('2026-08-31T15:00:00.000Z')).toBe('2026-09-01')
+    expect(toBoardDate(new Date('2026-08-31T14:59:59.999Z'))).toBe('2026-08-31')
+    for (const day of ['2024-02-29', '2026-01-01', '2026-12-31']) {
+      expect(toBoardDate(allDayStartIso(day))).toBe(day)
+      expect(toBoardDate(allDayEndIso(day))).toBe(day)
+    }
+  })
+
+  it('toBoardParts / fromBoardParts は往復し、月末を超えた日は繰り上がる', () => {
+    const date = new Date('2026-03-31T14:59:59.999Z')
+    const parts = toBoardParts(date)
+    expect(parts).toEqual({ y: 2026, m: 3, d: 31, hh: 23, mm: 59, ss: 59, ms: 999 })
+    expect(fromBoardParts(parts).getTime()).toBe(date.getTime())
+    expect(toBoardDate(fromBoardParts({ y: 2026, m: 1, d: 32 }))).toBe('2026-02-01')
+    expect(daysInMonth(2024, 2)).toBe(29)
+    expect(daysInMonth(2025, 2)).toBe(28)
+  })
+
+  it('boardStamp は JST の壁時計', () => {
+    expect(boardStamp('2026-08-31T15:00:00.000Z')).toBe('20260901T0000')
+  })
+
+  it('untilLimit は終了日の翌日 JST 0:00（排他）', () => {
+    expect(untilLimit('2026-09-30')?.toISOString()).toBe('2026-09-30T15:00:00.000Z')
+    expect(untilLimit('2026-12-31')?.toISOString()).toBe('2026-12-31T15:00:00.000Z')
+    expect(untilLimit(null)).toBeNull()
+    expect(untilLimit('')).toBeNull()
+    // ISO 形式で入っていても JST の日付として扱う
+    expect(untilLimit('2026-09-30T00:00:00+09:00')?.toISOString()).toBe(
+      '2026-09-30T15:00:00.000Z',
+    )
+  })
+
+  it('occurrenceKeyDate は元の回の JST 日付', () => {
+    expect(occurrenceKeyDate(new Date('2026-08-31T15:00:00.000Z'))).toBe('2026-09-01')
+    expect(occurrenceKeyDate('2026-08-31T14:59:00.000Z')).toBe('2026-08-31')
+  })
+
+  it('reminderKey は時刻を toISOString 形式に正規化する（+00:00 と Z で同じ）', () => {
+    const a = reminderKey('event', 'e1', '2026-09-01T01:00:00+00:00', 30)
+    const b = reminderKey('event', 'e1', '2026-09-01T01:00:00Z', 30)
+    const c = reminderKey('event', 'e1', new Date('2026-09-01T10:00:00+09:00'), 30)
+    expect(a).toBe('event:e1:2026-09-01T01:00:00.000Z:30')
+    expect(b).toBe(a)
+    expect(c).toBe(a)
+    expect(reminderKey('todo', 't1', '2026-09-01T10:00:00+09:00', 0)).toBe(
+      'todo:t1:2026-09-01T01:00:00.000Z:0',
+    )
+  })
+
+  it('実行環境のタイムゾーンを変えても結果が変わらない', () => {
+    vi.stubEnv('TZ', 'America/New_York')
+    // stub が効いていることの確認（NY は UTC-4/-5）
+    expect(new Date('2026-09-01T00:00:00Z').getTimezoneOffset()).not.toBe(-540)
+
+    expect(allDayStartIso('2026-09-01')).toBe('2026-08-31T15:00:00.000Z')
+    expect(toBoardDate('2026-08-31T15:00:00.000Z')).toBe('2026-09-01')
+    expect(boardDateTimeIso('2026-09-01', '10:30')).toBe('2026-09-01T01:30:00.000Z')
+    expect(untilLimit('2026-09-30')?.toISOString()).toBe('2026-09-30T15:00:00.000Z')
+  })
+})
