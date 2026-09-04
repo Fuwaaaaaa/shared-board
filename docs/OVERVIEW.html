@@ -351,8 +351,10 @@
 │  ├─ send-reminders     Web Push の送信（pg_cron から毎分）
 │  ├─ purge-storage      Storage の実体削除（SQL からは消せないため）
 │  └─ _shared/           dates / recurrence / cronAuth（画面と共有）
-└─ <b>tests/</b>
-   └─ rls.test.sql       権限が効いているかの確認（pgTAP・168 件）
+├─ <b>tests/</b>
+│  └─ rls.test.sql       権限が効いているかの確認（pgTAP・168 件）
+└─ <b>stubs/</b>
+   └─ _stub_storage.sql  使い捨ての DB で schema.sql を流すための足場
 
 <b>docs/</b>
 ├─ GUIDE.html            利用者向けの紹介ページ

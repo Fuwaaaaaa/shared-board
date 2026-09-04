@@ -528,7 +528,7 @@ psql -U postgres -f supabase/tests/rls.test.sql
 > ```bash
 > docker run -d --name board-test -e POSTGRES_PASSWORD=postgres \
 >   public.ecr.aws/supabase/postgres:17.6.1.136
-> docker cp supabase/tests/_stub_storage.sql board-test:/tmp/
+> docker cp supabase/stubs/_stub_storage.sql board-test:/tmp/
 > docker cp supabase/schema.sql board-test:/tmp/
 > docker cp supabase/tests/rls.test.sql board-test:/tmp/
 > docker exec board-test psql -U supabase_admin -d postgres -f /tmp/_stub_storage.sql
@@ -538,6 +538,9 @@ psql -U postgres -f supabase/tests/rls.test.sql
 >
 > `_stub_storage.sql` は、Storage サービスを立てずに `schema.sql` を最後まで
 > 流すための足場です。本番の Supabase では要りません。
+> `supabase/tests/` の外に置いてあるのは、`supabase test db` が
+> その下の `.sql` を全部テストとして拾ってしまうためです（足場には
+> pgTAP の plan が無いので、混ぜると必ず失敗します）。
 
 ### 権限（RLS）が効いているか — 画面から
 

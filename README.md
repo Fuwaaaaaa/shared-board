@@ -151,9 +151,10 @@ supabase/
 │   ├─ purge-storage/             消したファイルの実体を掃除する（cron から）
 │   ├─ fetch-ics/                 外部カレンダーの取得中継（SSRF 対策つき）
 │   └─ _shared/                   フロントと共有する日付・繰り返し・入口の認証
-└─ tests/
-    ├─ rls.test.sql               権限が効いているかのテスト（pgTAP）
-    └─ _stub_storage.sql          テスト用の storage スタブ
+├─ tests/
+│   └─ rls.test.sql               権限が効いているかのテスト（pgTAP）
+└─ stubs/
+    └─ _stub_storage.sql          使い捨ての DB で schema.sql を流すための足場
 
 e2e/                              ブラウザで実際に触るテスト（Playwright）
 
