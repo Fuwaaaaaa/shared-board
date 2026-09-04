@@ -1,5 +1,5 @@
 import { parseISO } from 'date-fns'
-import { originalStartFor } from './recurrence'
+import { nthOccurrence, originalStartFor } from './recurrence'
 import { fromBoardParts, toBoardDate, toBoardParts, untilLimit } from './dates'
 import type { CalendarEvent, EventOverride, Recurrence, Todo } from './types'
 
@@ -103,6 +103,64 @@ function pushEventBody(
   if (event.tags?.length) lines.push(`CATEGORIES:${event.tags.map(escapeText).join(',')}`)
 }
 
+/*
+ * 終わりの無い繰り返しを .ics に写すときに、RDATE を出す先の上限。
+ *
+ * 「丸めた回」は RRULE では表せないので 1 つずつ書き出すしかない。
+ * 無限には書けないので、ここで区切る。取り込み先で 3 年より先の
+ * 2/28（毎月 31 日の 2 月分）が欠けるが、そのころには書き出し直せる。
+ */
+const RDATE_HORIZON_YEARS = 3
+
+/** RDATE の行数の上限（毎月なら 3 年で最大 36 件なので、実質は届かない） */
+const MAX_RDATES = 60
+
+/**
+ * 「その月に無い日なので月末へ丸めた」回を並べる。
+ *
+ * アプリは 1/31 の毎月を 2/28 → 3/31 と月末へ丸めるが、.ics の
+ * FREQ=MONTHLY は「無い日はその月を飛ばす」と読む決まりで、この差は
+ * RRULE では書き表せない。そこで丸めで生まれた回だけを RDATE で名指しして補う。
+ *
+ * 丸めが起きるのは、毎月なら 29〜31 日、毎年なら 2/29 の予定だけ。
+ * それ以外は空を返すので、ふつうの予定の書き出しは今までと同じ形になる。
+ */
+export function clampedRecurrenceDates(
+  event: Pick<CalendarEvent, 'start_at' | 'recurrence' | 'recurrence_until'>,
+  now: Date = new Date(),
+): Date[] {
+  const rec = event.recurrence
+  if (rec !== 'monthly' && rec !== 'yearly') return []
+
+  const start = parseISO(event.start_at)
+  const base = toBoardParts(start)
+  if (rec === 'monthly' && base.d <= 28) return []
+  if (rec === 'yearly' && !(base.m === 2 && base.d === 29)) return []
+
+  const limit = untilLimit(event.recurrence_until)
+  const anchor = toBoardParts(start.getTime() > now.getTime() ? start : now)
+  const horizon = limit ?? fromBoardParts({ ...anchor, y: anchor.y + RDATE_HORIZON_YEARS })
+
+  /*
+   * 何年も前に始まった繰り返しだと、古い回だけで上限に達してしまう。
+   * 手元のカレンダーで意味があるのは最近と先の回なので、1 年前より
+   * 古いものは出さない（そのぶん取り込み先では過去の回が欠ける）。
+   */
+  const oldest = fromBoardParts({ ...toBoardParts(now), y: toBoardParts(now).y - 1 })
+  const windowStart = start.getTime() > oldest.getTime() ? start : oldest
+
+  const dates: Date[] = []
+  // n = 0 は DTSTART そのものなので、丸めは起きない
+  for (let n = 1; dates.length < MAX_RDATES; n++) {
+    const cursor = nthOccurrence(start, rec, n)
+    if (cursor > horizon) break
+    if (limit && cursor >= limit) break
+    if (cursor < windowStart) continue
+    if (toBoardParts(cursor).d !== base.d) dates.push(cursor)
+  }
+  return dates
+}
+
 /** 例外の回を指す EXDATE / RECURRENCE-ID の値 */
 function occurrenceStamp(allDay: boolean, originalStart: Date): string {
   return allDay ? `;VALUE=DATE:${dateStamp(originalStart)}` : `:${utcStamp(originalStart)}`
@@ -149,10 +207,23 @@ export function buildIcs(
 
       // 削除した回だけを EXDATE で外す。
       // 変更した回は繰り返しの一部のままで、下の RECURRENCE-ID 付き VEVENT が上書きする。
+      const canceled = new Set<number>()
       for (const override of mine) {
         if (!override.canceled) continue
         const originalStart = originalStartFor(event, override.occurrence_date)
+        canceled.add(originalStart.getTime())
         lines.push(`EXDATE${occurrenceStamp(event.all_day, originalStart)}`)
+      }
+
+      // 月末へ丸めた回は RRULE では表せないので、名指しで足す。
+      // 消した回まで足し直さないよう、EXDATE に出したものは除く
+      const clamped = clampedRecurrenceDates(event, now).filter((d) => !canceled.has(d.getTime()))
+      if (clamped.length > 0) {
+        lines.push(
+          event.all_day
+            ? `RDATE;VALUE=DATE:${clamped.map(dateStamp).join(',')}`
+            : `RDATE:${clamped.map(utcStamp).join(',')}`,
+        )
       }
     }
 

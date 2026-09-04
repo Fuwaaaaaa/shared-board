@@ -1,7 +1,20 @@
-import { describe, expect, it } from 'vitest'
-import { buildIcs } from '../ics'
-import { allDayEndIso, allDayStartIso, boardDateTimeIso } from '../dates'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { buildIcs, clampedRecurrenceDates } from '../ics'
+import { allDayEndIso, allDayStartIso, boardDateTimeIso, toBoardDate } from '../dates'
 import type { CalendarEvent, EventOverride, Todo } from '../types'
+
+/**
+ * 時計を止める。RDATE は「今」を起点に何年ぶん出すかを決めるので、
+ * 止めないと実行した日によって結果が変わる。
+ */
+function freezeAt(iso: string) {
+  vi.useFakeTimers()
+  vi.setSystemTime(new Date(iso))
+}
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 function makeEvent(patch: Partial<CalendarEvent> = {}): CalendarEvent {
   return {
@@ -239,6 +252,56 @@ describe('書き出したものを自分で読み戻せる', () => {
     expect(titles).toEqual(['今週だけ別の日', '定例', '定例'])
     expect(hits.filter((h) => h.title === '今週だけ別の日')).toHaveLength(1)
   })
+
+  it('毎月 31 日の回が、アプリの表示と 1 回ずつ一致する', async () => {
+    /*
+     * アプリは「その月に無い日は月末へ丸める」、.ics の FREQ=MONTHLY は
+     * 「無い日はその月を飛ばす」。この差を RDATE で埋めているので、
+     * 書き出して読み戻すと同じ並びに戻るはず。
+     * 埋め忘れれば回が減り、二重に足せば回が増えるので、どちらも見つかる。
+     */
+    const { expandFeedEvents } = await import('../icsParse')
+    const { expandOccurrences } = await import('../recurrence')
+    freezeAt('2026-01-01T00:00:00Z')
+
+    const event = makeEvent({
+      recurrence: 'monthly',
+      recurrence_until: '2026-12-31',
+      start_at: boardDateTimeIso('2026-01-31', '10:00'),
+      end_at: boardDateTimeIso('2026-01-31', '11:00'),
+    })
+
+    const from = new Date(boardDateTimeIso('2026-01-01', '00:00'))
+    const to = new Date(boardDateTimeIso('2026-12-31', '23:59'))
+
+    const inApp = expandOccurrences([event], from, to, [])
+      .map((o) => toBoardDate(o.start))
+      .sort()
+    const inFeed = expandFeedEvents(
+      buildIcs('ボード', [event], [], []),
+      { id: 'f1', name: '自分', color: 'slate' },
+      from,
+      to,
+    )
+      .map((e) => toBoardDate(e.start))
+      .sort()
+
+    expect(inApp).toEqual([
+      '2026-01-31',
+      '2026-02-28',
+      '2026-03-31',
+      '2026-04-30',
+      '2026-05-31',
+      '2026-06-30',
+      '2026-07-31',
+      '2026-08-31',
+      '2026-09-30',
+      '2026-10-31',
+      '2026-11-30',
+      '2026-12-31',
+    ])
+    expect(inFeed).toEqual(inApp)
+  })
 })
 
 describe('絵文字（サロゲートペア）', () => {
@@ -269,12 +332,12 @@ describe('行の終わり方', () => {
   })
 })
 
-describe('繰り返しの書き方（取り込み先との食い違いを固定する）', () => {
+describe('繰り返しの書き方', () => {
   it('毎月は BYMONTHDAY を付けずに出す', () => {
     // このアプリは「その月に無い日は月末に丸める」（1/31 の毎月 → 2/28）が、
     // .ics の FREQ=MONTHLY は仕様上「無い日はその月を飛ばす」。
-    // 丸める挙動を RRULE で正確に表す書き方が無いので、食い違いは README に記録し、
-    // 出力の形だけここで固定しておく（勝手に変わったら気づけるように）
+    // 丸める挙動を RRULE で表す書き方は無いので、RRULE は素のまま出し、
+    // 足りない回を RDATE で補う（下のテスト）
     const text = buildIcs(
       'ボード',
       [makeEvent({ recurrence: 'monthly', start_at: boardDateTimeIso('2026-01-31', '10:00') })],
@@ -282,5 +345,136 @@ describe('繰り返しの書き方（取り込み先との食い違いを固定�
       [],
     )
     expect(unfold(text)).toContain('RRULE:FREQ=MONTHLY')
+  })
+})
+
+describe('clampedRecurrenceDates（月末へ丸めた回を並べる）', () => {
+  const now = new Date('2026-01-01T00:00:00Z')
+
+  it('毎月 31 日は、丸められた月だけを挙げる', () => {
+    const dates = clampedRecurrenceDates(
+      {
+        start_at: boardDateTimeIso('2026-01-31', '10:00'),
+        recurrence: 'monthly',
+        recurrence_until: '2026-12-31',
+      },
+      now,
+    )
+    // 2/28, 4/30, 6/30, 9/30, 11/30 の 5 回。31 日のある月は RRULE が出す
+    expect(dates.map((d) => toBoardDate(d))).toEqual([
+      '2026-02-28',
+      '2026-04-30',
+      '2026-06-30',
+      '2026-09-30',
+      '2026-11-30',
+    ])
+  })
+
+  it('時刻は元の予定のまま保つ', () => {
+    const [first] = clampedRecurrenceDates(
+      {
+        start_at: boardDateTimeIso('2026-01-31', '10:00'),
+        recurrence: 'monthly',
+        recurrence_until: '2026-03-31',
+      },
+      now,
+    )
+    expect(first.toISOString()).toBe(boardDateTimeIso('2026-02-28', '10:00'))
+  })
+
+  it('毎年 2/29 は、平年だけを挙げる', () => {
+    const dates = clampedRecurrenceDates(
+      {
+        start_at: boardDateTimeIso('2028-02-29', '10:00'),
+        recurrence: 'yearly',
+        recurrence_until: '2033-12-31',
+      },
+      new Date('2028-01-01T00:00:00Z'),
+    )
+    // 2032 はうるう年なので 2/29 がそのまま出る。丸めが要るのはそれ以外の年
+    expect(dates.map((d) => toBoardDate(d))).toEqual([
+      '2029-02-28',
+      '2030-02-28',
+      '2031-02-28',
+      '2033-02-28',
+    ])
+  })
+
+  it('丸めが起きない予定では空を返す（ふつうの予定の出力は変わらない）', () => {
+    for (const day of ['2026-01-15', '2026-01-28']) {
+      expect(
+        clampedRecurrenceDates(
+          { start_at: boardDateTimeIso(day, '10:00'), recurrence: 'monthly', recurrence_until: null },
+          now,
+        ),
+      ).toEqual([])
+    }
+    expect(
+      clampedRecurrenceDates(
+        {
+          start_at: boardDateTimeIso('2026-01-31', '10:00'),
+          recurrence: 'weekly',
+          recurrence_until: null,
+        },
+        now,
+      ),
+    ).toEqual([])
+  })
+
+  it('終わりの無い繰り返しでも、有限で打ち切る', () => {
+    const dates = clampedRecurrenceDates(
+      {
+        start_at: boardDateTimeIso('2026-01-31', '10:00'),
+        recurrence: 'monthly',
+        recurrence_until: null,
+      },
+      now,
+    )
+    expect(dates.length).toBeGreaterThan(0)
+    expect(dates.length).toBeLessThanOrEqual(60)
+    // 3 年より先は出さない
+    expect(dates[dates.length - 1].getTime()).toBeLessThan(
+      new Date('2029-06-01T00:00:00Z').getTime(),
+    )
+  })
+
+  it('書き出した .ics に RDATE が並ぶ', () => {
+    freezeAt('2026-01-01T00:00:00Z')
+    const text = buildIcs(
+      'ボード',
+      [
+        makeEvent({
+          recurrence: 'monthly',
+          recurrence_until: '2026-12-31',
+          start_at: boardDateTimeIso('2026-01-31', '10:00'),
+          end_at: boardDateTimeIso('2026-01-31', '11:00'),
+        }),
+      ],
+      [],
+      [],
+    )
+    const rdate = unfold(text).find((line) => line.startsWith('RDATE'))
+    expect(rdate).toBeDefined()
+    expect(rdate).toContain('20260228T010000Z')
+  })
+
+  it('消した回は RDATE に出さない（EXDATE と食い違わせない）', () => {
+    freezeAt('2026-01-01T00:00:00Z')
+    const text = buildIcs(
+      'ボード',
+      [
+        makeEvent({
+          recurrence: 'monthly',
+          recurrence_until: '2026-12-31',
+          start_at: boardDateTimeIso('2026-01-31', '10:00'),
+          end_at: boardDateTimeIso('2026-01-31', '11:00'),
+        }),
+      ],
+      [],
+      [makeOverride({ occurrence_date: '2026-02-28', canceled: true })],
+    )
+    const lines = unfold(text)
+    expect(lines.some((line) => line.startsWith('EXDATE') && line.includes('20260228'))).toBe(true)
+    expect(lines.some((line) => line.startsWith('RDATE') && line.includes('20260228'))).toBe(false)
   })
 })
