@@ -5,6 +5,7 @@ import Modal from './Modal'
 import { supabase } from '../lib/supabase'
 import { useIdentity } from '../lib/identity'
 import { useRoomData } from '../lib/roomData'
+import { messageOf } from '../lib/errorMessage'
 
 /**
  * ボードあたりの保存数。増えすぎないよう古いものから捨てる。
@@ -118,7 +119,7 @@ export default function SnapshotModal({ onClose }: { onClose: () => void }) {
       setNotice('いまの状態を保存しました。')
       await load()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(messageOf(e))
     } finally {
       setBusy(false)
     }
@@ -156,7 +157,7 @@ export default function SnapshotModal({ onClose }: { onClose: () => void }) {
       setNotice('戻しました。')
       await load()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(messageOf(e))
     } finally {
       setBusy(false)
     }

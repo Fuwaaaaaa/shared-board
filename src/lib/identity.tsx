@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { ensureSession, isSupabaseConfigured, supabase } from './supabase'
 import { captchaEnabled, getCaptchaToken } from './captcha'
+import { messageOf } from './errorMessage'
 
 const NAME_KEY = 'board.displayName'
 
@@ -59,7 +60,7 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
     if (!isSupabaseConfigured) return
     startSession()
       .then(setUserId)
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) => setError(messageOf(e)))
   }, [])
 
   /**

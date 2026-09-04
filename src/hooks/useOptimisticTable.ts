@@ -1,5 +1,6 @@
 import { useMemo, useRef } from 'react'
 import { supabase } from '../lib/supabase'
+import { messageOf } from '../lib/errorMessage'
 import type { useRealtimeTable } from './useRealtimeTable'
 
 interface Row {
@@ -36,11 +37,6 @@ function chunks<T>(list: T[], size: number): T[][] {
   const out: T[][] = []
   for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size))
   return out
-}
-
-function messageOf(e: unknown): string {
-  if (e && typeof e === 'object' && 'message' in e) return String((e as { message: unknown }).message)
-  return e instanceof Error ? e.message : String(e)
 }
 
 function pick<T extends object>(row: T, keys: (keyof T)[]): Partial<T> {

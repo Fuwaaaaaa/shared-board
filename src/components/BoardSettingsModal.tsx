@@ -8,6 +8,7 @@ import { generateSlug, supabase } from '../lib/supabase'
 import { useIdentity } from '../lib/identity'
 import { accessInfo } from '../lib/access'
 import type { BoardImage, CalendarEvent, Note, RoomPreview, Stroke, Todo } from '../lib/types'
+import { messageOf } from '../lib/errorMessage'
 
 interface Props {
   preview: RoomPreview
@@ -149,7 +150,7 @@ export default function BoardSettingsModal({
 
       navigate(`/r/${slug}`)
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(messageOf(e))
     } finally {
       setBusy(false)
     }

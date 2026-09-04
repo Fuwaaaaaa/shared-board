@@ -166,6 +166,8 @@ src/
 │   ├─ identity.tsx    表示名の管理
 │   ├─ theme.tsx       ライト / ダーク / OS 追従
 │   ├─ roomData.tsx    ルームの全データを 1 か所で購読
+│   ├─ access.ts       入り方（リンク公開 / 合言葉つき / 承認制）の判定
+│   ├─ errorMessage.ts 例外を、人に見せる 1 行にする
 │   ├─ recurrence.ts   繰り返し予定の展開
 │   ├─ tz.ts           外部カレンダーのタイムゾーン換算
 │   ├─ icsRecurrence.ts 外部カレンダーの繰り返し（相手の暦で数える）
@@ -252,9 +254,9 @@ src/
 
 | 層 | 何を見るか | 走らせ方 |
 | --- | --- | --- |
-| 純粋関数（Vitest / node） | 繰り返し・祝日・ics・CSV・検索など。15 本 279 件 | `npm test` |
+| 純粋関数（Vitest / node） | 繰り返し・祝日・ics・CSV・検索など。17 本 294 件 | `npm test` |
 | コンポーネント（Vitest / jsdom） | ドラッグの確定など、DOM が要るもの。2 本 12 件 | `npm test` |
-| ブラウザ（Playwright） | 保存されて残るか、2 人目に届くか。5 件 | `npm run test:e2e` |
+| ブラウザ（Playwright） | 保存されて残るか、2 人目に届くか、入り方と権限。11 件 | `npm run test:e2e` |
 | 権限（pgTAP） | RLS が効いているか。168 件 | `supabase test db` |
 
 ブラウザのテストはローカルの Supabase が要ります。動いていなければ自動で

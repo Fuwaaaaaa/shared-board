@@ -12,6 +12,7 @@ import {
 } from '../lib/csv'
 import { buildIcs, downloadText } from '../lib/ics'
 import type { CalendarEvent, Todo } from '../lib/types'
+import { messageOf } from '../lib/errorMessage'
 
 const EVENT_HEADERS = [
   'タイトル',
@@ -186,7 +187,7 @@ export default function ImportExportModal({ boardName, onClose }: Props) {
         `${rows.length} 件の予定を取り込みました。${skipped > 0 ? `（${skipped} 行は読み取れず飛ばしました）` : ''}`,
       )
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(messageOf(e))
     } finally {
       setBusy(false)
     }
@@ -272,7 +273,7 @@ export default function ImportExportModal({ boardName, onClose }: Props) {
         `${rows.length} 件のリマインドを取り込みました。${skipped > 0 ? `（${skipped} 行は読み取れず飛ばしました）` : ''}`,
       )
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(messageOf(e))
     } finally {
       setBusy(false)
     }

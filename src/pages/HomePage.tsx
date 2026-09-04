@@ -5,9 +5,10 @@ import { useIdentity } from '../lib/identity'
 import { ThemeToggle } from '../lib/theme'
 import { usePwa } from '../hooks/usePwa'
 import { BOARD_TEMPLATES } from '../lib/templates'
-import { ACCESS_MODES, visibilityFor, type AccessMode } from '../lib/access'
+import { ACCESS_MODES, checkPin, visibilityFor, type AccessMode } from '../lib/access'
 import AccountModal from '../components/AccountModal'
 import type { Note, Room } from '../lib/types'
+import { messageOf } from '../lib/errorMessage'
 
 interface JoinedRoom {
   memberId: string
@@ -110,9 +111,12 @@ export default function HomePage() {
     e.preventDefault()
     const trimmed = name.trim()
     if (!trimmed || creating) return
-    if (mode === 'pin' && !pin.trim()) {
-      setError('合言葉つきにするには、合言葉を決めてください。')
-      return
+    if (mode === 'pin') {
+      const problem = checkPin(pin)
+      if (problem) {
+        setError(problem)
+        return
+      }
     }
 
     setCreating(true)
@@ -180,7 +184,7 @@ export default function HomePage() {
 
       navigate(`/r/${slug}?created=1`)
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(messageOf(e))
       setCreating(false)
     }
   }
@@ -262,7 +266,7 @@ export default function HomePage() {
                   value={pin}
                   maxLength={32}
                   onChange={(e) => setPin(e.target.value)}
-                  placeholder="合言葉（例：1234 / あいことば）"
+                  placeholder="合言葉（6 文字以上。例：あきまつり2026）"
                   className="mt-3 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-800"
                 />
               )}

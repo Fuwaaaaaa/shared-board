@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { expandFeedEvents, isFeedTruncated, type FeedEvent } from '../lib/icsParse'
 import type { CalendarFeed } from '../lib/types'
+import { messageOf } from '../lib/errorMessage'
 
 /** 取り込んだ内容をこの時間だけ使い回す。自動で読み直す間隔も同じ */
 const CACHE_MS = 15 * 60 * 1000
@@ -133,7 +134,7 @@ export function useCalendarFeeds(feeds: CalendarFeed[], from: Date, to: Date) {
           const text = await fetchIcsText(feed.url)
           return { id: feed.id, text, error: null as string | null }
         } catch (e) {
-          return { id: feed.id, text: '', error: e instanceof Error ? e.message : String(e) }
+          return { id: feed.id, text: '', error: messageOf(e) }
         }
       }),
     ).then((results) => {

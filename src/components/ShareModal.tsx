@@ -4,7 +4,7 @@ import { format, parseISO } from 'date-fns'
 import Modal from './Modal'
 import QrCode from './QrCode'
 import { supabase } from '../lib/supabase'
-import { ACCESS_MODES, accessMode, visibilityFor, type AccessMode } from '../lib/access'
+import { ACCESS_MODES, accessMode, checkPin, visibilityFor, type AccessMode } from '../lib/access'
 import type { JoinSettings, RoomPreview } from '../lib/types'
 
 interface Props {
@@ -76,6 +76,14 @@ export default function ShareModal({ preview, onClose, onUpdated }: Props) {
     if (next === 'pin' && !pinValue.trim()) {
       setPinDraft(true)
       return
+    }
+
+    if (next === 'pin') {
+      const problem = checkPin(pinValue)
+      if (problem) {
+        setError(problem)
+        return
+      }
     }
 
     setBusy(true)
@@ -464,7 +472,7 @@ function PinRow({
           disabled={busy}
           autoComplete="off"
           onChange={(e) => onChange(e.target.value)}
-          placeholder={configured ? '新しい合言葉' : '例：1234 / あいことば'}
+          placeholder={configured ? '新しい合言葉' : '6 文字以上。例：あきまつり2026'}
           className="min-w-0 flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-800"
         />
         <button

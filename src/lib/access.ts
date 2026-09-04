@@ -62,6 +62,28 @@ export function accessInfo(room: Pick<RoomPreview, 'visibility' | 'needs_pin'>):
   return ACCESS_MODE_MAP[accessMode(room)]
 }
 
+/*
+ * 合言葉の最短の長さ。
+ *
+ * サーバー（supabase/schema.sql の set_join_pin）が同じ数で弾く。
+ * ボード全体の試行回数の枠は「正しい合言葉を知っている人まで巻き込む」ので
+ * 緩くせざるを得ず、そのぶん合言葉そのものが推測されにくい必要がある。
+ *
+ * 画面側でも同じ判定を持つのは、押してから断られるのを避けるため。
+ * ここを変えるときは schema.sql も一緒に変えること。
+ */
+export const MIN_PIN_LENGTH = 6
+
+/** 合言葉として使えるか。使えないときは、そのまま見せられる理由を返す */
+export function checkPin(pin: string): string | null {
+  const trimmed = pin.trim()
+  if (!trimmed) return '合言葉を決めてください。'
+  if (trimmed.length < MIN_PIN_LENGTH) {
+    return `合言葉は ${MIN_PIN_LENGTH} 文字以上にしてください。`
+  }
+  return null
+}
+
 /** そのモードにするときの visibility。合言葉の有無は set_join_pin 側で決まる */
 export function visibilityFor(mode: AccessMode): Visibility {
   return mode === 'link' ? 'public' : 'private'

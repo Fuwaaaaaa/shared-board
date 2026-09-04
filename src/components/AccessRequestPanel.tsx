@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import type { AccessLevel } from '../hooks/useRoomAccess'
 import type { RoomPreview } from '../lib/types'
 import { useIdentity } from '../lib/identity'
+import { messageOf } from '../lib/errorMessage'
 
 interface Props {
   preview: RoomPreview
@@ -30,7 +31,7 @@ export default function AccessRequestPanel({ preview, level, onRequest }: Props)
     try {
       await onRequest(message.trim(), pin.trim())
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(messageOf(e))
     } finally {
       setSending(false)
     }

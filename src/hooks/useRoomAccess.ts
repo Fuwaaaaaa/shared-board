@@ -37,11 +37,20 @@ export function useRoomAccess(slug: string | undefined) {
     }
 
     setPreview(room)
+
+    /*
+     * 名簿に載っている人の状態を、ボードの公開設定より先に見る。
+     *
+     * 逆にすると、リンク公開のボードで「アクセスを取り消された人」や
+     * 「承認待ちの人」が guest（＝まだ来ていない人）に混ざる。
+     * 取り消したはずの人が入り直せてしまい、承認待ちの人には
+     * 何度も参加登録が走る。guest は「名簿にまだ載っていない」ときだけ。
+     */
     if (room.is_owner) setLevel('owner')
     else if (room.my_status === 'approved') setLevel('member')
-    else if (room.visibility === 'public') setLevel('guest')
-    else if (room.my_status === 'pending') setLevel('pending')
     else if (room.my_status === 'rejected') setLevel('rejected')
+    else if (room.my_status === 'pending') setLevel('pending')
+    else if (room.visibility === 'public') setLevel('guest')
     else setLevel('none')
   }, [slug])
 

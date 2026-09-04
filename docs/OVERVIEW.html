@@ -367,7 +367,7 @@
     <p>
       画面から切り離せる判断は <code>src/lib/</code> に集めてあります。
       ブラウザを立ち上げずに速く回せるので、ここが今もテストの主戦場です
-      （<b>15 本のテストで 279 件</b>）。DOM が要るものは <code>*.test.tsx</code> として
+      （<b>17 本のテストで 294 件</b>）。DOM が要るものは <code>*.test.tsx</code> として
       jsdom で書けますが、判断はできるだけこちらへ押し出してください。
     </p>
     <div class="table-scroll">
@@ -389,6 +389,8 @@
           <tr><td>boardClipboard.ts</td><td>付箋のコピーと貼り付け</td></tr>
           <tr><td>boardExport.ts</td><td>PNG 書き出し（データから再描画）</td></tr>
           <tr><td>noteFont.ts</td><td>付箋の文字サイズ</td></tr>
+          <tr><td>access.ts</td><td>入り方の判定と、合言葉の長さの決まり（サーバーと同じ数）</td></tr>
+          <tr><td>errorMessage.ts</td><td>例外を人に見せる 1 行にする</td></tr>
         </tbody>
       </table>
     </div>
@@ -672,6 +674,25 @@
         （<code>e2e/</code>・Playwright）も書けるようになりましたが、どちらも遅く、
         壊れやすく、落ちたときに原因が読み取りにくいのは変わりません。
         そこでしか確かめられないことに絞ってください。
+      </li>
+      <li>
+        <b>Supabase のエラーは <code>Error</code> のインスタンスではありません。</b>
+        <code>e instanceof Error ? e.message : String(e)</code> と書くと、
+        サーバーが理由を返しているのに画面には <code>[object Object]</code> と出ます。
+        <code>src/lib/errorMessage.ts</code> の <code>messageOf()</code> を使ってください。
+      </li>
+      <li>
+        <b>権限は「名簿にどう載っているか」を、ボードの公開設定より先に見ます。</b>
+        逆にすると、リンク公開のボードでアクセスを取り消された人が
+        「まだ来ていない人」に混ざり、そのまま入り直せてしまいます
+        （<code>useRoomAccess</code> の判定の順番）。
+      </li>
+      <li>
+        <b>合言葉の最短の長さは 2 か所にあります。</b>
+        <code>src/lib/access.ts</code> の <code>MIN_PIN_LENGTH</code> と、
+        <code>supabase/schema.sql</code> の <code>set_join_pin</code>。
+        画面側にも持たせているのは、押してから断られるのを避けるためです。
+        変えるときは両方そろえてください。
       </li>
       <li>
         <b>ドラッグの確定は、コンポーネントのテストで守っています。</b>

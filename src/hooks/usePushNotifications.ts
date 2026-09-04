@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { useIdentity } from '../lib/identity'
+import { messageOf } from '../lib/errorMessage'
 
 const VAPID_PUBLIC_KEY = import.meta.env.VITE_VAPID_PUBLIC_KEY as string | undefined
 
@@ -179,7 +180,7 @@ export function usePushNotifications() {
       await saveSubscription(subscription)
       setState('on')
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(messageOf(e))
       setState('off')
     }
   }, [saveSubscription])
@@ -198,7 +199,7 @@ export function usePushNotifications() {
       }
       setState('off')
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(messageOf(e))
       setState('on')
     }
   }, [])

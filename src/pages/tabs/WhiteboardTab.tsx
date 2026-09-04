@@ -63,6 +63,7 @@ import {
   type Stroke,
   type StrokeKind,
 } from '../../lib/types'
+import { messageOf } from '../../lib/errorMessage'
 
 /**
  * 右クリックの案内を出したか。既存の localStorage の名前づけ（board.*）に合わせる。
@@ -1563,7 +1564,7 @@ export default function WhiteboardTab({
       if (error) throw error
     } catch (e) {
       for (const s of removed) strokes.upsertLocal(s)
-      setNotice(`線を消せませんでした: ${e instanceof Error ? e.message : String(e)}`)
+      setNotice(`線を消せませんでした: ${messageOf(e)}`)
       return
     } finally {
       for (const release of releases) release()
@@ -1642,7 +1643,7 @@ export default function WhiteboardTab({
       try {
         prepared = await prepareImageForUpload(file, { maxEdge: 1600, quality: 0.85 })
       } catch (e) {
-        setNotice(`画像を読み込めませんでした: ${e instanceof Error ? e.message : String(e)}`)
+        setNotice(`画像を読み込めませんでした: ${messageOf(e)}`)
         return
       }
       if (prepared.blob.size > MAX_IMAGE_UPLOAD_BYTES) {
@@ -1964,7 +1965,7 @@ export default function WhiteboardTab({
       const safeName = boardName.replace(/[\\/:*?"<>|]/g, '_') || 'board'
       downloadBlob(rows?.length ? `${safeName}_選択.png` : `${safeName}.png`, blob)
     } catch (e) {
-      setNotice(e instanceof Error ? e.message : String(e))
+      setNotice(messageOf(e))
     } finally {
       setBusy(null)
     }

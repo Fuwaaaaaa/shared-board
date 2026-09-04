@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import Modal from './Modal'
 import { ensureSession, supabase } from '../lib/supabase'
 import { getCaptchaToken } from '../lib/captcha'
+import { messageOf } from '../lib/errorMessage'
 
 type Mode = 'idle' | 'confirm' | 'linking' | 'sent' | 'signin' | 'signin-sent'
 
@@ -90,7 +91,7 @@ export default function AccountModal({ onClose }: { onClose: () => void }) {
     try {
       captchaToken = await getCaptchaToken()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(messageOf(e))
       setMode('idle')
       return
     }
@@ -135,7 +136,7 @@ export default function AccountModal({ onClose }: { onClose: () => void }) {
       await ensureSession()
       window.location.reload()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(messageOf(e))
       setBusy(false)
     }
   }
