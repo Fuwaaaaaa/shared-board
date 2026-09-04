@@ -19,3 +19,8 @@ Thumbs.db
 # Supabase CLI が作る作業用ファイル（ローカル起動時のシークレットを含む）
 supabase/.temp/
 supabase/.branches/
+
+# Playwright（ブラウザのテスト）の出力
+test-results/
+playwright-report/
+blob-report/

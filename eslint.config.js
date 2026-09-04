@@ -51,9 +51,9 @@ export default tseslint.config(
     },
   },
 
-  // ---- Node で動く設定ファイル ----
+  // ---- Node で動く設定ファイルと、ブラウザを操るテスト ----
   {
-    files: ['*.config.{js,ts}', 'vitest.workspace.ts'],
+    files: ['*.config.{js,ts}', 'vitest.workspace.ts', 'e2e/**/*.ts'],
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     languageOptions: {
       ecmaVersion: 2022,

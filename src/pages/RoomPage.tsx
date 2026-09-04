@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { useRoomAccess } from '../hooks/useRoomAccess'
 import { usePresence } from '../hooks/usePresence'
@@ -32,7 +32,7 @@ export default function RoomPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { preview, level, refresh, requestAccess, claimOwner } = useRoomAccess(slug)
 
-  const canAccess = level === 'owner' || level === 'member' || level === 'guest'
+  const canAccess = level === 'owner' || level === 'member'
 
   // ?owner=<token> でオーナー権限を回収する
   const claimedRef = useRef(false)
@@ -46,17 +46,30 @@ export default function RoomPage() {
     })
   }, [searchParams, setSearchParams, claimOwner])
 
-  // 公開ルームに初めて来た人を、承認済みメンバーとして自動登録する
+  /*
+   * 公開ルームに初めて来た人を、承認済みメンバーとして自動登録する。
+   *
+   * 登録が済むまではボードを描かない。RLS の can_access_room が通すのは
+   * 「作った人」と「承認済みの参加者」だけなので、済む前に読みにいくと
+   * 1 行も返らない。それでも画面は出てしまうため、中身のあるボードが
+   * 「まだ何もありません」に見え、リロードするまで直らなかった。
+   */
   const joinedRef = useRef(false)
+  const [joinFailed, setJoinFailed] = useState(false)
+
+  const join = useCallback(() => {
+    setJoinFailed(false)
+    void requestAccess('').catch(() => setJoinFailed(true))
+  }, [requestAccess])
+
   useEffect(() => {
     if (level !== 'guest' || joinedRef.current) return
     joinedRef.current = true
-    void requestAccess('').catch(() => {
-      /* 参加登録に失敗しても閲覧・編集はできるので黙って無視する */
-    })
-  }, [level, requestAccess])
+    join()
+  }, [level, join])
 
-  if (level === 'loading') {
+  // guest は「リンク公開のボードに来たが、まだ登録が済んでいない」状態
+  if (level === 'loading' || (level === 'guest' && !joinFailed)) {
     return (
       <div className="grid min-h-screen place-items-center bg-slate-50 text-sm text-slate-400">
         読み込み中…
@@ -79,6 +92,27 @@ export default function RoomPage() {
           >
             ホームに戻る
           </Link>
+        </div>
+      </div>
+    )
+  }
+
+  if (level === 'guest') {
+    return (
+      <div className="grid min-h-screen place-items-center bg-slate-50 p-6">
+        <div className="max-w-md rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm">
+          <div className="mb-2 text-3xl">📶</div>
+          <h1 className="font-bold text-slate-800">ボードに入れませんでした</h1>
+          <p className="mt-1 text-sm text-slate-500">
+            通信が届かなかったようです。つながっているか確かめて、もう一度お試しください。
+          </p>
+          <button
+            type="button"
+            onClick={join}
+            className="mt-6 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-700"
+          >
+            もう一度試す
+          </button>
         </div>
       </div>
     )
