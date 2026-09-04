@@ -644,6 +644,30 @@ export default function WhiteboardTab({
     })
   }
 
+  /**
+   * コピーした色をまとめて貼る。取り消しは 1 回にまとめる（整列と同じ）。
+   * 元の色は付箋ごとに違うので、戻すときは 1 枚ずつの色を覚えておく。
+   */
+  async function applyStyleToNotes(rows: Note[], color: string) {
+    const before = rows.map((note) => ({ id: note.id, color: note.color }))
+    if (before.every((item) => item.color === color)) return
+
+    const apply = async (list: { id: string; color: string }[]) => {
+      const results = await Promise.all(
+        list.map((item) => applyNotePatch(item.id, { color: item.color })),
+      )
+      return results.every((r) => r === 'ok')
+    }
+    const after = rows.map((note) => ({ id: note.id, color }))
+
+    if (!(await apply(after))) return
+    undoStack.push({
+      label: rows.length > 1 ? `${rows.length} 件の色の貼り付け` : '色の貼り付け',
+      undo: () => must(apply(before)),
+      redo: () => must(apply(after)),
+    })
+  }
+
   function buildNote(x: number, y: number, kind: 'sticky' | 'text', text = ''): Note {
     const maxZ = notes.rows.reduce((max, n) => Math.max(max, n.z), 0)
     const now = new Date().toISOString()
@@ -1295,6 +1319,23 @@ export default function WhiteboardTab({
     return connectorOps.patch(id, patch, { what: '線の変更を保存' })
   }
 
+  function commitConnector(id: string, patch: Partial<Connector>, label: string) {
+    const current = connectors.getRow(id)
+    if (!current) return
+    const before: Partial<Connector> = {}
+    for (const key of Object.keys(patch) as (keyof Connector)[])
+      before[key] = current[key] as never
+
+    void (async () => {
+      if ((await patchConnector(id, patch)) !== 'ok') return
+      undoStack.push({
+        label,
+        undo: () => mustPatch(patchConnector(id, before)),
+        redo: () => mustPatch(patchConnector(id, patch)),
+      })
+    })()
+  }
+
   // ---- フレーム -----------------------------------------------------------
 
   async function createFrame(x: number, y: number) {
@@ -1738,6 +1779,23 @@ export default function WhiteboardTab({
     return attachmentOps.patch(id, patch, { what: 'ファイルの変更を保存' })
   }
 
+  function commitAttachment(id: string, patch: Partial<Attachment>) {
+    const current = attachments.getRow(id)
+    if (!current) return
+    const before: Partial<Attachment> = {}
+    for (const key of Object.keys(patch) as (keyof Attachment)[])
+      before[key] = current[key] as never
+
+    void (async () => {
+      if ((await applyAttachmentPatch(id, patch)) !== 'ok') return
+      undoStack.push({
+        label: 'ファイルの移動',
+        undo: () => mustPatch(applyAttachmentPatch(id, before)),
+        redo: () => mustPatch(applyAttachmentPatch(id, patch)),
+      })
+    })()
+  }
+
   function visibleCenter(): Point {
     const container = scrollRef.current
     if (!container) return [BOARD_W / 2, BOARD_H / 2]
@@ -2176,8 +2234,7 @@ export default function WhiteboardTab({
     selectAttachment: (id: string | null) =>
       setSelectedOther(id ? { kind: 'attachment', id } : null),
     attachmentLocalChange: (attachment: Attachment) => attachments.upsertLocal(attachment),
-    commitAttachment: (id: string, patch: Partial<Attachment>) =>
-      void applyAttachmentPatch(id, patch),
+    commitAttachment,
     deleteAttachment: (attachment: Attachment) => void deleteAttachment(attachment),
     // 付箋
     toggleReaction: (note: Note, emoji: string) => void toggleReaction(note, emoji),
@@ -2201,7 +2258,7 @@ export default function WhiteboardTab({
     },
     pasteStyleOne: (note: Note) => {
       const color = getClipboardStyle()
-      if (color) void applyNotePatch(note.id, { color })
+      if (color) void applyStyleToNotes([note], color)
     },
     copyPngOne: (note: Note) => void copyPngToClipboard([note]),
     exportPngOne: (note: Note) => void exportPng([note]),
@@ -2261,8 +2318,7 @@ export default function WhiteboardTab({
     },
     pasteStyle: (rows) => {
       const color = getClipboardStyle()
-      if (!color) return
-      for (const target of rows) void applyNotePatch(target.id, { color })
+      if (color) void applyStyleToNotes(rows, color)
     },
     openComments: (note) => setCommentTarget(note),
     convert: (rows, target) => setConverting({ notes: rows.slice(), target }),
@@ -2277,9 +2333,11 @@ export default function WhiteboardTab({
     deleteImage: (image) => void deleteImage(image),
     deleteFrame: (frame) => void deleteFrame(frame),
     toggleConnectorStyle: (connector) =>
-      void patchConnector(connector.id, {
-        style: connector.style === 'arrow' ? 'line' : 'arrow',
-      }),
+      commitConnector(
+        connector.id,
+        { style: connector.style === 'arrow' ? 'line' : 'arrow' },
+        '線の向きの変更',
+      ),
     deleteConnector: (connector) => void deleteConnector(connector),
     openUrl: (url) => {
       window.open(url, '_blank', 'noopener,noreferrer')

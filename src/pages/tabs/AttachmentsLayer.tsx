@@ -17,6 +17,14 @@ interface Props {
 const CARD_W = 200
 const CARD_H = 84
 
+interface DragState {
+  startX: number
+  startY: number
+  /** 掴んだ時点の位置。取り消しの戻り先になる */
+  originX: number
+  originY: number
+}
+
 /** ボードに置いたファイル（PDF など）のカード */
 function AttachmentsLayer({
   attachments,
@@ -78,23 +86,34 @@ const AttachmentCard = memo(function AttachmentCard({
   onCommit: (id: string, patch: Partial<Attachment>) => void
   onDelete: (attachment: Attachment) => void
 }) {
-  const dragRef = useRef<{ startX: number; startY: number } | null>(null)
+  const dragRef = useRef<DragState | null>(null)
 
   function handleMove(e: React.PointerEvent) {
     const drag = dragRef.current
     if (!drag) return
     onLocalChange({
       ...attachment,
-      x: Math.max(0, attachment.x + (e.clientX - drag.startX) / zoom),
-      y: Math.max(0, attachment.y + (e.clientY - drag.startY) / zoom),
+      x: Math.max(0, drag.originX + (e.clientX - drag.startX) / zoom),
+      y: Math.max(0, drag.originY + (e.clientY - drag.startY) / zoom),
     })
-    dragRef.current = { startX: e.clientX, startY: e.clientY }
   }
 
   function handleUp() {
-    if (!dragRef.current) return
+    const drag = dragRef.current
+    if (!drag) return
     dragRef.current = null
-    onCommit(attachment.id, { x: attachment.x, y: attachment.y })
+    if (attachment.x === drag.originX && attachment.y === drag.originY) return
+
+    /*
+     * いったん元の位置へ戻してから確定する。
+     *
+     * 親の commitAttachment は「いま保持している行」を取り消しの戻り先にするので、
+     * ドラッグ中に onLocalChange で書き換えたままだと、戻り先が動かした先になり、
+     * Ctrl+Z が何もしないエントリになる。ImagesLayer も同じ形。
+     */
+    const { x, y } = attachment
+    onLocalChange({ ...attachment, x: drag.originX, y: drag.originY })
+    onCommit(attachment.id, { x, y })
   }
 
   return (
@@ -111,7 +130,12 @@ const AttachmentCard = memo(function AttachmentCard({
         onSelect(attachment.id)
         if (!canEdit) return
         ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
-        dragRef.current = { startX: e.clientX, startY: e.clientY }
+        dragRef.current = {
+          startX: e.clientX,
+          startY: e.clientY,
+          originX: attachment.x,
+          originY: attachment.y,
+        }
       }}
       onPointerMove={handleMove}
       onPointerUp={handleUp}
