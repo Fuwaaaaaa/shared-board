@@ -158,21 +158,67 @@ END:VEVENT`)
     expect(list.map((e) => e.start.getDate())).toEqual([1])
   })
 
-  it('何年も前に始まった毎月の繰り返しでも、範囲内の回が出る（月末は丸める）', () => {
+  it('何年も前に始まった毎月の繰り返しでも、範囲内の回が出る', () => {
     const text = ics(`
 BEGIN:VEVENT
 UID:m
-SUMMARY:毎月末
-DTSTART:20150131T090000
+SUMMARY:毎月 15 日
+DTSTART:20150115T090000
 RRULE:FREQ=MONTHLY
 END:VEVENT`)
     const list = expandFeedEvents(text, feed, from, to)
     expect(list).toHaveLength(1)
-    expect(list[0].start.getDate()).toBe(30)
+    expect(list[0].start.getDate()).toBe(15)
+  })
+
+  it('毎月 31 日は、その日が無い月を飛ばす（RFC 5545 の決まり）', () => {
+    const text = ics(`
+BEGIN:VEVENT
+UID:m
+SUMMARY:毎月 31 日
+DTSTART:20150131T090000
+RRULE:FREQ=MONTHLY
+END:VEVENT`)
+
+    // 9 月は 30 日までなので、この月には出ない
+    expect(expandFeedEvents(text, feed, from, to)).toHaveLength(0)
+    expect(
+      expandFeedEvents(text, feed, local(2026, 2, 1), local(2026, 2, 28, 23, 59)),
+    ).toHaveLength(0)
+
+    // 31 日のある月には出る
+    const october = expandFeedEvents(text, feed, local(2026, 10, 1), local(2026, 10, 31, 23, 59))
+    expect(october).toHaveLength(1)
+    expect(october[0].start.getDate()).toBe(31)
+  })
+
+  it('RDATE で名指しされた回を足す（飛ばした回を書き出し側が補える）', () => {
+    const text = ics(`
+BEGIN:VEVENT
+UID:m
+SUMMARY:毎月 31 日
+DTSTART:20260131T090000
+RRULE:FREQ=MONTHLY
+RDATE:20260228T090000,20260930T090000
+END:VEVENT`)
 
     const feb = expandFeedEvents(text, feed, local(2026, 2, 1), local(2026, 2, 28, 23, 59))
-    expect(feb).toHaveLength(1)
-    expect(feb[0].start.getDate()).toBe(28)
+    expect(feb.map((e) => e.start.getDate())).toEqual([28])
+
+    // RRULE で出ない 9/30 も RDATE で出る
+    expect(expandFeedEvents(text, feed, from, to).map((e) => e.start.getDate())).toEqual([30])
+  })
+
+  it('RDATE が RRULE と同じ回を指しても、二重にしない', () => {
+    const text = ics(`
+BEGIN:VEVENT
+UID:m
+SUMMARY:毎月 15 日
+DTSTART:20260115T090000
+RRULE:FREQ=MONTHLY
+RDATE:20260915T090000
+END:VEVENT`)
+    expect(expandFeedEvents(text, feed, from, to)).toHaveLength(1)
   })
 
   it('範囲の手前で始まって範囲にかかる複数日の予定も拾う', () => {
@@ -324,5 +370,142 @@ END:VEVENT
     const hits = expandFeedEvents(text, feed, local(2026, 9, 1), local(2026, 9, 30))
     expect(hits).toHaveLength(1)
     expect(hits[0].title).toBe('はぐれた回')
+  })
+})
+
+describe('TZID', () => {
+  it('TZID 付きの時刻を、そのゾーンの時刻として読む（夏）', () => {
+    const text = ics(`
+BEGIN:VEVENT
+UID:ny
+SUMMARY:ニューヨークの朝会
+DTSTART;TZID=America/New_York:20260901T100000
+DTEND;TZID=America/New_York:20260901T110000
+END:VEVENT`)
+    const [event] = parseIcs(text)
+    // 夏時間（EDT, UTC-4）なので 10:00 は 14:00Z
+    expect(event.start.toISOString()).toBe('2026-09-01T14:00:00.000Z')
+    expect(event.end?.toISOString()).toBe('2026-09-01T15:00:00.000Z')
+  })
+
+  it('同じ TZID でも、冬は 1 時間ずれる', () => {
+    const text = ics(`
+BEGIN:VEVENT
+UID:ny
+SUMMARY:ニューヨークの朝会
+DTSTART;TZID=America/New_York:20260101T100000
+END:VEVENT`)
+    const [event] = parseIcs(text)
+    // 標準時（EST, UTC-5）なので 10:00 は 15:00Z
+    expect(event.start.toISOString()).toBe('2026-01-01T15:00:00.000Z')
+  })
+
+  it('Outlook の Windows 名も読む', () => {
+    const text = ics(`
+BEGIN:VEVENT
+UID:w
+SUMMARY:西海岸
+DTSTART;TZID="Pacific Standard Time":20260901T090000
+END:VEVENT`)
+    const [event] = parseIcs(text)
+    // 夏時間（PDT, UTC-7）
+    expect(event.start.toISOString()).toBe('2026-09-01T16:00:00.000Z')
+  })
+
+  it('Google が付ける提供元つきの TZID も読む', () => {
+    const text = ics(`
+BEGIN:VEVENT
+UID:g
+SUMMARY:提供元つき
+DTSTART;TZID=/freeassociation.sourceforge.net/America/New_York:20260901T100000
+END:VEVENT`)
+    const [event] = parseIcs(text)
+    expect(event.start.toISOString()).toBe('2026-09-01T14:00:00.000Z')
+  })
+
+  it('知らない TZID は、VTIMEZONE の TZOFFSETTO に退避する', () => {
+    const text = ics(`
+BEGIN:VTIMEZONE
+TZID:Customized Time Zone
+BEGIN:STANDARD
+DTSTART:16010101T000000
+TZOFFSETFROM:+0630
+TZOFFSETTO:+0630
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:c
+SUMMARY:独自ゾーン
+DTSTART;TZID=Customized Time Zone:20260901T100000
+END:VEVENT`)
+    const [event] = parseIcs(text)
+    // +06:30 なので 10:00 は 03:30Z
+    expect(event.start.toISOString()).toBe('2026-09-01T03:30:00.000Z')
+  })
+
+  it('知らない TZID で VTIMEZONE も無ければ、フローティング扱いにする', () => {
+    const text = ics(`
+BEGIN:VEVENT
+UID:u
+SUMMARY:名乗りだけ
+DTSTART;TZID=Mars/Olympus:20260901T100000
+END:VEVENT`)
+    const [event] = parseIcs(text)
+    // 閲覧者の暦（テストでは JST）で 10:00
+    expect(event.start.getTime()).toBe(local(2026, 9, 1, 10, 0).getTime())
+  })
+
+  it('TZID の付いた EXDATE で、その回だけ消せる', () => {
+    const text = ics(`
+BEGIN:VEVENT
+UID:ex
+SUMMARY:毎日
+DTSTART;TZID=America/New_York:20260901T100000
+RRULE:FREQ=DAILY
+EXDATE;TZID=America/New_York:20260903T100000
+END:VEVENT`)
+    const list = expandFeedEvents(
+      text,
+      feed,
+      new Date('2026-09-01T00:00:00Z'),
+      new Date('2026-09-05T00:00:00Z'),
+    )
+    const days = list.map((e) => e.start.toISOString().slice(0, 10))
+    expect(days).not.toContain('2026-09-03')
+    expect(days).toContain('2026-09-02')
+  })
+
+  it('夏時間を跨ぐ毎週の予定でも、現地の時刻がずれない', () => {
+    const text = ics(`
+BEGIN:VEVENT
+UID:dst
+SUMMARY:毎週の定例
+DTSTART;TZID=America/New_York:20261026T090000
+RRULE:FREQ=WEEKLY
+END:VEVENT`)
+    const list = expandFeedEvents(
+      text,
+      feed,
+      new Date('2026-10-26T00:00:00Z'),
+      new Date('2026-11-10T00:00:00Z'),
+    )
+    // 11/1 に夏時間が明けるので、UTC では 1 時間後ろへ動く
+    expect(list.map((e) => e.start.toISOString())).toEqual([
+      '2026-10-26T13:00:00.000Z',
+      '2026-11-02T14:00:00.000Z',
+      '2026-11-09T14:00:00.000Z',
+    ])
+  })
+
+  it('TZID があっても、日付だけの値（終日）は閲覧者の暦の 0:00 で読む', () => {
+    const text = ics(`
+BEGIN:VEVENT
+UID:ad
+SUMMARY:終日
+DTSTART;TZID=America/New_York;VALUE=DATE:20260901
+END:VEVENT`)
+    const [event] = parseIcs(text)
+    expect(event.allDay).toBe(true)
+    expect(event.start.getTime()).toBe(local(2026, 9, 1).getTime())
   })
 })
