@@ -14,9 +14,9 @@ export default defineConfig(({ mode }) => ({
     port: 5173,
   },
   test: {
-    // 純粋関数（繰り返し・祝日・ics・CSV）のテスト。ブラウザ環境は要らない
-    include: ['src/**/__tests__/**/*.test.ts'],
-    environment: 'node',
+    // どのファイルをどの環境で走らせるかは vitest.workspace.ts が決める。
+    // ここに include を置くと、継承した先で連結されて二重に走る
+    //
     // ボードの暦は Asia/Tokyo 固定なので、テストも日本時間で走らせる。
     // TZ 依存を確かめるテストは vi.stubEnv('TZ', ...) で切り替える
     env: { TZ: 'Asia/Tokyo' },
