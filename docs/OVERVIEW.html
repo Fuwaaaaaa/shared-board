@@ -352,7 +352,7 @@
 │  ├─ purge-storage      Storage の実体削除（SQL からは消せないため）
 │  └─ _shared/           dates / recurrence / cronAuth（画面と共有）
 ├─ <b>tests/</b>
-│  └─ rls.test.sql       権限が効いているかの確認（pgTAP・168 件）
+│  └─ rls.test.sql       権限が効いているかの確認（pgTAP・190 件）
 └─ <b>stubs/</b>
    └─ _stub_storage.sql  使い捨ての DB で schema.sql を流すための足場
 
@@ -686,6 +686,16 @@
         逆にすると、リンク公開のボードでアクセスを取り消された人が
         「まだ来ていない人」に混ざり、そのまま入り直せてしまいます
         （<code>useRoomAccess</code> の判定の順番）。
+      </li>
+      <li>
+        <b>参加者になる道は <code>request_access</code> だけです。</b>
+        却下された人が承認待ちに戻るときも、そこを通します。
+        <code>room_members</code> を直接いじれると、受付停止・参加期限・人数上限・
+        合言葉の判定をすり抜けて列に並べてしまうためです。
+        <code>tg_guard_member_update</code> は <code>request_access</code> が置いた
+        使い捨ての目印（<code>app.reapply_member</code>）が指す行の更新しか通さず、
+        <code>room_members_delete</code> は自分の行でも
+        <code>status = 'approved'</code>（＝退出）のときだけ許します。
       </li>
       <li>
         <b>合言葉の最短の長さは 2 か所にあります。</b>

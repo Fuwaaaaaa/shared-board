@@ -922,16 +922,47 @@ create trigger rooms_create_secret
 -- オーナー以外は room_members の status / role / can_edit を書き換えられないようにする。
 -- （承認・却下・編集権限の付与はオーナーだけの権限。
 --   これが無いと「閲覧のみ」の人が自分に編集権限を付けられてしまう）
+--
+-- 唯一の例外が「もう一度申請する」。本人の行を
+-- 却下 -> 承認待ち に戻すときだけ通す。並ぶだけで、何も読めるようにはならない
+-- （承認するかどうかはオーナーが決める）。
+--
+-- ただし通すのは request_access を通ったときだけにする。
+-- 「却下 -> 承認待ち なら誰の UPDATE でも通す」にすると、受付停止・参加期限・
+-- 人数上限・合言葉の判定をすり抜けて承認待ちの列に並べてしまう
+-- （room_members への直接 INSERT を禁じているのと同じ理由。下の INSERT ポリシー参照）。
+--
+-- そこで request_access が、戻す行の id を目印に置いてから UPDATE する。
+-- 目印はトランザクションの中だけで生き（set_config の第 3 引数）、
+-- 読んだその場で消すので、同じトランザクションの後続の更新には効かない。
+-- 値が行の id なので、別の行にも効かない。set_config は pg_catalog にあり、
+-- PostgREST が公開する public には無いので、外から立てることもできない
+-- （app.skip_access_log・app.restoring_snapshot と同じ作り）。
 create or replace function public.tg_guard_member_update()
 returns trigger language plpgsql security definer
 set search_path = '' as $$
 begin
-  if not public.is_room_owner(new.room_id) then
-    new.status     := old.status;
-    new.role       := old.role;
-    new.can_edit   := old.can_edit;
-    new.decided_at := old.decided_at;
+  if public.is_room_owner(new.room_id) then
+    return new;
   end if;
+
+  if coalesce(pg_catalog.current_setting('app.reapply_member', true), '') = old.id::text
+     and new.user_id  = old.user_id
+     and new.user_id  = auth.uid()
+     and old.status   = 'rejected'
+     and new.status   = 'pending'
+     and new.role     is not distinct from old.role
+     and new.can_edit is not distinct from old.can_edit
+  then
+    -- 目印は使い捨て。ここで消さないと、同じトランザクションの次の更新まで通る
+    perform pg_catalog.set_config('app.reapply_member', '', true);
+    return new;
+  end if;
+
+  new.status     := old.status;
+  new.role       := old.role;
+  new.can_edit   := old.can_edit;
+  new.decided_at := old.decided_at;
   return new;
 end;
 $$;
@@ -1685,9 +1716,16 @@ create policy room_members_update on public.room_members for update to authentic
   using (public.is_room_owner(room_id) or user_id = auth.uid())
   with check (public.is_room_owner(room_id) or user_id = auth.uid());
 
+-- 自分で消せるのは「いま入っている人が抜ける」ときだけ（ボードの設定の「退出する」）。
+-- 却下された人・承認待ちの人まで消せると、行が無い状態から request_access を
+-- やり直せてしまい、リンク公開のボードではその場で承認されて
+-- 「アクセスを取り消す」が帳消しになる。却下された行を片付けるのはオーナーの役目。
 drop policy if exists room_members_delete on public.room_members;
 create policy room_members_delete on public.room_members for delete to authenticated
-  using (public.is_room_owner(room_id) or user_id = auth.uid());
+  using (
+    public.is_room_owner(room_id)
+    or (user_id = auth.uid() and status = 'approved')
+  );
 
 -- ---- ルームの中身（共通ルール）------------------------------------------
 -- 読むのは参加できる人なら誰でも。書き換えは編集権限のある人だけ。
@@ -1998,6 +2036,7 @@ declare
   v_room     public.rooms;
   v_member   public.room_members;
   v_existing boolean;
+  v_reapply  boolean;
   v_status   text;
   v_hash     text;
   v_approved integer;
@@ -2060,12 +2099,36 @@ begin
 
   if v_existing then
     -- 既に申請済み。却下されていた場合のみ再申請として pending に戻す。
-    v_status := case when v_member.status = 'rejected' then 'pending' else v_member.status end;
+    v_reapply := v_member.status = 'rejected';
+    v_status  := case when v_reapply then 'pending' else v_member.status end;
+
+    -- 却下 -> 承認待ちに戻せるのは、ここまでの判定を通ったときだけ。
+    -- tg_guard_member_update は、この目印が指す行の更新しか通さない（読んだら消える）。
+    if v_reapply then
+      perform pg_catalog.set_config('app.reapply_member', v_member.id::text, true);
+    end if;
+
     update public.room_members
        set display_name = coalesce(nullif(p_name, ''), display_name),
            message      = coalesce(nullif(p_message, ''), message),
-           status       = v_status
+           status       = v_status,
+           -- 承認待ちに戻すなら「決めた日時」も無かったことにする。
+           -- 新しい申し込みは必ず null なので、同じ状態を 2 通りで持たない
+           decided_at   = case when v_reapply then null else decided_at end
      where id = v_member.id;
+
+    -- 使われなかったときのために、目印は必ず落としておく
+    perform pg_catalog.set_config('app.reapply_member', '', true);
+
+    -- 申し込み直したこともオーナーに知らせる（新しい申し込みと同じ扱い）。
+    -- 知らせが無いと、参加者パネルを開いていないオーナーは気づけない
+    if v_reapply then
+      insert into public.notifications (room_id, user_id, kind, body, link_tab)
+      values (v_room.id, v_room.owner_id, 'join_request',
+              coalesce(nullif(p_name, ''), '名前なし') || ' さんが参加を申し込みました',
+              'board');
+    end if;
+
     return v_status;
   end if;
 

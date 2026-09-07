@@ -19,7 +19,7 @@ begin;
 
 create extension if not exists pgtap;
 
-select plan(168);
+select plan(190);
 
 
 -- =============================================================================
@@ -606,9 +606,119 @@ select is(
     where room_id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'),
   0, '取り消されると、リンク公開でも読めなくなる');
 
+-- 行ごと消して、無かったことにもできない。
+-- 消せてしまうと「まだ来ていない人」に戻れるので、リンク公開のボードでは
+-- request_access がその場で承認してしまい、取り消しが帳消しになる。
+select is(
+  tests_rowcount($$delete from public.room_members
+                    where room_id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
+                      and user_id = '44444444-4444-4444-4444-444444444444'$$),
+  0, '取り消された人は、自分の行を消して取り消しを帳消しにできない');
+
+select is(
+  (select status from public.room_members
+    where room_id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
+      and user_id = '44444444-4444-4444-4444-444444444444'),
+  'rejected', '行は残るので、取り消した記録も残る');
+
+-- 申し込み直す道は request_access だけ。
+-- 直接 UPDATE で承認待ちに並べると、受付停止・参加期限・人数上限・合言葉の
+-- 判定をすべてすり抜けられる（room_members への直接 INSERT を禁じているのと同じ理由）。
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき（オーナー）
+
+select is(
+  tests_rowcount($$update public.rooms set join_closed = true
+                    where id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'$$),
+  1, 'リンク公開のボードでも、受付は止められる');
+
+select tests_act_as('44444444-4444-4444-4444-444444444444');   -- たかし
+
+select throws_ok(
+  $$select public.request_access('linkonly', 'たかし')$$,
+  'P0001',
+  '参加の受付を止めています',
+  '受付を止めていると、取り消された人も申し込み直せない');
+
+select is(
+  tests_rowcount($$update public.room_members set status = 'pending'
+                    where room_id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
+                      and user_id = '44444444-4444-4444-4444-444444444444'$$),
+  1, '自分の行を UPDATE すること自体は通る（表示名を変えるため）');
+
+select is(
+  (select status from public.room_members
+    where room_id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
+      and user_id = '44444444-4444-4444-4444-444444444444'),
+  'rejected', '直接 UPDATE では承認待ちに並べない（受付停止をすり抜けられない）');
+
+select is(
+  tests_rowcount($$update public.room_members set status = 'pending'
+                    where room_id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
+                      and user_id = '11111111-1111-1111-1111-111111111111'$$),
+  0, '他人の行は、そもそも UPDATE の対象にならない');
+
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき（オーナー）
+
+select is(
+  tests_rowcount($$update public.rooms set join_closed = false
+                    where id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'$$),
+  1, 'オーナーは受付を再開できる');
+
+select tests_act_as('44444444-4444-4444-4444-444444444444');   -- たかし
+
 select is(
   public.request_access('linkonly', 'たかし'),
   'pending', '取り消された人が入り直そうとすると、リンク公開でも承認待ちになる');
+
+select is(
+  (select status from public.room_members
+    where room_id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
+      and user_id = '44444444-4444-4444-4444-444444444444'),
+  'pending', '戻り値だけでなく、名簿の行も承認待ちに変わっている');
+
+select ok(
+  (select decided_at is null from public.room_members
+    where room_id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
+      and user_id = '44444444-4444-4444-4444-444444444444'),
+  '申し込み直すと、取り消したときの日時は消える');
+
+select is(
+  coalesce(pg_catalog.current_setting('app.reapply_member', true), ''),
+  '', '申し込み直しの目印は、使ったあとに残っていない');
+
+select is(
+  (select count(*)::int from public.notes
+    where room_id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'),
+  0, '承認待ちのあいだは、リンク公開でも中身は読めない');
+
+select is(
+  tests_rowcount($$update public.room_members set status = 'approved'
+                    where room_id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
+                      and user_id = '44444444-4444-4444-4444-444444444444'$$),
+  1, '自分を承認する UPDATE も、文としては通る');
+
+select is(
+  (select status from public.room_members
+    where room_id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
+      and user_id = '44444444-4444-4444-4444-444444444444'),
+  'pending', '承認待ちの人が、自分で自分を承認することはできない');
+
+select is(
+  tests_rowcount($$delete from public.room_members
+                    where room_id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
+                      and user_id = '44444444-4444-4444-4444-444444444444'$$),
+  0, '承認待ちの人も、自分の行を消して申し込みを無かったことにできない');
+
+-- 申し込み直したことは、オーナーに届く。
+-- 参加者パネルを開いていないと赤バッジには気づけないので、新しい申し込みと同じ扱いにする。
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき（オーナー）
+
+select is(
+  (select count(*)::int from public.notifications
+    where room_id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
+      and user_id = '11111111-1111-1111-1111-111111111111'
+      and kind = 'join_request'),
+  1, '申し込み直したことは、作った人に知らせが飛ぶ');
 
 
 -- =============================================================================
@@ -1400,6 +1510,57 @@ select is(
   (select count(*)::int from public.notes
     where room_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
   1, '戻すと、いまの中身は控えたときのものに置き換わる');
+
+
+-- =============================================================================
+--  32. 退出と、取り消しの片付け
+--
+--      「自分から抜けた」と「取り消された」は、行が残っているかで区別する。
+--      抜けた人はまた入れるが、取り消された人は承認待ちに並ぶ。
+-- =============================================================================
+
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき（16. で linkonly の参加者になった）
+
+select is(
+  tests_rowcount($$delete from public.room_members
+                    where room_id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
+                      and user_id = '11111111-1111-1111-1111-111111111111'$$),
+  1, '承認済みの人は、自分で退出できる');
+
+select is(
+  (select count(*)::int from public.notes
+    where room_id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'),
+  0, '退出すると、リンク公開でも中身は読めなくなる');
+
+select is(
+  public.request_access('linkonly', 'ゆうき'),
+  'approved', '自分から抜けた人は、リンク公開ならまた入れる（取り消しとは違う）');
+
+-- 取り消された人の行は、オーナーが片付ける。
+-- 本人が消せると、行が無い状態からやり直せてしまう。
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき（開いているボードのオーナー）
+
+select is(
+  tests_rowcount($$update public.room_members set status = 'rejected', decided_at = now()
+                    where room_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+                      and user_id = '33333333-3333-3333-3333-333333333333'$$),
+  1, 'オーナーはみなみのアクセスを取り消せる');
+
+select tests_act_as('33333333-3333-3333-3333-333333333333');   -- みなみ（取り消された）
+
+select is(
+  tests_rowcount($$delete from public.room_members
+                    where room_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+                      and user_id = '33333333-3333-3333-3333-333333333333'$$),
+  0, '取り消された人は、退出という形でも行を消せない');
+
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき（オーナー）
+
+select is(
+  tests_rowcount($$delete from public.room_members
+                    where room_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+                      and user_id = '33333333-3333-3333-3333-333333333333'$$),
+  1, 'オーナーは、外した人の行を片付けられる');
 
 
 select * from finish();

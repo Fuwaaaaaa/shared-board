@@ -178,3 +178,36 @@ test('アクセスを取り消された人は、その場で締め出される',
     await context.close()
   }
 })
+
+test('取り消された人が申請し直すと、承認待ちに並ぶ（勝手には戻れない）', async ({
+  page,
+  browser,
+}) => {
+  await signIn(page, 'ひとり目')
+  const { url } = await boardWithNote(page, '当日の集合場所')
+
+  const { context, page: guest } = await openAsGuest(browser, url, 'ふたり目')
+  try {
+    await expect(guest.getByText('当日の集合場所')).toBeVisible({ timeout: 20_000 })
+
+    page.on('dialog', (dialog) => void dialog.accept())
+    await openMembers(page)
+    await page.getByRole('button', { name: 'アクセスを取り消す' }).click()
+    await expect(guest.getByText('いまは参加できません')).toBeVisible({ timeout: 20_000 })
+
+    /*
+     * ここがリンク公開のボードでずれていたところ。
+     * 「公開かどうか」を「名簿にどう載っているか」より先に見ていたため、
+     * 取り消された人がそのまま入り直せていた。
+     */
+    await guest.getByRole('button', { name: 'もう一度申請する' }).click()
+    await expect(guest.getByText('承認待ちです')).toBeVisible({ timeout: 20_000 })
+    await expect(guest.getByText('当日の集合場所')).toHaveCount(0)
+
+    // 作った人が戻せば入れる
+    await page.getByRole('button', { name: '承認（編集できる）' }).click()
+    await expect(guest.getByText('当日の集合場所')).toBeVisible({ timeout: 20_000 })
+  } finally {
+    await context.close()
+  }
+})
