@@ -87,6 +87,29 @@ export async function dragBy(page: Page, selector: string, dx: number, dy: numbe
   await page.mouse.up()
 }
 
+
+/**
+ * 掴んで動かし、その保存が返ってくるまで待つ。
+ *
+ * 取り消し（Ctrl+Z）の履歴は、保存が成功してから積まれる。位置が動いたのを
+ * 見ただけで押すと、まだ積まれておらず「押しても何も起きない」ことがある。
+ * 画面の見た目では区別が付かないので、保存の応答そのものを待つ。
+ */
+export async function dragAndWaitForSave(
+  page: Page,
+  selector: string,
+  table: string,
+  dx: number,
+  dy: number,
+) {
+  await Promise.all([
+    page.waitForResponse(
+      (r) => r.url().includes(`/rest/v1/${table}`) && r.request().method() === 'PATCH',
+      { timeout: 20_000 },
+    ),
+    dragBy(page, selector, dx, dy),
+  ])
+}
 /** 左上からの位置（ボードの座標ではなく、style の left / top） */
 export async function positionOf(page: Page, selector: string) {
   return page.locator(selector).first().evaluate((el) => ({

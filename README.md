@@ -259,9 +259,9 @@ src/
 
 | 層 | 何を見るか | 走らせ方 |
 | --- | --- | --- |
-| 純粋関数（Vitest / node） | 繰り返し・祝日・ics・CSV・検索など。17 本 294 件 | `npm test` |
-| コンポーネント（Vitest / jsdom） | ドラッグの確定など、DOM が要るもの。2 本 12 件 | `npm test` |
-| ブラウザ（Playwright） | 保存されて残るか、2 人目に届くか、入り方と権限、タブの切り替え。13 件 | `npm run test:e2e` |
+| 純粋関数（Vitest / node） | 繰り返し・祝日・ics・CSV・検索・付箋からの変換など。20 本 342 件 | `npm test` |
+| コンポーネント（Vitest / jsdom） | ドラッグの確定など、DOM が要るもの。4 本 29 件 | `npm test` |
+| ブラウザ（Playwright） | 保存されて残るか、2 人目に届くか、入り方と権限、タブの切り替え、繰り返し予定・ゴミ箱・検索。18 件 | `npm run test:e2e` |
 | 権限（pgTAP） | RLS が効いているか。232 件 | `supabase test db` |
 
 ブラウザのテストはローカルの Supabase が要ります。動いていなければ自動で

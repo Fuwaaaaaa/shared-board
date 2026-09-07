@@ -40,6 +40,7 @@ import { useTheme } from '../../lib/theme'
 import { hasOpenModal } from '../../lib/modalStack'
 import { isTypingTarget, matchShortcut, toChord } from '../../lib/shortcuts'
 import { boundingBox, insideRect } from '../../lib/boardGeometry'
+import { alignNotes, snapToGrid, type AlignKind } from '../../lib/boardAlign'
 import { menuAnchor } from '../../lib/menuPlacement'
 import { prepareImageForUpload } from '../../lib/imageResize'
 import { renderBoardToBlob } from '../../lib/boardExport'
@@ -1027,8 +1028,8 @@ export default function WhiteboardTab({
     for (const [id] of dragOriginsRef.current) {
       const note = notes.getRow(id)
       if (!note) continue
-      const x = Math.round(note.x / GRID) * GRID
-      const y = Math.round(note.y / GRID) * GRID
+      const x = snapToGrid(note.x, GRID)
+      const y = snapToGrid(note.y, GRID)
       if (note.x !== x || note.y !== y) notes.patchLocal(id, { x, y })
     }
   }
@@ -1075,43 +1076,11 @@ export default function WhiteboardTab({
     })
   }
 
-  async function align(kind: 'left' | 'top' | 'row' | 'column' | 'grid') {
-    if (selectedNotes.length < 2 && kind !== 'grid') return
-    const sorted = selectedNotes.slice()
-    const before = sorted.map((n) => ({ id: n.id, x: n.x, y: n.y }))
-    let after: { id: string; x: number; y: number }[] = []
-
-    if (kind === 'left') {
-      const x = Math.min(...sorted.map((n) => n.x))
-      after = sorted.map((n) => ({ id: n.id, x, y: n.y }))
-    } else if (kind === 'top') {
-      const y = Math.min(...sorted.map((n) => n.y))
-      after = sorted.map((n) => ({ id: n.id, x: n.x, y }))
-    } else if (kind === 'row') {
-      const ordered = sorted.sort((a, b) => a.x - b.x)
-      const y = ordered[0].y
-      let cursor = ordered[0].x
-      after = ordered.map((n) => {
-        const item = { id: n.id, x: cursor, y }
-        cursor += n.w + GRID
-        return item
-      })
-    } else if (kind === 'column') {
-      const ordered = sorted.sort((a, b) => a.y - b.y)
-      const x = ordered[0].x
-      let cursor = ordered[0].y
-      after = ordered.map((n) => {
-        const item = { id: n.id, x, y: cursor }
-        cursor += n.h + GRID
-        return item
-      })
-    } else {
-      after = sorted.map((n) => ({
-        id: n.id,
-        x: Math.round(n.x / GRID) * GRID,
-        y: Math.round(n.y / GRID) * GRID,
-      }))
-    }
+  async function align(kind: AlignKind) {
+    // 並べ直したあとの位置の計算は lib/boardAlign.ts。ここは保存と Undo だけ
+    const after = alignNotes(selectedNotes, kind, GRID)
+    if (after.length === 0) return
+    const before = selectedNotes.map((n) => ({ id: n.id, x: n.x, y: n.y }))
 
     const apply = async (list: { id: string; x: number; y: number }[]) => {
       const results = await Promise.all(

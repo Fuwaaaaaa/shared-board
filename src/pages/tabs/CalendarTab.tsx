@@ -49,6 +49,7 @@ import { buildIcs, downloadText } from '../../lib/ics'
 import { supabase } from '../../lib/supabase'
 import { useIdentity } from '../../lib/identity'
 import { useRoomData } from '../../lib/roomData'
+import { HOUR_HEIGHT, dragDeltaMs } from '../../lib/calendarGrid'
 import {
   EVENT_COLORS,
   EVENT_KIND_LABELS,
@@ -66,8 +67,6 @@ import {
 type EditScope = 'occurrence' | 'all'
 
 const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土']
-const HOUR_HEIGHT = 48
-const SNAP_MINUTES = 15
 const WEEK_START_KEY = 'board.weekStart'
 
 type View = 'month' | 'week' | 'day' | 'list'
@@ -992,13 +991,9 @@ function WeekView({
   // ドラッグで実際に動かした直後の click を捨てる（離した拍子に編集モーダルが開かないように）
   const suppressClickRef = useRef(false)
 
-  /** 画面上の移動量を「日数 + 分」に直す */
+  /** 画面上の移動量を「日数 + 分」に直す（計算は lib/calendarGrid.ts） */
   function toDelta(dx: number, dy: number) {
-    const columnWidth = (gridRef.current?.clientWidth ?? 700) / 7
-    const dayShift = Math.round(dx / columnWidth)
-    const rawMinutes = (dy / HOUR_HEIGHT) * 60
-    const minuteShift = Math.round(rawMinutes / SNAP_MINUTES) * SNAP_MINUTES
-    return dayShift * 24 * 60 * 60_000 + minuteShift * 60_000
+    return dragDeltaMs(dx, dy, (gridRef.current?.clientWidth ?? 700) / 7)
   }
 
   function handleMove(e: React.PointerEvent) {

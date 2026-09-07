@@ -37,6 +37,13 @@ export default tseslint.config(
       // 日本語の文面には全角スペースが入る。文字列・コメント・テンプレートの
       // 中は素通しにして、コードの隙間に紛れ込んだものだけを咎める
       'no-irregular-whitespace': ['error', { skipTemplates: true, skipComments: true }],
+      // tsconfig の types に node を足してある（e2e と playwright.config.ts のため）。
+      // そのぶん画面側でも process が型として通ってしまうので、ここで止める。
+      // ブラウザには process が無く、書けても実行時に落ちる
+      'no-restricted-globals': [
+        'error',
+        { name: 'process', message: 'ブラウザには process がありません。import.meta.env を使ってください。' },
+      ],
     },
   },
 

@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test'
 import {
   addFirstNote,
   createBoard,
-  dragBy,
+  dragAndWaitForSave,
   positionOf,
   signIn,
   waitForSaved,
@@ -70,7 +70,7 @@ test('付箋を動かして Ctrl+Z を押すと、元の位置に戻る', async 
 
   const before = await positionOf(page, '[data-ctx-kind="note"]')
 
-  await dragBy(page, '[data-ctx-kind="note"]', 120, 80)
+  await dragAndWaitForSave(page, '[data-ctx-kind="note"]', 'notes', 120, 80)
   await expect
     .poll(async () => (await positionOf(page, '[data-ctx-kind="note"]')).left)
     .not.toBe(before.left)
@@ -102,7 +102,7 @@ test('ファイルを置いて動かして Ctrl+Z を押すと、元の位置に
 
   const before = await positionOf(page, card)
 
-  await dragBy(page, card, 100, 60)
+  await dragAndWaitForSave(page, card, 'attachments', 100, 60)
   await expect.poll(async () => (await positionOf(page, card)).left).not.toBe(before.left)
 
   // ここが長らく積まれていなかった。押しても何も起きない状態が正しく見えてしまう

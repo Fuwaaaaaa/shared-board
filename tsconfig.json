@@ -21,7 +21,17 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
 
-    "types": ["vite/client"]
+    // node は e2e と playwright.config.ts のため（process / Buffer）。
+    // src で process を使えてしまわないよう、そちらは ESLint 側で止めている
+    "types": ["vite/client", "node"]
   },
-  "include": ["src", "vite.config.ts", "vitest.workspace.ts"]
+  // e2e と playwright.config.ts も入れる。型を要求する ESLint ルールを
+  // 入れていないので、ここから外すと e2e の型の間違いは実際に走らせるまで出ない
+  "include": [
+    "src",
+    "e2e",
+    "vite.config.ts",
+    "vitest.workspace.ts",
+    "playwright.config.ts"
+  ]
 }
