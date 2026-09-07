@@ -352,7 +352,7 @@
 │  ├─ purge-storage      Storage の実体削除（SQL からは消せないため）
 │  └─ _shared/           dates / recurrence / cronAuth（画面と共有）
 ├─ <b>tests/</b>
-│  └─ rls.test.sql       権限が効いているかの確認（pgTAP・190 件）
+│  └─ rls.test.sql       権限が効いているかの確認（pgTAP・232 件）
 └─ <b>stubs/</b>
    └─ _stub_storage.sql  使い捨ての DB で schema.sql を流すための足場
 
@@ -696,6 +696,15 @@
         使い捨ての目印（<code>app.reapply_member</code>）が指す行の更新しか通さず、
         <code>room_members_delete</code> は自分の行でも
         <code>status = 'approved'</code>（＝退出）のときだけ許します。
+      </li>
+      <li>
+        <b>門番は「どの操作を見ているか」まで確かめてください。</b>
+        これまで見つかった穴は、どれも同じ形でした——ポリシーやトリガーが
+        INSERT だけ、あるいは UPDATE だけを見ていて、残りの操作が素通し。
+        <code>rls.test.sql</code> の最後の節が、ポリシー・トリガー・外から呼べる関数の
+        一覧を控えていて、増減すると落ちます。落ちたら、まず
+        <b>その増減が意図したものか</b>を確かめてから控えを直してください。
+        順番を逆にすると、この節は何も守らなくなります。
       </li>
       <li>
         <b>合言葉の最短の長さは 2 か所にあります。</b>

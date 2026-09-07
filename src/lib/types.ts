@@ -95,6 +95,7 @@ export type ActivityAction =
   | 'restored'
   // ここから下は target_type = 'access' のときだけ使う。
   // 「いつ誰が入ってきたか」「誰が権限を変えたか」を、付箋の履歴と同じ流れに残す。
+  | 'member_joined'
   | 'member_approved'
   | 'member_rejected'
   | 'member_removed'

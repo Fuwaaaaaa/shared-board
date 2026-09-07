@@ -803,14 +803,12 @@ alter table public.rooms
 --     そちらが呼ばれてしまい、定義者（postgres）の権限で動いてしまうため。
 -- =============================================================================
 
--- リンク公開のボードかどうか。
--- 読み書きの判定には使わない（リンク公開でも、参加登録した人しか読めない）。
--- 「request_access がその場で承認するか」の判定と、古い定義との互換のために残している。
-create or replace function public.room_is_public(rid uuid)
-returns boolean language sql security definer stable
-set search_path = '' as $$
-  select exists (select 1 from public.rooms r where r.id = rid and r.visibility = 'public');
-$$;
+-- 以前ここにあった room_is_public は消した。
+-- 読み書きの判定には使っておらず（リンク公開でも、参加登録した人しか読めない）、
+-- request_access も rooms.visibility を直接見ている。呼び出し元が無いまま
+-- security definer で authenticated に開いていると、ボードの id を当てた人に
+-- 「そのボードがリンク公開かどうか」だけを教えることになる。
+drop function if exists public.room_is_public(uuid);
 
 create or replace function public.is_room_owner(rid uuid)
 returns boolean language sql security definer stable
@@ -1246,7 +1244,7 @@ begin
 end;
 $$;
 
--- 参加者の承認・見送り・権限変更・取り消し・退出。
+-- 参加者の参加・承認・見送り・権限変更・取り消し・退出。
 -- 表示名やお気に入りの変更では何も残さない（履歴が埋まってしまうため）。
 create or replace function public.tg_log_member_access()
 returns trigger language plpgsql security definer
@@ -1254,6 +1252,18 @@ set search_path = '' as $$
 declare
   v_label text;
 begin
+  -- 承認を待たずに入れた人（リンク公開・合言葉つき）は、ここでしか記録が残らない。
+  -- 承認された人は status が変わるので、下の member_approved が拾う。
+  -- 申し込んだだけの人（pending）は、まだ参加していないので残さない。
+  -- 作った人の行（owner）は、ボードを作ったことそのものなので残さない。
+  if TG_OP = 'INSERT' then
+    if NEW.status = 'approved' and NEW.role <> 'owner' then
+      perform public.log_access(NEW.room_id, 'member_joined',
+                                coalesce(nullif(NEW.display_name, ''), '名前なし'));
+    end if;
+    return null;
+  end if;
+
   if TG_OP = 'DELETE' then
     v_label := coalesce(nullif(OLD.display_name, ''), '名前なし');
     -- 自分の行を消したなら退出、そうでなければオーナーが外した
@@ -1340,7 +1350,7 @@ $$;
 
 drop trigger if exists room_members_access_log on public.room_members;
 create trigger room_members_access_log
-  after update or delete on public.room_members
+  after insert or update or delete on public.room_members
   for each row execute function public.tg_log_member_access();
 
 drop trigger if exists rooms_access_log on public.rooms;
@@ -1435,6 +1445,31 @@ begin
 end;
 $$;
 
+-- 追加で凍らせる列。
+--
+-- INSERT のときはポリシーで確かめているのに、UPDATE では誰も見ていない列がある。
+--
+--   storage_path — 差し替えると、古い実体が purge_queue に積まれないまま残る。
+--                  掃除の予約は images / attachments の DELETE でしか動かない。
+--                  ボードの複製は行を新しく INSERT するので、ここは困らない。
+--   通知の中身   — 受け取った人が自分あての通知を書き換えられる。読んだ印（read）
+--                  以外は送った側のものなので、動かさない。
+drop trigger if exists images_freeze_path on public.images;
+create trigger images_freeze_path
+  before update on public.images
+  for each row execute function public.tg_freeze_columns('storage_path');
+
+drop trigger if exists attachments_freeze_path on public.attachments;
+create trigger attachments_freeze_path
+  before update on public.attachments
+  for each row execute function public.tg_freeze_columns('storage_path');
+
+drop trigger if exists notifications_freeze_body on public.notifications;
+create trigger notifications_freeze_body
+  before update on public.notifications
+  for each row execute function public.tg_freeze_columns(
+    'kind', 'body', 'link_tab', 'link_id', 'actor_name');
+
 -- ---- 件数の上限 ------------------------------------------------------------
 --
 -- 1 ボードに入れられる件数の天井。無料枠の DB を 1 人に埋め尽くされないための保険で、
@@ -1493,13 +1528,23 @@ begin
 end;
 $$;
 
--- 1 人が作れるボードの数
+-- 1 人が持てるボードの数。
+--
+-- 「作る」だけでなく「受け取る」にも効かせる。オーナー復帰（claim_owner）は
+-- rooms.owner_id を付け替えるので、INSERT だけを見ていると、作れないぶんを
+-- 受け取りで回避して何個でも持ててしまう。
+-- 同じ人が持ち直すだけ（owner_id が動かない UPDATE）では数えない。
 create or replace function public.tg_limit_rooms_per_user()
 returns trigger language plpgsql security definer
 set search_path = '' as $$
 declare
   v_count bigint;
 begin
+  if TG_OP = 'UPDATE' and NEW.owner_id is not distinct from OLD.owner_id then
+    return NEW;
+  end if;
+
+  -- BEFORE なので、この行はまだ数に入っていない（付け替えなら、まだ前の人のもの）
   select count(*) into v_count from public.rooms where owner_id = NEW.owner_id;
   if v_count >= 50 then
     raise exception 'ボードは 1 人 50 個までです' using errcode = 'check_violation';
@@ -1510,7 +1555,7 @@ $$;
 
 drop trigger if exists rooms_limit_per_user on public.rooms;
 create trigger rooms_limit_per_user
-  before insert on public.rooms
+  before insert or update of owner_id on public.rooms
   for each row execute function public.tg_limit_rooms_per_user();
 
 -- ---- やることの担当者 -------------------------------------------------------
@@ -1720,6 +1765,11 @@ create policy room_members_update on public.room_members for update to authentic
 -- 却下された人・承認待ちの人まで消せると、行が無い状態から request_access を
 -- やり直せてしまい、リンク公開のボードではその場で承認されて
 -- 「アクセスを取り消す」が帳消しになる。却下された行を片付けるのはオーナーの役目。
+--
+-- ここはポリシーだけで守っている。BEFORE DELETE のトリガーで二重にすることも考えたが、
+-- ボードごと消したときの連鎖削除（rooms -> room_members）と delete_my_account は
+-- この道を正当に通る。しかも連鎖の途中では親の rooms がもう無いので、トリガーからは
+-- 「誰が何のために消しているか」を見分けられない。代わりに rls.test.sql で固定する。
 drop policy if exists room_members_delete on public.room_members;
 create policy room_members_delete on public.room_members for delete to authenticated
   using (
@@ -1775,14 +1825,21 @@ create policy comments_insert on public.comments for insert to authenticated
     and author_id = auth.uid()
   );
 
+-- 書き換え・取り消しも「書き込み」なので room_is_open を見る。
+-- INSERT だけが見ていると、終了したボードで自分の発言だけは直せてしまい、
+-- 「終了したボードでは誰も書けない」が嘘になる。
+-- 取り消された人は comments_select を通れないので、ここには辿り着かない。
 drop policy if exists comments_update on public.comments;
 create policy comments_update on public.comments for update to authenticated
-  using (author_id = auth.uid())
-  with check (author_id = auth.uid());
+  using (author_id = auth.uid() and public.room_is_open(room_id))
+  with check (author_id = auth.uid() and public.room_is_open(room_id));
 
 drop policy if exists comments_delete on public.comments;
 create policy comments_delete on public.comments for delete to authenticated
-  using (author_id = auth.uid() or public.is_room_owner(room_id));
+  using (
+    (author_id = auth.uid() or public.is_room_owner(room_id))
+    and public.room_is_open(room_id)
+  );
 
 -- ---- 付箋への投票 ------------------------------------------------------
 -- コメントと同じく「閲覧のみ」の人も投票できる。自分の票だけ操作可能。
@@ -1798,9 +1855,10 @@ create policy note_votes_insert on public.note_votes for insert to authenticated
     and user_id = auth.uid()
   );
 
+-- 取り下げも書き込みなので、INSERT と同じく room_is_open を見る
 drop policy if exists note_votes_delete on public.note_votes;
 create policy note_votes_delete on public.note_votes for delete to authenticated
-  using (user_id = auth.uid());
+  using (user_id = auth.uid() and public.room_is_open(room_id));
 
 -- ---- 日程調整の候補日 --------------------------------------------------
 -- 候補日そのものは投票欄の一部なので、編集権限のある人が作る。
@@ -1831,12 +1889,13 @@ begin
 
     execute format('drop policy if exists %I on public.%I', t || '_update', t);
     execute format(
-      'create policy %I on public.%I for update to authenticated using (user_id = auth.uid()) with check (public.room_is_open(room_id) and user_id = auth.uid())',
+      'create policy %I on public.%I for update to authenticated using (public.room_is_open(room_id) and user_id = auth.uid()) with check (public.room_is_open(room_id) and user_id = auth.uid())',
       t || '_update', t);
 
+    -- 取り下げも書き込み。INSERT と同じく room_is_open を見る
     execute format('drop policy if exists %I on public.%I', t || '_delete', t);
     execute format(
-      'create policy %I on public.%I for delete to authenticated using (user_id = auth.uid())',
+      'create policy %I on public.%I for delete to authenticated using (public.room_is_open(room_id) and user_id = auth.uid())',
       t || '_delete', t);
   end loop;
 end;
@@ -2306,8 +2365,13 @@ begin
   delete from public.room_members      where user_id = auth.uid();
   delete from public.notifications     where user_id = auth.uid();
   delete from public.push_subscriptions where user_id = auth.uid();
-  delete from public.access_attempts   where user_id = auth.uid();
   delete from public.client_errors     where user_id = auth.uid();
+
+  -- access_attempts はここでは消さない。
+  -- 合言葉やオーナー復帰の失敗回数はボードを守るための台帳で、本人の持ち物ではない。
+  -- 消せると、止められた人が退会してそのまま総当たりを続けられる
+  -- （当てようとしている人はまだ参加者ですらないので、退会に払う代償が無い）。
+  -- 記録は check_access_attempts の窓（10 分）を過ぎれば自然に効かなくなる。
 end;
 $$;
 

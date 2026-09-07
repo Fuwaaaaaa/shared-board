@@ -19,7 +19,7 @@ begin;
 
 create extension if not exists pgtap;
 
-select plan(190);
+select plan(232);
 
 
 -- =============================================================================
@@ -325,7 +325,9 @@ select is(
 select is(
   (select count(*)::int from public.activities
     where room_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
-      and target_type = 'access' and target_label like 'みなみ%'),
+      and target_type = 'access' and target_label like 'みなみ%'
+      -- 下ごしらえで参加者として入れたときの member_joined は数えない
+      and action <> 'member_joined'),
   0, '表示名を変えただけでは履歴に残らない');
 
 
@@ -585,6 +587,14 @@ select is(
     where id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'),
   1, '登録が済むと rooms の行も見える');
 
+-- 承認を待たずに入った人は、この INSERT でしか記録が残らない
+-- （承認された人なら status の変化を member_approved が拾う）
+select is(
+  (select count(*)::int from public.activities
+    where room_id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
+      and target_type = 'access' and action = 'member_joined'),
+  1, '承認を待たずに入った人も、更新（履歴）に残る');
+
 select is(
   tests_rowcount($$insert into public.notes (room_id, text, author_id, author_name)
                    values ('ffffffff-ffff-ffff-ffff-ffffffffffff', 'たかしの付箋', '44444444-4444-4444-4444-444444444444', 'たかし')$$),
@@ -719,6 +729,12 @@ select is(
       and user_id = '11111111-1111-1111-1111-111111111111'
       and kind = 'join_request'),
   1, '申し込み直したことは、作った人に知らせが飛ぶ');
+
+select is(
+  (select count(*)::int from public.activities
+    where room_id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
+      and target_type = 'access' and action = 'member_joined'),
+  1, '申し込み直しただけでは、参加した記録は増えない（増えるのは知らせだけ）');
 
 
 -- =============================================================================
@@ -1039,6 +1055,35 @@ select is(
                  values ('limit51', '51 個目', '44444444-4444-4444-4444-444444444444', 'たかし')$$),
   'ボードは 1 人 50 個までです',
   '51 個目はその文言で断られる');
+
+-- 上限は「作る」だけでなく「受け取る」にも効く。
+-- オーナー復帰は rooms.owner_id を付け替えるので、INSERT だけを見ていると
+-- ここから何個でも増やせてしまう（作れないぶんを受け取りで回避できる）。
+reset role;
+insert into public.rooms (id, slug, name, owner_id, owner_name) values
+  ('cafe0000-0000-0000-0000-000000000001', 'capboard', '上限の実験用', '11111111-1111-1111-1111-111111111111', 'ゆうき');
+insert into tests_secrets
+  select room_id, recovery_token from public.room_secrets
+   where room_id = 'cafe0000-0000-0000-0000-000000000001';
+set local role authenticated;
+
+select tests_act_as('44444444-4444-4444-4444-444444444444');   -- たかし（ここで 50 個）
+
+select throws_ok(
+  $$select public.claim_owner('capboard',
+      (select recovery_token from tests_secrets
+        where room_id = 'cafe0000-0000-0000-0000-000000000001'), 'たかし')$$,
+  '23514',
+  'ボードは 1 人 50 個までです',
+  '上限に達していると、オーナー復帰でもボードを受け取れない');
+
+-- 付け替わっていないことは postgres で確かめる（たかしはこのボードを読めない）
+reset role;
+select is(
+  (select owner_id from public.rooms where id = 'cafe0000-0000-0000-0000-000000000001'),
+  '11111111-1111-1111-1111-111111111111'::uuid,
+  '断られたので、作った人のままになっている');
+set local role authenticated;
 
 
 -- =============================================================================
@@ -1562,6 +1607,593 @@ select is(
                       and user_id = '33333333-3333-3333-3333-333333333333'$$),
   1, 'オーナーは、外した人の行を片付けられる');
 
+
+-- =============================================================================
+--  33. 合言葉の失敗回数は、自分では消せない
+--
+--      15. で止められた人が、退会して台帳ごと消せば、そのまま総当たりを
+--      続けられてしまう。合言葉を当てようとしている人はまだ参加者ですら
+--      ないので、退会に払う代償が無い。台帳はボードを守るためのもので、
+--      本人の持ち物ではない。
+-- =============================================================================
+
+-- 前提の確認。15. の失敗記録が残っている（台帳は postgres でしか読めない）
+reset role;
+select is(
+  (select failed_count from public.access_attempts
+    where room_id = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'
+      and user_id = '44444444-4444-4444-4444-444444444444' and kind = 'pin'),
+  5, '止められたままの記録が残っている');
+set local role authenticated;
+
+select tests_act_as('44444444-4444-4444-4444-444444444444');   -- たかし
+
+select lives_ok(
+  $$select public.delete_my_account()$$,
+  '退会そのものはできる');
+
+reset role;
+select is(
+  (select failed_count from public.access_attempts
+    where room_id = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'
+      and user_id = '44444444-4444-4444-4444-444444444444' and kind = 'pin'),
+  5, '退会しても、合言葉の失敗回数は消えない');
+set local role authenticated;
+
+-- 17. で止めた受付を開け直して、止められたままであることを確かめる
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき（合言葉つきのボードのオーナー）
+
+select is(
+  tests_rowcount($$update public.rooms set join_closed = false
+                    where id = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'$$),
+  1, '受付を再開する');
+
+select tests_act_as('44444444-4444-4444-4444-444444444444');   -- たかし
+
+select throws_ok(
+  $$select public.request_access('pinboard', 'たかし', '', 'ひみつのことば')$$,
+  'P0001',
+  '間違いが続いたため、10 分ほど待ってからやり直してください',
+  '退会してやり直しても、まだ止められている');
+
+
+-- =============================================================================
+--  34. 「自分の行だから」だけでは通さない
+--
+--      書き込み（INSERT）は can_access_room と room_is_open を見ているのに、
+--      書き換え（UPDATE）と取り消し（DELETE）が「自分の行か」しか見ていない、
+--      という非対称。取り消されたあと・ボードが終わったあとに効いてくる。
+-- =============================================================================
+
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき（承認制のボードのオーナー）
+
+insert into public.notes (id, room_id, text, author_id, author_name)
+values ('11110000-0000-0000-0000-000000000020', 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+        '相談ごと', '11111111-1111-1111-1111-111111111111', 'ゆうき');
+
+select tests_act_as('33333333-3333-3333-3333-333333333333');   -- みなみ
+
+insert into public.comments (id, room_id, target_type, body, author_id, author_name)
+values ('77770000-0000-0000-0000-000000000002', 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+        'board', 'みなみの発言', '33333333-3333-3333-3333-333333333333', 'みなみ');
+
+insert into public.note_votes (room_id, note_id, user_id, voter_name)
+values ('cccccccc-cccc-cccc-cccc-cccccccccccc', '11110000-0000-0000-0000-000000000020',
+        '33333333-3333-3333-3333-333333333333', 'みなみ');
+
+-- 取り消されたあと。
+-- ここは UPDATE / DELETE のポリシーではなく SELECT のポリシーが止めている
+-- （行を見つけられないので 0 行）。理由が違うだけで結果は同じなので、
+-- 「なぜ止まっているか」を変えたときに気づけるよう、両方を残しておく。
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき
+
+select is(
+  tests_rowcount($$update public.room_members set status = 'rejected', decided_at = now()
+                    where room_id = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
+                      and user_id = '33333333-3333-3333-3333-333333333333'$$),
+  1, 'オーナーはみなみのアクセスを取り消せる');
+
+select tests_act_as('33333333-3333-3333-3333-333333333333');   -- みなみ（取り消された）
+
+select is(
+  (select count(*)::int from public.comments
+    where room_id = 'cccccccc-cccc-cccc-cccc-cccccccccccc'),
+  0, '取り消された人には、コメントはもう見えない');
+
+select is(
+  tests_rowcount($$update public.comments set body = 'あとから書き換えた'
+                    where id = '77770000-0000-0000-0000-000000000002'$$),
+  0, '取り消された人は、自分が書いたコメントも書き換えられない');
+
+select is(
+  tests_rowcount($$delete from public.note_votes
+                    where room_id = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
+                      and user_id = '33333333-3333-3333-3333-333333333333'$$),
+  0, '取り消された人は、自分が入れた票も取り下げられない');
+
+-- ボードが終わったあと
+select tests_act_as('22222222-2222-2222-2222-222222222222');   -- けいこ（まだ参加者）
+
+insert into public.comments (id, room_id, target_type, body, author_id, author_name)
+values ('77770000-0000-0000-0000-000000000003', 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+        'board', 'けいこの発言', '22222222-2222-2222-2222-222222222222', 'けいこ');
+
+insert into public.note_votes (room_id, note_id, user_id, voter_name)
+values ('cccccccc-cccc-cccc-cccc-cccccccccccc', '11110000-0000-0000-0000-000000000020',
+        '22222222-2222-2222-2222-222222222222', 'けいこ');
+
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき
+
+select is(
+  tests_rowcount($$update public.rooms set archived = true
+                    where id = 'cccccccc-cccc-cccc-cccc-cccccccccccc'$$),
+  1, 'オーナーはボードを終了できる');
+
+select tests_act_as('22222222-2222-2222-2222-222222222222');   -- けいこ
+
+select is(
+  (select count(*)::int from public.comments
+    where id = '77770000-0000-0000-0000-000000000003'),
+  1, '終了したボードでも、自分のコメントは読める');
+
+select is(
+  tests_rowcount($$update public.comments set body = '終わってから書き換えた'
+                    where id = '77770000-0000-0000-0000-000000000003'$$),
+  0, '終了したボードでは、自分が書いたコメントも書き換えられない');
+
+select is(
+  tests_rowcount($$delete from public.note_votes
+                    where room_id = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
+                      and user_id = '22222222-2222-2222-2222-222222222222'$$),
+  0, '終了したボードでは、自分が入れた票も取り下げられない');
+
+
+-- =============================================================================
+--  35. 差し替えられて困る列は、UPDATE でも動かせない
+--
+--      INSERT はポリシーで確かめているのに、UPDATE では誰も見ていなかった列。
+-- =============================================================================
+
+select tests_act_as('22222222-2222-2222-2222-222222222222');   -- けいこ（開いているボードの編集できる人）
+
+insert into public.images (id, room_id, storage_path, author_id, author_name)
+values ('88880000-0000-0000-0000-000000000010', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/one.png',
+        '22222222-2222-2222-2222-222222222222', 'けいこ');
+
+insert into public.attachments (id, room_id, storage_path, filename, author_id, author_name)
+values ('88880000-0000-0000-0000-000000000011', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/one.pdf', '資料.pdf',
+        '22222222-2222-2222-2222-222222222222', 'けいこ');
+
+select is(
+  tests_rowcount($$update public.images set x = 500
+                    where id = '88880000-0000-0000-0000-000000000010'$$),
+  1, '画像は動かせる');
+
+select is(
+  tests_error($$update public.images
+                  set storage_path = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/two.png'
+                where id = '88880000-0000-0000-0000-000000000010'$$),
+  'storage_path は変更できません',
+  '画像の実体の置き場所は差し替えられない（古い実体が消されないまま残るため）');
+
+select is(
+  tests_error($$update public.attachments
+                  set storage_path = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/two.pdf'
+                where id = '88880000-0000-0000-0000-000000000011'$$),
+  'storage_path は変更できません',
+  '添付の実体の置き場所も差し替えられない');
+
+-- 通知は、受け取った人でも中身を書き換えられない（読んだ印だけ付けられる）
+insert into public.notifications (id, room_id, user_id, kind, body, link_tab)
+values ('99990000-0000-0000-0000-000000000010', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        '22222222-2222-2222-2222-222222222222', 'mention', 'けいこあての知らせ', 'board');
+
+select is(
+  tests_rowcount($$update public.notifications set read = true
+                    where id = '99990000-0000-0000-0000-000000000010'$$),
+  1, '受け取った人は「読んだ」印を付けられる');
+
+select is(
+  tests_error($$update public.notifications set body = '書き換えた'
+                where id = '99990000-0000-0000-0000-000000000010'$$),
+  'body は変更できません',
+  '受け取った人でも、通知の中身は書き換えられない');
+
+select is(
+  tests_error($$update public.notifications set actor_name = 'ゆうき'
+                where id = '99990000-0000-0000-0000-000000000010'$$),
+  'actor_name は変更できません',
+  '差出人の名前も、あとから書き換えられない');
+
+
+-- =============================================================================
+--  36. これまで一度も触れていなかったところ
+--
+--      ポリシーもトリガーも書いてあるのに、テストが 1 件も無かったもの。
+--      「書いたつもり」で終わっていないかを確かめる。
+-- =============================================================================
+
+-- ---- 復帰リンクの作り直し ------------------------------------------------
+select tests_act_as('22222222-2222-2222-2222-222222222222');   -- けいこ（オーナーではない）
+
+select throws_ok(
+  $$select public.rotate_owner_token('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')$$,
+  'P0001', 'オーナーだけが変更できます',
+  'オーナーでない人は、復帰リンクを作り直せない');
+
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき（オーナー）
+
+select isnt(
+  public.rotate_owner_token('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
+  (select recovery_token from tests_secrets
+    where room_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
+  'オーナーは復帰リンクを作り直せる（前とは違う値になる）');
+
+select is(
+  (select count(*)::int from public.activities
+    where room_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+      and target_type = 'access' and action = 'owner_link_rotated'),
+  1, '作り直したことが履歴に残る');
+
+-- ---- 誰も触れないはずの台帳 ----------------------------------------------
+select tests_act_as('22222222-2222-2222-2222-222222222222');   -- けいこ
+
+select is(
+  (select count(*)::int from public.reminder_sends),
+  0, 'リマインドの送信台帳は、ふつうの利用者からは見えない');
+
+select is(
+  tests_rowcount($$insert into public.reminder_sends (send_key) values ('でっちあげ')$$),
+  -1, '送信台帳には書き込めない（二重送信を止める鍵なので）');
+
+-- ---- 不具合の記録は置けるが、読み返せない --------------------------------
+select is(
+  tests_rowcount($$insert into public.client_errors (user_id, message)
+                   values ('22222222-2222-2222-2222-222222222222', 'テストの記録')$$),
+  1, '自分の不具合の記録は置ける');
+
+select is(
+  tests_rowcount($$insert into public.client_errors (user_id, message)
+                   values ('11111111-1111-1111-1111-111111111111', '他人になりすました記録')$$),
+  -1, '他人の名前では置けない');
+
+select is(
+  (select count(*)::int from public.client_errors),
+  0, '置いた記録は、自分でも読み返せない（送りっぱなし）');
+
+-- ---- 添付を消すと、実体の掃除が予約される（20. は画像だけ見ていた）--------
+select is(
+  tests_rowcount($$delete from public.attachments
+                    where id = '88880000-0000-0000-0000-000000000011'$$),
+  1, '添付の行を消せる');
+
+reset role;
+select is(
+  (select count(*)::int from public.purge_queue
+    where bucket = 'board-files' and kind = 'object'
+      and path = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/one.pdf'),
+  1, '添付の行を消すと、その実体の掃除が 1 件予約される');
+set local role authenticated;
+
+-- ---- 日程調整の投票と、投票した人の名前 ----------------------------------
+-- 29. で作った投票（88880000-…0001）を使う。候補日はまだ 1 件も無い
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき
+
+select is(
+  tests_rowcount($$insert into public.poll_options (id, poll_id, room_id, start_at)
+                   values ('88880000-0000-0000-0000-000000000021',
+                           '88880000-0000-0000-0000-000000000001',
+                           'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', now())$$),
+  1, '編集できる人は候補日を足せる');
+
+select tests_act_as('22222222-2222-2222-2222-222222222222');   -- けいこ
+
+insert into public.poll_votes (poll_id, option_id, room_id, user_id, voter_name)
+values ('88880000-0000-0000-0000-000000000001', '88880000-0000-0000-0000-000000000021',
+        'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '22222222-2222-2222-2222-222222222222', 'ゆうき');
+
+select is(
+  (select voter_name from public.poll_votes
+    where option_id = '88880000-0000-0000-0000-000000000021'
+      and user_id = '22222222-2222-2222-2222-222222222222'),
+  'けいこ', '日程調整の投票でも、名前は本人のものに直される');
+
+select is(
+  tests_rowcount($$insert into public.poll_votes (poll_id, option_id, room_id, user_id)
+                   values ('88880000-0000-0000-0000-000000000001',
+                           '88880000-0000-0000-0000-000000000021',
+                           'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                           '11111111-1111-1111-1111-111111111111')$$),
+  -1, '他人になりかわって投票はできない');
+
+-- ---- フレーム（囲み）------------------------------------------------------
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき
+
+select is(
+  tests_rowcount($$insert into public.frames (id, room_id, title, author_id, author_name)
+                   values ('88880000-0000-0000-0000-000000000030',
+                           'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '午前の案',
+                           '11111111-1111-1111-1111-111111111111', 'ゆうき')$$),
+  1, '編集できる人はフレームを作れる');
+
+select tests_act_as('33333333-3333-3333-3333-333333333333');   -- みなみ（32. でこのボードの名簿から外れた）
+
+select is(
+  tests_rowcount($$insert into public.frames (room_id, title, author_id, author_name)
+                   values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '割り込み',
+                           '33333333-3333-3333-3333-333333333333', 'みなみ')$$),
+  -1, '参加していない人はフレームを作れない');
+
+
+-- =============================================================================
+--  37. 棚卸し — 権限の「形」を固定する
+--
+--      ここだけは中身ではなく形を見ている。ポリシーが増えた・減った、
+--      トリガーが片方の操作にしか付いていない、外から呼べる関数が増えた——を、
+--      次に誰かがやったときに気づけるようにする。
+--
+--      落ちたら、まず「その増減は意図したものか」を確かめること。
+--      確かめてから一覧を直す。順番を逆にすると、この節は何も守らなくなる。
+-- =============================================================================
+
+reset role;
+
+-- RLS を有効にし忘れたテーブルが無いこと。
+-- ポリシーをいくら書いても、ここが漏れていればテーブルごと素通しになる。
+select is(
+  (select count(*)::int from pg_class c
+     join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'public' and c.relkind = 'r' and not c.relrowsecurity),
+  0, 'public のテーブルは、全部 RLS が有効');
+
+-- ポリシーの顔ぶれ（テーブル・名前・対象の操作）。
+-- 「これまで誰も触れなかった操作にポリシーが増えた」が、ここで見える。
+select set_eq(
+  $q$select tablename::text, policyname::text, cmd::text
+       from pg_policies where schemaname = 'public'$q$,
+  $q$values
+  ('activities', 'activities_select', 'SELECT'),
+  ('attachments', 'attachments_delete', 'DELETE'),
+  ('attachments', 'attachments_insert', 'INSERT'),
+  ('attachments', 'attachments_select', 'SELECT'),
+  ('attachments', 'attachments_update', 'UPDATE'),
+  ('calendar_feeds', 'calendar_feeds_delete', 'DELETE'),
+  ('calendar_feeds', 'calendar_feeds_insert', 'INSERT'),
+  ('calendar_feeds', 'calendar_feeds_select', 'SELECT'),
+  ('calendar_feeds', 'calendar_feeds_update', 'UPDATE'),
+  ('client_errors', 'client_errors_insert', 'INSERT'),
+  ('comments', 'comments_delete', 'DELETE'),
+  ('comments', 'comments_insert', 'INSERT'),
+  ('comments', 'comments_select', 'SELECT'),
+  ('comments', 'comments_update', 'UPDATE'),
+  ('connectors', 'connectors_delete', 'DELETE'),
+  ('connectors', 'connectors_insert', 'INSERT'),
+  ('connectors', 'connectors_select', 'SELECT'),
+  ('connectors', 'connectors_update', 'UPDATE'),
+  ('event_overrides', 'event_overrides_delete', 'DELETE'),
+  ('event_overrides', 'event_overrides_insert', 'INSERT'),
+  ('event_overrides', 'event_overrides_select', 'SELECT'),
+  ('event_overrides', 'event_overrides_update', 'UPDATE'),
+  ('events', 'events_delete', 'DELETE'),
+  ('events', 'events_insert', 'INSERT'),
+  ('events', 'events_select', 'SELECT'),
+  ('events', 'events_update', 'UPDATE'),
+  ('frames', 'frames_delete', 'DELETE'),
+  ('frames', 'frames_insert', 'INSERT'),
+  ('frames', 'frames_select', 'SELECT'),
+  ('frames', 'frames_update', 'UPDATE'),
+  ('images', 'images_delete', 'DELETE'),
+  ('images', 'images_insert', 'INSERT'),
+  ('images', 'images_select', 'SELECT'),
+  ('images', 'images_update', 'UPDATE'),
+  ('note_reactions', 'note_reactions_delete', 'DELETE'),
+  ('note_reactions', 'note_reactions_insert', 'INSERT'),
+  ('note_reactions', 'note_reactions_select', 'SELECT'),
+  ('note_reactions', 'note_reactions_update', 'UPDATE'),
+  ('note_votes', 'note_votes_delete', 'DELETE'),
+  ('note_votes', 'note_votes_insert', 'INSERT'),
+  ('note_votes', 'note_votes_select', 'SELECT'),
+  ('notes', 'notes_delete', 'DELETE'),
+  ('notes', 'notes_insert', 'INSERT'),
+  ('notes', 'notes_select', 'SELECT'),
+  ('notes', 'notes_update', 'UPDATE'),
+  ('notifications', 'notifications_delete', 'DELETE'),
+  ('notifications', 'notifications_insert', 'INSERT'),
+  ('notifications', 'notifications_select', 'SELECT'),
+  ('notifications', 'notifications_update', 'UPDATE'),
+  ('poll_options', 'poll_options_select', 'SELECT'),
+  ('poll_options', 'poll_options_write', 'ALL'),
+  ('poll_votes', 'poll_votes_delete', 'DELETE'),
+  ('poll_votes', 'poll_votes_insert', 'INSERT'),
+  ('poll_votes', 'poll_votes_select', 'SELECT'),
+  ('poll_votes', 'poll_votes_update', 'UPDATE'),
+  ('polls', 'polls_delete', 'DELETE'),
+  ('polls', 'polls_insert', 'INSERT'),
+  ('polls', 'polls_select', 'SELECT'),
+  ('polls', 'polls_update', 'UPDATE'),
+  ('push_subscriptions', 'push_subscriptions_all', 'ALL'),
+  ('room_members', 'room_members_delete', 'DELETE'),
+  ('room_members', 'room_members_insert', 'INSERT'),
+  ('room_members', 'room_members_select', 'SELECT'),
+  ('room_members', 'room_members_update', 'UPDATE'),
+  ('room_secrets', 'room_secrets_select', 'SELECT'),
+  ('rooms', 'rooms_delete', 'DELETE'),
+  ('rooms', 'rooms_insert', 'INSERT'),
+  ('rooms', 'rooms_select', 'SELECT'),
+  ('rooms', 'rooms_update', 'UPDATE'),
+  ('snapshots', 'snapshots_delete', 'DELETE'),
+  ('snapshots', 'snapshots_insert', 'INSERT'),
+  ('snapshots', 'snapshots_select', 'SELECT'),
+  ('snapshots', 'snapshots_update', 'UPDATE'),
+  ('strokes', 'strokes_delete', 'DELETE'),
+  ('strokes', 'strokes_insert', 'INSERT'),
+  ('strokes', 'strokes_select', 'SELECT'),
+  ('strokes', 'strokes_update', 'UPDATE'),
+  ('todos', 'todos_delete', 'DELETE'),
+  ('todos', 'todos_insert', 'INSERT'),
+  ('todos', 'todos_select', 'SELECT'),
+  ('todos', 'todos_update', 'UPDATE')
+  $q$,
+  'RLS ポリシーの顔ぶれが、控えと一致する');
+
+-- トリガーの顔ぶれ（テーブル・名前・タイミング・対象の操作）。
+--
+-- 「門番が片方の操作にしか居ない」がひと目で分かる形にしてある。
+-- 実際、rooms_limit_per_user が INSERT だけを見ていたせいで、オーナー復帰で
+-- ボードの上限をすり抜けられた。room_members_guard が UPDATE だけなのは
+-- 意図したもの（理由は schema.sql の room_members_delete のコメント）。
+select set_eq(
+  $q$select event_object_table::text, trigger_name::text, action_timing::text,
+            string_agg(distinct event_manipulation::text, ',' order by event_manipulation::text)
+       from information_schema.triggers
+      where trigger_schema = 'public'
+      group by 1, 2, 3$q$,
+  $q$values
+  ('attachments', 'attachments_enqueue_purge', 'AFTER', 'DELETE'),
+  ('attachments', 'attachments_force_name', 'BEFORE', 'INSERT,UPDATE'),
+  ('attachments', 'attachments_freeze', 'BEFORE', 'UPDATE'),
+  ('attachments', 'attachments_freeze_path', 'BEFORE', 'UPDATE'),
+  ('attachments', 'attachments_limit_rows', 'BEFORE', 'INSERT'),
+  ('attachments', 'attachments_limit_text', 'BEFORE', 'INSERT,UPDATE'),
+  ('calendar_feeds', 'calendar_feeds_freeze', 'BEFORE', 'UPDATE'),
+  ('calendar_feeds', 'calendar_feeds_limit_rows', 'BEFORE', 'INSERT'),
+  ('calendar_feeds', 'calendar_feeds_limit_text', 'BEFORE', 'INSERT,UPDATE'),
+  ('client_errors', 'client_errors_limit_text', 'BEFORE', 'INSERT,UPDATE'),
+  ('client_errors', 'client_errors_throttle', 'BEFORE', 'INSERT'),
+  ('comments', 'comments_force_name', 'BEFORE', 'INSERT,UPDATE'),
+  ('comments', 'comments_freeze', 'BEFORE', 'UPDATE'),
+  ('comments', 'comments_limit_rows', 'BEFORE', 'INSERT'),
+  ('comments', 'comments_limit_text', 'BEFORE', 'INSERT,UPDATE'),
+  ('connectors', 'connectors_freeze', 'BEFORE', 'UPDATE'),
+  ('connectors', 'connectors_limit_rows', 'BEFORE', 'INSERT'),
+  ('connectors', 'connectors_limit_text', 'BEFORE', 'INSERT,UPDATE'),
+  ('event_overrides', 'event_overrides_force_name', 'BEFORE', 'INSERT,UPDATE'),
+  ('event_overrides', 'event_overrides_freeze', 'BEFORE', 'UPDATE'),
+  ('event_overrides', 'event_overrides_limit_rows', 'BEFORE', 'INSERT'),
+  ('event_overrides', 'event_overrides_limit_text', 'BEFORE', 'INSERT,UPDATE'),
+  ('events', 'events_activity', 'AFTER', 'DELETE,INSERT,UPDATE'),
+  ('events', 'events_force_name', 'BEFORE', 'INSERT,UPDATE'),
+  ('events', 'events_freeze', 'BEFORE', 'UPDATE'),
+  ('events', 'events_limit_rows', 'BEFORE', 'INSERT'),
+  ('events', 'events_limit_text', 'BEFORE', 'INSERT,UPDATE'),
+  ('events', 'events_touch', 'BEFORE', 'UPDATE'),
+  ('frames', 'frames_force_name', 'BEFORE', 'INSERT,UPDATE'),
+  ('frames', 'frames_freeze', 'BEFORE', 'UPDATE'),
+  ('frames', 'frames_limit_rows', 'BEFORE', 'INSERT'),
+  ('frames', 'frames_limit_text', 'BEFORE', 'INSERT,UPDATE'),
+  ('images', 'images_activity', 'AFTER', 'DELETE,INSERT,UPDATE'),
+  ('images', 'images_enqueue_purge', 'AFTER', 'DELETE'),
+  ('images', 'images_force_name', 'BEFORE', 'INSERT,UPDATE'),
+  ('images', 'images_freeze', 'BEFORE', 'UPDATE'),
+  ('images', 'images_freeze_path', 'BEFORE', 'UPDATE'),
+  ('images', 'images_limit_rows', 'BEFORE', 'INSERT'),
+  ('images', 'images_limit_text', 'BEFORE', 'INSERT,UPDATE'),
+  ('note_reactions', 'note_reactions_freeze', 'BEFORE', 'UPDATE'),
+  ('note_reactions', 'note_reactions_limit_text', 'BEFORE', 'INSERT,UPDATE'),
+  ('note_votes', 'note_votes_force_name', 'BEFORE', 'INSERT,UPDATE'),
+  ('note_votes', 'note_votes_freeze', 'BEFORE', 'UPDATE'),
+  ('note_votes', 'note_votes_limit_text', 'BEFORE', 'INSERT,UPDATE'),
+  ('notes', 'notes_activity', 'AFTER', 'DELETE,INSERT,UPDATE'),
+  ('notes', 'notes_force_name', 'BEFORE', 'INSERT,UPDATE'),
+  ('notes', 'notes_freeze', 'BEFORE', 'UPDATE'),
+  ('notes', 'notes_limit_rows', 'BEFORE', 'INSERT'),
+  ('notes', 'notes_limit_text', 'BEFORE', 'INSERT,UPDATE'),
+  ('notes', 'notes_touch', 'BEFORE', 'UPDATE'),
+  ('notifications', 'notifications_freeze', 'BEFORE', 'UPDATE'),
+  ('notifications', 'notifications_freeze_body', 'BEFORE', 'UPDATE'),
+  ('notifications', 'notifications_guard', 'BEFORE', 'INSERT'),
+  ('notifications', 'notifications_limit_text', 'BEFORE', 'INSERT,UPDATE'),
+  ('poll_options', 'poll_options_freeze', 'BEFORE', 'UPDATE'),
+  ('poll_options', 'poll_options_limit_rows', 'BEFORE', 'INSERT'),
+  ('poll_votes', 'poll_votes_force_name', 'BEFORE', 'INSERT,UPDATE'),
+  ('poll_votes', 'poll_votes_freeze', 'BEFORE', 'UPDATE'),
+  ('poll_votes', 'poll_votes_limit_text', 'BEFORE', 'INSERT,UPDATE'),
+  ('polls', 'polls_force_name', 'BEFORE', 'INSERT,UPDATE'),
+  ('polls', 'polls_freeze', 'BEFORE', 'UPDATE'),
+  ('polls', 'polls_limit_rows', 'BEFORE', 'INSERT'),
+  ('polls', 'polls_limit_text', 'BEFORE', 'INSERT,UPDATE'),
+  ('room_members', 'room_members_access_log', 'AFTER', 'DELETE,INSERT,UPDATE'),
+  ('room_members', 'room_members_freeze', 'BEFORE', 'UPDATE'),
+  ('room_members', 'room_members_guard', 'BEFORE', 'UPDATE'),
+  ('room_members', 'room_members_limit_text', 'BEFORE', 'INSERT,UPDATE'),
+  ('rooms', 'rooms_access_log', 'AFTER', 'UPDATE'),
+  ('rooms', 'rooms_create_secret', 'AFTER', 'INSERT'),
+  ('rooms', 'rooms_enqueue_purge', 'BEFORE', 'DELETE'),
+  ('rooms', 'rooms_limit_per_user', 'BEFORE', 'INSERT,UPDATE'),
+  ('rooms', 'rooms_limit_text', 'BEFORE', 'INSERT,UPDATE'),
+  ('snapshots', 'snapshots_force_name', 'BEFORE', 'INSERT,UPDATE'),
+  ('snapshots', 'snapshots_freeze', 'BEFORE', 'UPDATE'),
+  ('snapshots', 'snapshots_limit_rows', 'BEFORE', 'INSERT'),
+  ('snapshots', 'snapshots_limit_text', 'BEFORE', 'INSERT,UPDATE'),
+  ('strokes', 'strokes_freeze', 'BEFORE', 'UPDATE'),
+  ('strokes', 'strokes_limit_rows', 'BEFORE', 'INSERT'),
+  ('strokes', 'strokes_limit_text', 'BEFORE', 'INSERT,UPDATE'),
+  ('todos', 'todos_activity', 'AFTER', 'DELETE,INSERT,UPDATE'),
+  ('todos', 'todos_force_name', 'BEFORE', 'INSERT,UPDATE'),
+  ('todos', 'todos_freeze', 'BEFORE', 'UPDATE'),
+  ('todos', 'todos_guard_assignee', 'BEFORE', 'INSERT,UPDATE'),
+  ('todos', 'todos_limit_rows', 'BEFORE', 'INSERT'),
+  ('todos', 'todos_limit_text', 'BEFORE', 'INSERT,UPDATE')
+  $q$,
+  'トリガーの顔ぶれと、守っている操作が、控えと一致する');
+
+-- ログイン済みの人が実行できる public の関数。
+--
+-- 増えていたら、それは新しい入口。RPC を足したとき以外に増えてはいけない。
+-- tg_ で始まるものは戻り値が trigger なので、SQL からも PostgREST からも
+-- 直接は呼べない（それでも一覧には出るので、ここに並べておく）。
+-- 拡張（pgtap）の関数と、このテストが作る tests_ の助っ人は数えない。
+select set_eq(
+  $q$select p.proname::text
+       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = 'public'
+        and has_function_privilege('authenticated', p.oid, 'EXECUTE')
+        and not exists (select 1 from pg_depend d
+                         where d.objid = p.oid and d.deptype = 'e')
+        and p.proname not like 'tests\_%'$q$,
+  $q$values
+  ('can_access_room'),
+  ('can_edit_room'),
+  ('claim_owner'),
+  ('delete_my_account'),
+  ('get_room_preview'),
+  ('is_room_owner'),
+  ('is_room_participant'),
+  ('my_membership_status'),
+  ('realtime_room_id'),
+  ('request_access'),
+  ('restore_snapshot'),
+  ('revoke_all_members'),
+  ('room_display_name'),
+  ('room_is_open'),
+  ('rotate_owner_token'),
+  ('rotate_room_slug'),
+  ('set_join_pin'),
+  ('storage_room_id'),
+  ('tg_create_room_secret'),
+  ('tg_enqueue_purge'),
+  ('tg_enqueue_purge_room'),
+  ('tg_force_author_name'),
+  ('tg_force_voter_name'),
+  ('tg_freeze_columns'),
+  ('tg_guard_member_update'),
+  ('tg_guard_notification'),
+  ('tg_guard_todo_assignee'),
+  ('tg_limit_rooms_per_user'),
+  ('tg_limit_rows_per_room'),
+  ('tg_limit_text'),
+  ('tg_log_activity'),
+  ('tg_log_member_access'),
+  ('tg_log_room_access'),
+  ('tg_throttle_client_errors'),
+  ('tg_touch_event_updated_at'),
+  ('tg_touch_note_updated_at')
+  $q$,
+  'ログイン済みの人が呼べる関数が、控えと一致する');
+
+set local role authenticated;
 
 select * from finish();
 

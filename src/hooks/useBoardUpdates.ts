@@ -87,6 +87,8 @@ function accessLine(
   const legacy = activity.actor_id === null
 
   switch (activity.action) {
+    case 'member_joined':
+      return { icon: '🙌', text: 'がこのボードに参加しました' }
     case 'member_approved':
       return legacy
         ? { icon: '✅', text: 'の参加が承認されました', actorName: who }
