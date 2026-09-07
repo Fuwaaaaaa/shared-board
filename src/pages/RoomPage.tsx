@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { useRoomAccess } from '../hooks/useRoomAccess'
 import { usePresence } from '../hooks/usePresence'
@@ -9,23 +9,35 @@ import { RoomDataProvider, useRoomData } from '../lib/roomData'
 import { useIdentity } from '../lib/identity'
 import { supabase } from '../lib/supabase'
 import RoomHeader, { type TabKey } from '../components/RoomHeader'
-import MemberPanel from '../components/MemberPanel'
-import ShareModal from '../components/ShareModal'
-import SearchModal, { type SearchHit } from '../components/SearchModal'
-import BoardSettingsModal from '../components/BoardSettingsModal'
-import ChatPanel from '../components/ChatPanel'
-import NotificationPanel from '../components/NotificationPanel'
-import ShortcutsModal from '../components/ShortcutsModal'
-import PollPanel from '../components/PollPanel'
 import AccessRequestPanel from '../components/AccessRequestPanel'
-import WhiteboardTab from './tabs/WhiteboardTab'
-import CalendarTab from './tabs/CalendarTab'
-import TodoTab from './tabs/TodoTab'
-import UpdatesTab from './tabs/UpdatesTab'
-import DashboardTab from './tabs/DashboardTab'
+import Loading from '../components/Loading'
+import type { SearchHit } from '../components/SearchModal'
 import { useBoardUpdates } from '../hooks/useBoardUpdates'
 import type { CalendarEvent, RoomPreview } from '../lib/types'
 import { isTypingTarget, matchShortcut, toChord } from '../lib/shortcuts'
+
+/*
+ * タブとモーダルは、開いたときに取りに行く。
+ *
+ * どれも元から「選ばれているものだけを描く」書き方（{tab === 'board' && …}）
+ * なので、lazy を被せるだけで実際に読み込む量が減る。
+ * ボードのタブが一番大きい（WhiteboardTab とレイヤー 8 枚）ので、
+ * カレンダーしか見ない人は最後まで取りに行かない。
+ */
+const WhiteboardTab = lazy(() => import('./tabs/WhiteboardTab'))
+const CalendarTab = lazy(() => import('./tabs/CalendarTab'))
+const TodoTab = lazy(() => import('./tabs/TodoTab'))
+const UpdatesTab = lazy(() => import('./tabs/UpdatesTab'))
+const DashboardTab = lazy(() => import('./tabs/DashboardTab'))
+
+const MemberPanel = lazy(() => import('../components/MemberPanel'))
+const ShareModal = lazy(() => import('../components/ShareModal'))
+const SearchModal = lazy(() => import('../components/SearchModal'))
+const BoardSettingsModal = lazy(() => import('../components/BoardSettingsModal'))
+const ChatPanel = lazy(() => import('../components/ChatPanel'))
+const NotificationPanel = lazy(() => import('../components/NotificationPanel'))
+const ShortcutsModal = lazy(() => import('../components/ShortcutsModal'))
+const PollPanel = lazy(() => import('../components/PollPanel'))
 
 export default function RoomPage() {
   const { slug } = useParams<{ slug: string }>()
@@ -276,91 +288,96 @@ function RoomShell({
       />
 
       <main className="min-h-0 flex-1">
-        {tab === 'board' && (
-          <WhiteboardTab
-            peers={peers}
-            onCursorMove={sendCursor}
-            focusId={focusId}
-            focusNonce={focusNonce}
-            boardName={preview.name}
-            onOpenShortcuts={() => setShowShortcuts(true)}
-            onJump={jumpTo}
-            onOpenShare={() => setShowShare(true)}
-            onEditingChange={setEditing}
-          />
-        )}
-        {tab === 'calendar' && (
-          <CalendarTab
-            reminders={reminders}
-            focusId={focusId}
-            focusNonce={focusNonce}
-            boardName={preview.name}
-            onJump={jumpTo}
-          />
-        )}
-        {tab === 'todo' && (
-          <TodoTab
-            reminders={reminders}
-            focusId={focusId}
-            focusNonce={focusNonce}
-            onJump={jumpTo}
-          />
-        )}
-        {tab === 'updates' && (
-          <UpdatesTab
-            updates={updates}
-            onJump={jumpTo}
-            onOpenChat={() => setChatOpen(true)}
-          />
-        )}
-        {tab === 'dashboard' && <DashboardTab onJump={jumpTo} />}
+        <Suspense fallback={<Loading />}>
+          {tab === 'board' && (
+            <WhiteboardTab
+              peers={peers}
+              onCursorMove={sendCursor}
+              focusId={focusId}
+              focusNonce={focusNonce}
+              boardName={preview.name}
+              onOpenShortcuts={() => setShowShortcuts(true)}
+              onJump={jumpTo}
+              onOpenShare={() => setShowShare(true)}
+              onEditingChange={setEditing}
+            />
+          )}
+          {tab === 'calendar' && (
+            <CalendarTab
+              reminders={reminders}
+              focusId={focusId}
+              focusNonce={focusNonce}
+              boardName={preview.name}
+              onJump={jumpTo}
+            />
+          )}
+          {tab === 'todo' && (
+            <TodoTab
+              reminders={reminders}
+              focusId={focusId}
+              focusNonce={focusNonce}
+              onJump={jumpTo}
+            />
+          )}
+          {tab === 'updates' && (
+            <UpdatesTab
+              updates={updates}
+              onJump={jumpTo}
+              onOpenChat={() => setChatOpen(true)}
+            />
+          )}
+          {tab === 'dashboard' && <DashboardTab onJump={jumpTo} />}
+        </Suspense>
       </main>
 
-      {showMembers && (
-        <MemberPanel
-          members={members.rows}
-          preview={preview}
-          onClose={() => setShowMembers(false)}
-          onOpenShare={() => {
-            setShowMembers(false)
-            setShowShare(true)
-          }}
-        />
-      )}
-      {showShare && (
-        <ShareModal
-          preview={preview}
-          onUpdated={onRefreshPreview}
-          onClose={() => setShowShare(false)}
-        />
-      )}
-      {showSearch && <SearchModal onClose={() => setShowSearch(false)} onJump={jumpToHit} />}
-      {showSettings && (
-        <BoardSettingsModal
-          preview={preview}
-          onClose={() => setShowSettings(false)}
-          onUpdated={onRefreshPreview}
-          onOpenShare={() => {
-            setShowSettings(false)
-            setShowShare(true)
-          }}
-        />
-      )}
-      {showNotifications && (
-        <NotificationPanel
-          notifications={notifications.rows}
-          onClose={() => setShowNotifications(false)}
-          onMarkAllRead={notifications.markAllRead}
-          onMarkRead={notifications.markRead}
-          onRemove={notifications.remove}
-          onOpen={jumpTo}
-        />
-      )}
-      {showShortcuts && <ShortcutsModal onClose={() => setShowShortcuts(false)} />}
-      {showPolls && (
-        <PollPanel onClose={() => setShowPolls(false)} onCreateEvent={createEventFromPoll} />
-      )}
-      {chatOpen && <ChatPanel onClose={() => setChatOpen(false)} />}
+      {/* モーダルは開いた瞬間に取りに行く。受け皿を出すと画面が一瞬ちらつくので出さない */}
+      <Suspense fallback={null}>
+        {showMembers && (
+          <MemberPanel
+            members={members.rows}
+            preview={preview}
+            onClose={() => setShowMembers(false)}
+            onOpenShare={() => {
+              setShowMembers(false)
+              setShowShare(true)
+            }}
+          />
+        )}
+        {showShare && (
+          <ShareModal
+            preview={preview}
+            onUpdated={onRefreshPreview}
+            onClose={() => setShowShare(false)}
+          />
+        )}
+        {showSearch && <SearchModal onClose={() => setShowSearch(false)} onJump={jumpToHit} />}
+        {showSettings && (
+          <BoardSettingsModal
+            preview={preview}
+            onClose={() => setShowSettings(false)}
+            onUpdated={onRefreshPreview}
+            onOpenShare={() => {
+              setShowSettings(false)
+              setShowShare(true)
+            }}
+          />
+        )}
+        {showNotifications && (
+          <NotificationPanel
+            notifications={notifications.rows}
+            onClose={() => setShowNotifications(false)}
+            onMarkAllRead={notifications.markAllRead}
+            onMarkRead={notifications.markRead}
+            onRemove={notifications.remove}
+            onOpen={jumpTo}
+          />
+        )}
+        {showShortcuts && <ShortcutsModal onClose={() => setShowShortcuts(false)} />}
+        {showPolls && (
+          <PollPanel onClose={() => setShowPolls(false)} onCreateEvent={createEventFromPoll} />
+        )}
+        {chatOpen && <ChatPanel onClose={() => setChatOpen(false)} />}
+      </Suspense>
     </div>
   )
 }

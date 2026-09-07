@@ -13,6 +13,24 @@ export default defineConfig(({ mode }) => ({
     host: loadEnv(mode, '.', 'VITE_').VITE_LAN === '1',
     port: 5173,
   },
+  build: {
+    rollupOptions: {
+      output: {
+        /*
+         * 変わりにくいものを別のかたまりに分ける。
+         *
+         * 画面を直すたびにファイル名が変わるのはアプリのぶんだけになるので、
+         * 2 回目からは react や supabase-js を取りに行かなくて済む。
+         * 画面ごとの分割（React.lazy）は src/App.tsx と src/pages/RoomPage.tsx 側。
+         */
+        manualChunks: {
+          react: ['react', 'react-dom', 'react-router-dom'],
+          supabase: ['@supabase/supabase-js'],
+          datefns: ['date-fns', 'date-fns/locale'],
+        },
+      },
+    },
+  },
   test: {
     // どのファイルをどの環境で走らせるかは vitest.workspace.ts が決める。
     // ここに include を置くと、継承した先で連結されて二重に走る

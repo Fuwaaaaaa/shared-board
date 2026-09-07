@@ -1,14 +1,16 @@
-import { useState } from 'react'
+import { lazy, Suspense, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Modal from './Modal'
-import ImportExportModal from './ImportExportModal'
-import TrashModal from './TrashModal'
-import SnapshotModal from './SnapshotModal'
 import { generateSlug, supabase } from '../lib/supabase'
 import { useIdentity } from '../lib/identity'
 import { accessInfo } from '../lib/access'
 import type { BoardImage, CalendarEvent, Note, RoomPreview, Stroke, Todo } from '../lib/types'
 import { messageOf } from '../lib/errorMessage'
+
+// この 3 つは、設定を開いたうえでさらに押した人しか使わない
+const ImportExportModal = lazy(() => import('./ImportExportModal'))
+const TrashModal = lazy(() => import('./TrashModal'))
+const SnapshotModal = lazy(() => import('./SnapshotModal'))
 
 interface Props {
   preview: RoomPreview
@@ -424,13 +426,15 @@ export default function BoardSettingsModal({
         )}
       </div>
 
-      {showImportExport && (
-        <ImportExportModal boardName={preview.name} onClose={() => setShowImportExport(false)} />
-      )}
+      <Suspense fallback={null}>
+        {showImportExport && (
+          <ImportExportModal boardName={preview.name} onClose={() => setShowImportExport(false)} />
+        )}
 
-      {showTrash && <TrashModal onClose={() => setShowTrash(false)} />}
+        {showTrash && <TrashModal onClose={() => setShowTrash(false)} />}
 
-      {showSnapshots && <SnapshotModal onClose={() => setShowSnapshots(false)} />}
+        {showSnapshots && <SnapshotModal onClose={() => setShowSnapshots(false)} />}
+      </Suspense>
     </Modal>
   )
 }

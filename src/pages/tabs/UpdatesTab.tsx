@@ -1,11 +1,13 @@
-import { useMemo, useState } from 'react'
+import { lazy, Suspense, useMemo, useState } from 'react'
 import { format, formatDistanceToNowStrict, isToday, parseISO } from 'date-fns'
 import { ja } from 'date-fns/locale'
-import TrashModal from '../../components/TrashModal'
 import { colorForUser } from '../../hooks/usePresence'
 import { useRoomData } from '../../lib/roomData'
 import type { BoardUpdate, UpdateCategory } from '../../hooks/useBoardUpdates'
 import type { TabKey } from '../../components/RoomHeader'
+
+// ゴミ箱は、ここと「ボードの設定」の 2 か所から開く。どちらも押した人だけが取りに行く
+const TrashModal = lazy(() => import('../../components/TrashModal'))
 
 type Filter = 'all' | UpdateCategory
 
@@ -117,7 +119,9 @@ export default function UpdatesTab({ updates, onJump, onOpenChat }: Props) {
         </p>
       </div>
 
-      {showTrash && <TrashModal onClose={() => setShowTrash(false)} />}
+      <Suspense fallback={null}>
+        {showTrash && <TrashModal onClose={() => setShowTrash(false)} />}
+      </Suspense>
     </div>
   )
 }

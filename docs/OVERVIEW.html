@@ -707,6 +707,14 @@
         順番を逆にすると、この節は何も守らなくなります。
       </li>
       <li>
+        <b>タブとモーダルは <code>React.lazy</code> で分けて読み込んでいます。</b>
+        <code>src/pages/RoomPage.tsx</code> で静的に <code>import</code> し直すと、
+        そのぶんが初回の読み込みに戻ります（画面は動くので気づけません）。
+        型だけ要るときは <code>import type</code> にしてください。
+        効いているかは <code>npm run build</code> の出力で、
+        <code>WhiteboardTab-*.js</code> などが別ファイルとして出ているかを見ます。
+      </li>
+      <li>
         <b>合言葉の最短の長さは 2 か所にあります。</b>
         <code>src/lib/access.ts</code> の <code>MIN_PIN_LENGTH</code> と、
         <code>supabase/schema.sql</code> の <code>set_join_pin</code>。

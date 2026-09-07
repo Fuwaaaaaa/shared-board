@@ -137,6 +137,11 @@ npm run dev
 - **プッシュ通知**: Service Worker + Supabase Edge Function（任意）
 - **ホスティング**: Vercel
 
+画面はページ（ホーム / ボード）・タブ・モーダルの単位に分けて、開いたときに
+取りに行きます（`React.lazy`）。最初に読み込む JavaScript は約 410 KB
+（gzip で約 124 KB）で、ホワイトボードやカレンダーはそのタブを開くまで取りに
+行きません。分ける前は 1 本で 794 KB（gzip 241 KB）でした。
+
 常駐サーバーはありません。アクセス制御はすべて PostgreSQL の
 RLS（行レベルセキュリティ）で行っていて、定義は
 [`supabase/schema.sql`](supabase/schema.sql) の 1 ファイルにまとまっています。
@@ -256,7 +261,7 @@ src/
 | --- | --- | --- |
 | 純粋関数（Vitest / node） | 繰り返し・祝日・ics・CSV・検索など。17 本 294 件 | `npm test` |
 | コンポーネント（Vitest / jsdom） | ドラッグの確定など、DOM が要るもの。2 本 12 件 | `npm test` |
-| ブラウザ（Playwright） | 保存されて残るか、2 人目に届くか、入り方と権限。12 件 | `npm run test:e2e` |
+| ブラウザ（Playwright） | 保存されて残るか、2 人目に届くか、入り方と権限、タブの切り替え。13 件 | `npm run test:e2e` |
 | 権限（pgTAP） | RLS が効いているか。232 件 | `supabase test db` |
 
 ブラウザのテストはローカルの Supabase が要ります。動いていなければ自動で
