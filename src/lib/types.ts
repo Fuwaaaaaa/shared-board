@@ -128,7 +128,7 @@ export interface Activity {
   actor_id: string | null
   actor_name: string
   action: ActivityAction
-  target_type: 'notes' | 'events' | 'todos' | 'images' | 'access'
+  target_type: 'notes' | 'events' | 'todos' | 'images' | 'attachments' | 'access'
   /** 付箋なら本文、アクセスまわりなら相手の名前や設定の内容 */
   target_label: string
   created_at: string
@@ -337,6 +337,7 @@ export interface Connector {
   style: 'arrow' | 'line'
   color: string
   label: string
+  deleted_at: string | null
   author_id: string
   created_at: string
 }
@@ -351,6 +352,7 @@ export interface Frame {
   title: string
   color: string
   z: number
+  deleted_at: string | null
   author_id: string
   author_name: string
   created_at: string
@@ -377,6 +379,7 @@ export interface Attachment {
   x: number
   y: number
   z: number
+  deleted_at: string | null
   author_id: string
   author_name: string
   created_at: string

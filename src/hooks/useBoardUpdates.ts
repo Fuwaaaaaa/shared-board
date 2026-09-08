@@ -30,6 +30,7 @@ const TARGET_LABELS: Record<Activity['target_type'], string> = {
   events: '予定',
   todos: 'やること',
   images: '画像',
+  attachments: 'ファイル',
   access: '',
 }
 
@@ -57,6 +58,7 @@ const TARGET_TABS: Record<Activity['target_type'], TabKey | null> = {
   events: 'calendar',
   todos: 'todo',
   images: 'board',
+  attachments: 'board',
   access: null,
 }
 
@@ -65,6 +67,7 @@ const TARGET_CATEGORIES: Record<Activity['target_type'], UpdateCategory> = {
   events: 'calendar',
   todos: 'todo',
   images: 'board',
+  attachments: 'board',
   access: 'member',
 }
 

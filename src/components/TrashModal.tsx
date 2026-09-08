@@ -4,14 +4,18 @@ import { ja } from 'date-fns/locale'
 import Modal from './Modal'
 import { supabase } from '../lib/supabase'
 import { useRoomData } from '../lib/roomData'
+import { connectorRestoreBlock, daysLeftInTrash, TRASH_DAYS } from '../lib/trash'
 
-type Kind = 'notes' | 'events' | 'todos' | 'images'
+type Kind = 'notes' | 'events' | 'todos' | 'images' | 'frames' | 'connectors' | 'attachments'
 
 const SECTION_META: Record<Kind, { icon: string; label: string }> = {
   notes: { icon: '🖍️', label: '付箋' },
   events: { icon: '📅', label: '予定' },
   todos: { icon: '⏰', label: 'やること' },
   images: { icon: '🖼', label: '画像' },
+  frames: { icon: '🔲', label: 'フレーム' },
+  connectors: { icon: '➰', label: '線' },
+  attachments: { icon: '📎', label: 'ファイル' },
 }
 
 interface TrashRow {
@@ -19,6 +23,8 @@ interface TrashRow {
   id: string
   label: string
   deletedAt: string | null
+  /** 戻せないときの理由。入っていれば「戻す」を押せなくする */
+  blocked: string | null
   restore: () => Promise<void>
   purge: () => Promise<void>
 }
@@ -36,7 +42,17 @@ interface LocalTable<T> {
  * 30 日たつと自動で本当に消える。
  */
 export default function TrashModal({ onClose }: { onClose: () => void }) {
-  const { trash, canEdit, notes, events, todos, images } = useRoomData()
+  const {
+    trash,
+    canEdit,
+    notes,
+    events,
+    todos,
+    images,
+    frames,
+    connectors,
+    attachments,
+  } = useRoomData()
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -45,12 +61,14 @@ export default function TrashModal({ onClose }: { onClose: () => void }) {
     table: LocalTable<T>,
     rows: T[],
     labelOf: (row: T) => string,
+    blockedBy: (row: T) => string | null = () => null,
   ): TrashRow[] {
     return rows.map((row) => ({
       kind,
       id: row.id,
       label: labelOf(row),
       deletedAt: row.deleted_at,
+      blocked: blockedBy(row),
 
       restore: async () => {
         setBusy(row.id)
@@ -89,6 +107,9 @@ export default function TrashModal({ onClose }: { onClose: () => void }) {
     }))
   }
 
+  const liveNoteIds = new Set(notes.rows.map((n) => n.id))
+  const trashedNoteIds = new Set(trash.notes.map((n) => n.id))
+
   const sections: { kind: Kind; rows: TrashRow[] }[] = [
     {
       kind: 'notes',
@@ -97,6 +118,25 @@ export default function TrashModal({ onClose }: { onClose: () => void }) {
     { kind: 'events', rows: build('events', events, trash.events, (e) => e.title) },
     { kind: 'todos', rows: build('todos', todos, trash.todos, (t) => t.title) },
     { kind: 'images', rows: build('images', images, trash.images, () => '画像') },
+    {
+      kind: 'frames',
+      rows: build('frames', frames, trash.frames, (f) => f.title || '（名前なしのフレーム）'),
+    },
+    {
+      kind: 'connectors',
+      // 両端の付箋が見えていないと、戻しても画面には何も出ない
+      rows: build(
+        'connectors',
+        connectors,
+        trash.connectors,
+        (c) => c.label || '線',
+        (c) => connectorRestoreBlock(c, liveNoteIds, trashedNoteIds),
+      ),
+    },
+    {
+      kind: 'attachments',
+      rows: build('attachments', attachments, trash.attachments, (a) => a.filename),
+    },
   ]
 
   const total = sections.reduce((sum, section) => sum + section.rows.length, 0)
@@ -104,7 +144,9 @@ export default function TrashModal({ onClose }: { onClose: () => void }) {
   return (
     <Modal title="ゴミ箱" onClose={onClose}>
       <p className="mb-4 text-xs text-slate-500">
-        消したものは 30 日ここに残ります。他の人が消したものも、ここから戻せます。
+        消したものは {TRASH_DAYS} 日ここに残ります。他の人が消したものも、ここから戻せます。
+        手描きとコメントはここに入りません（手描きは Ctrl+Z、コメントは書いた本人か
+        作った人だけが消せます）。
       </p>
 
       {error && (
@@ -134,15 +176,20 @@ export default function TrashModal({ onClose }: { onClose: () => void }) {
                     >
                       <span className="min-w-0 flex-1 truncate text-slate-700">{row.label}</span>
                       {row.deletedAt && (
-                        <span className="shrink-0 text-xs text-slate-400">
+                        <span
+                          className="shrink-0 text-xs text-slate-400"
+                          title={`あと ${daysLeftInTrash(row.deletedAt)} 日で完全に消えます`}
+                        >
                           {format(parseISO(row.deletedAt), 'M月d日 HH:mm', { locale: ja })}
+                          <span className="ml-1">（あと {daysLeftInTrash(row.deletedAt)} 日）</span>
                         </span>
                       )}
                       {canEdit && (
                         <>
                           <button
                             type="button"
-                            disabled={busy === row.id}
+                            disabled={busy === row.id || row.blocked !== null}
+                            title={row.blocked ?? undefined}
                             onClick={() => void row.restore()}
                             className="shrink-0 rounded-lg border border-slate-300 px-2.5 py-1 text-xs text-slate-700 transition hover:bg-slate-50 disabled:opacity-40"
                           >

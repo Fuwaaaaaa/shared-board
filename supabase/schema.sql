@@ -629,6 +629,28 @@ create index if not exists events_deleted_idx on public.events (room_id, deleted
 create index if not exists todos_deleted_idx  on public.todos  (room_id, deleted_at);
 create index if not exists images_deleted_idx on public.images (room_id, deleted_at);
 
+-- ゴミ箱の続き。
+--
+-- 添付を先に入れたい。attachments の DELETE は tg_enqueue_purge が
+-- その場で purge_queue に積み、毎時の purge-storage が Storage の実体ごと消す。
+-- つまり誤操作 1 回で、他の人が置いた PDF が復旧不能で消えていた。
+--
+-- 入れないものと、その理由:
+--   strokes  … 消しゴムは 1 撫でで何十行も作るので、一覧も 📣 更新も埋まる。
+--               上限 2500 本 × points 120000 文字は無料枠から逆算した数字で、
+--               30 日ぶん残すと最悪ケースが倍になる。全消しには Undo がある。
+--   comments … 消せるのは本人かオーナーだけで、事故ではなくモデレーション。
+--               読む側が 6 か所以上あり、1 つ漏らすと「消したはずの発言」が流れに戻る。
+--   polls    … 親だけ論理削除すると poll_options / poll_votes の上限が
+--               見えない行で埋まる。器ごと消す操作なので、確認の文面で守る。
+alter table public.frames      add column if not exists deleted_at timestamptz;
+alter table public.connectors  add column if not exists deleted_at timestamptz;
+alter table public.attachments add column if not exists deleted_at timestamptz;
+
+create index if not exists frames_deleted_idx      on public.frames      (room_id, deleted_at);
+create index if not exists connectors_deleted_idx  on public.connectors  (room_id, deleted_at);
+create index if not exists attachments_deleted_idx on public.attachments (room_id, deleted_at);
+
 -- 通知の種類。増やすときはここと src/lib/types.ts の NOTIFICATION_KINDS を合わせる。
 alter table public.notifications drop constraint if exists notifications_kind_check;
 alter table public.notifications
@@ -1257,6 +1279,14 @@ begin
 
   elsif TG_TABLE_NAME = 'images' then
     v_label := '画像';
+
+  elsif TG_TABLE_NAME = 'attachments' then
+    v_label := case when TG_OP = 'DELETE' then OLD.filename else NEW.filename end;
+    -- 動かしただけでは残さない。ここを書かないと、ドラッグ 1 回ごとに履歴が増える
+    -- （ゴミ箱への出し入れは、下の deleted_at の判定があとから拾い直す）。
+    if TG_OP = 'UPDATE' then
+      v_keep := false;
+    end if;
   end if;
 
   -- 論理削除は UPDATE として届く。ゴミ箱に入れた／戻したことは必ず残す。
@@ -1284,7 +1314,9 @@ $$;
 do $$
 declare t text;
 begin
-  foreach t in array array['notes', 'events', 'todos', 'images'] loop
+  -- フレームと線は履歴に入れない。ボードの「家具」なので、置いた・消したが
+  -- 流れを埋める。添付だけ入れるのは「誰が消したか」を後から確かめたくなるため。
+  foreach t in array array['notes', 'events', 'todos', 'images', 'attachments'] loop
     execute format('drop trigger if exists %I on public.%I', t || '_activity', t);
     execute format(
       'create trigger %I after insert or update or delete on public.%I
@@ -1633,7 +1665,13 @@ declare
   v_count bigint;
 begin
   v_max := TG_ARGV[0]::integer;
-  execute format('select count(*) from public.%I where room_id = $1', TG_TABLE_NAME)
+  -- 第 3 引数 'soft' は「ゴミ箱の行は数えない」。
+  -- 数えていると、たくさん捨てたボードが 30 日ものあいだ何も足せなくなる。
+  -- 保存した状態からの復元は、いったん全部ゴミ箱へ入れてから入れ直すので必ず踏む。
+  execute format('select count(*) from public.%I where room_id = $1 %s',
+                 TG_TABLE_NAME,
+                 case when TG_NARGS > 2 and TG_ARGV[2] = 'soft'
+                      then 'and deleted_at is null' else '' end)
      into v_count using NEW.room_id;
   if v_count >= v_max then
     raise exception '% はボードあたり % 件までです', TG_ARGV[1], v_max
@@ -1649,33 +1687,41 @@ declare
 begin
   for r in
     select * from (values
-      ('notes',           2000, '付箋'),
+      ('notes',           2000, '付箋',           'soft'),
       -- strokes.points の上限（120000 文字）と掛け合わせた最悪ケースが
       -- 無料枠を食い潰さない値にしている。手描き 2500 本は通常利用では届かない。
-      ('strokes',         2500, '手描き'),
-      ('images',           300, '画像'),
-      ('attachments',      200, '添付ファイル'),
-      ('events',          3000, '予定'),
-      ('event_overrides', 5000, '予定の例外'),
-      ('todos',           3000, 'やること'),
-      ('comments',        5000, 'コメント'),
-      ('connectors',      2000, '線'),
-      ('frames',           300, 'フレーム'),
-      ('polls',            100, '日程調整'),
-      ('poll_options',    2000, '候補日'),
+      ('strokes',         2500, '手描き',         null),
+      ('images',           300, '画像',           'soft'),
+      ('attachments',      200, '添付ファイル',   'soft'),
+      ('events',          3000, '予定',           'soft'),
+      ('event_overrides', 5000, '予定の例外',     null),
+      ('todos',           3000, 'やること',       'soft'),
+      ('comments',        5000, 'コメント',       null),
+      ('connectors',      2000, '線',             'soft'),
+      ('frames',           300, 'フレーム',       'soft'),
+      ('polls',            100, '日程調整',       null),
+      ('poll_options',    2000, '候補日',         null),
       -- 毎日の繰り返し × 5 人 × 3 年でも 5,500 行ほど。想定する人数では届かないが、暴走は止まる
-      ('event_attendance', 10000, '出欠'),
-      ('calendar_feeds',    20, '外部カレンダー'),
+      ('event_attendance', 10000, '出欠',           null),
+      ('calendar_feeds',    20, '外部カレンダー', null),
       -- payload は 1 件 3MB まで許している（大きなボードを丸ごと控えるため下げられない）。
       -- そのぶん件数を絞って、1 ボードあたりの最悪ケースを抑える。
-      ('snapshots',         12, '保存した状態')
-    ) as v(tbl, max_rows, label)
+      ('snapshots',         12, '保存した状態',   null)
+    -- soft = 'soft' の表は、ゴミ箱に入っている行を数えない
+    ) as v(tbl, max_rows, label, soft)
   loop
     execute format('drop trigger if exists %I on public.%I', r.tbl || '_limit_rows', r.tbl);
-    execute format(
-      'create trigger %I before insert on public.%I
-         for each row execute function public.tg_limit_rows_per_room(%L, %L)',
-      r.tbl || '_limit_rows', r.tbl, r.max_rows, r.label);
+    if r.soft is null then
+      execute format(
+        'create trigger %I before insert on public.%I
+           for each row execute function public.tg_limit_rows_per_room(%L, %L)',
+        r.tbl || '_limit_rows', r.tbl, r.max_rows, r.label);
+    else
+      execute format(
+        'create trigger %I before insert on public.%I
+           for each row execute function public.tg_limit_rows_per_room(%L, %L, %L)',
+        r.tbl || '_limit_rows', r.tbl, r.max_rows, r.label, r.soft);
+    end if;
   end loop;
 end;
 $$;

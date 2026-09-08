@@ -1220,6 +1220,7 @@ export default function WhiteboardTab({
       title: '',
       color: 'slate',
       z: maxZ + 1,
+      deleted_at: null,
       author_id: userId,
       author_name: displayName,
       created_at: new Date().toISOString(),
@@ -1254,6 +1255,7 @@ export default function WhiteboardTab({
       style: 'arrow',
       color: '#64748b',
       label: '',
+      deleted_at: null,
       author_id: userId,
       created_at: new Date().toISOString(),
     }
@@ -1266,10 +1268,26 @@ export default function WhiteboardTab({
     })
   }
 
+  /*
+   * 線・フレーム・ファイルの削除はゴミ箱行き（deleted_at を入れるだけ）。
+   *
+   * 消えるのは画面上だけなので、他の人が消したものも 30 日は戻せる。
+   * 行が残るぶん、復元は再 INSERT ではなく UPDATE になり、
+   * author_id を自分に付け替える asMine() も要らなくなった。
+   */
+  async function trashConnector(connector: Connector, restore = false): Promise<boolean> {
+    const at = restore ? null : new Date().toISOString()
+    if (!restore) setSelectedOther(null)
+    const result = await connectorOps.patch(
+      connector.id,
+      { deleted_at: at },
+      { what: restore ? '復元を保存' : '線の削除を保存' },
+    )
+    return result === 'ok'
+  }
+
   async function deleteConnector(connector: Connector, pushHistory = true): Promise<boolean> {
-    setSelectedOther(null)
-    const ok = await connectorOps.remove([connector], '線の削除を保存')
-    if (!ok) return false
+    if (!(await trashConnector(connector))) return false
 
     if (pushHistory) {
       undoStack.push({
@@ -1282,7 +1300,7 @@ export default function WhiteboardTab({
   }
 
   function restoreConnector(connector: Connector): Promise<boolean> {
-    return connectorOps.insert([asMine(connector)], '線を保存')
+    return trashConnector(connector, true)
   }
 
   function patchConnector(id: string, patch: Partial<Connector>): Promise<PatchResult> {
@@ -1320,6 +1338,7 @@ export default function WhiteboardTab({
       title: '',
       color: 'slate',
       z: maxZ + 1,
+      deleted_at: null,
       author_id: userId,
       author_name: displayName,
       created_at: new Date().toISOString(),
@@ -1339,10 +1358,19 @@ export default function WhiteboardTab({
     })
   }
 
+  async function trashFrame(frame: Frame, restore = false): Promise<boolean> {
+    const at = restore ? null : new Date().toISOString()
+    if (!restore) setSelectedOther(null)
+    const result = await frameOps.patch(
+      frame.id,
+      { deleted_at: at },
+      { what: restore ? '復元を保存' : 'フレームの削除を保存' },
+    )
+    return result === 'ok'
+  }
+
   async function deleteFrame(frame: Frame, pushHistory = true): Promise<boolean> {
-    setSelectedOther(null)
-    const ok = await frameOps.remove([frame], 'フレームの削除を保存')
-    if (!ok) return false
+    if (!(await trashFrame(frame))) return false
 
     if (pushHistory) {
       undoStack.push({
@@ -1355,7 +1383,7 @@ export default function WhiteboardTab({
   }
 
   function restoreFrame(frame: Frame): Promise<boolean> {
-    return frameOps.insert([asMine(frame)], 'フレームを保存')
+    return trashFrame(frame, true)
   }
 
   function applyFramePatch(id: string, patch: Partial<Frame>): Promise<PatchResult> {
@@ -1707,6 +1735,7 @@ export default function WhiteboardTab({
         x: Math.max(0, x - 100),
         y: Math.max(0, y - 40),
         z: maxZ + 1,
+        deleted_at: null,
         author_id: userId,
         author_name: displayName,
         created_at: new Date().toISOString(),
@@ -1726,10 +1755,19 @@ export default function WhiteboardTab({
     }
   }
 
+  async function trashAttachment(attachment: Attachment, restore = false): Promise<boolean> {
+    const at = restore ? null : new Date().toISOString()
+    if (!restore) setSelectedOther(null)
+    const result = await attachmentOps.patch(
+      attachment.id,
+      { deleted_at: at },
+      { what: restore ? '復元を保存' : 'ファイルの削除を保存' },
+    )
+    return result === 'ok'
+  }
+
   async function deleteAttachment(attachment: Attachment, pushHistory = true): Promise<boolean> {
-    setSelectedOther(null)
-    const ok = await attachmentOps.remove([attachment], 'ファイルの削除を保存')
-    if (!ok) return false
+    if (!(await trashAttachment(attachment))) return false
 
     if (pushHistory) {
       undoStack.push({
@@ -1742,7 +1780,7 @@ export default function WhiteboardTab({
   }
 
   function restoreAttachment(attachment: Attachment): Promise<boolean> {
-    return attachmentOps.insert([asMine(attachment)], 'ファイルを保存')
+    return trashAttachment(attachment, true)
   }
 
   function applyAttachmentPatch(id: string, patch: Partial<Attachment>): Promise<PatchResult> {
@@ -2810,6 +2848,26 @@ export default function WhiteboardTab({
               onDragOver={(e) => e.preventDefault()}
               onDrop={h.boardDrop}
             >
+              {/*
+                背景。範囲選択と画面移動を受け取る。
+
+                フレームより前に置く。どちらも z-0 の兄弟なので、あとに書いたほうが
+                上に乗る。背景をあとに置いていたころは、フレームの名前バー
+                （枠の外に出ている）が背景に覆われて掴めなかった——選べないので
+                色も名前も変えられず、🗑 も ⋯ も出てこなかった。
+                ここより後ろに書いてある画像・付箋などは、これまでどおり背景の上。
+              */}
+              {mode === 'select' && (
+                <div
+                  className={`absolute inset-0 z-0 touch-none ${panning ? 'cursor-grabbing' : ''}`}
+                  onPointerDown={h.startBackgroundDrag}
+                  onPointerMove={h.moveBackgroundDrag}
+                  onPointerUp={h.endBackgroundDrag}
+                  onPointerCancel={h.endBackgroundDrag}
+                  onLostPointerCapture={h.endBackgroundDrag}
+                />
+              )}
+
               <FramesLayer
                 frames={frames.rows}
                 interactive={mode === 'select'}
@@ -2824,18 +2882,6 @@ export default function WhiteboardTab({
                 onDelete={h.deleteFrame}
                 onOpenMenu={h.openFrameMenu}
               />
-
-              {/* 背景。範囲選択と画面移動を受け取る */}
-              {mode === 'select' && (
-                <div
-                  className={`absolute inset-0 z-0 touch-none ${panning ? 'cursor-grabbing' : ''}`}
-                  onPointerDown={h.startBackgroundDrag}
-                  onPointerMove={h.moveBackgroundDrag}
-                  onPointerUp={h.endBackgroundDrag}
-                  onPointerCancel={h.endBackgroundDrag}
-                  onLostPointerCapture={h.endBackgroundDrag}
-                />
-              )}
 
               <ImagesLayer
                 images={images.rows}
@@ -2930,6 +2976,8 @@ export default function WhiteboardTab({
 
               {(mode === 'note' || mode === 'textbox' || mode === 'frame') && (
                 <div
+                  // ブラウザのテストから「置く場所」を指すための目印
+                  data-place-surface
                   className="absolute inset-0 z-30 cursor-crosshair touch-none"
                   onPointerDown={h.placePointerDown}
                 />

@@ -73,7 +73,14 @@ function isInRoomFolder(path: string): boolean {
   return ROOM_FOLDER.test(path) && !path.includes('..')
 }
 
-/** まだ行から参照されている path（消してはいけないもの） */
+/**
+ * まだ行から参照されている path（消してはいけないもの）。
+ *
+ * deleted_at では絞らない。これは意図的で、ゴミ箱に入っているだけの画像・添付の
+ * 実体を守るのがここの仕事だから。行が残っているあいだは実体も残り、
+ * 30 日後に cron が行を本当に消して初めて、実体も消える。
+ * ここに `.is('deleted_at', null)` を足すと、ゴミ箱から戻しても開けないファイルになる。
+ */
 async function referencedPaths(bucket: string, paths: string[]): Promise<Set<string>> {
   const table = tableFor(bucket)
   if (!table || paths.length === 0) return new Set()

@@ -215,6 +215,12 @@ select cron.schedule(
   delete from public.events where deleted_at < now() - interval '30 days';
   delete from public.todos  where deleted_at < now() - interval '30 days';
   delete from public.images where deleted_at < now() - interval '30 days';
+  delete from public.frames      where deleted_at < now() - interval '30 days';
+  delete from public.connectors  where deleted_at < now() - interval '30 days';
+  -- 添付の DELETE は tg_enqueue_purge が purge_queue に積み、
+  -- 毎時の purge-storage が Storage の実体を消す。ここで初めて実体が消える
+  -- （ゴミ箱に入っているあいだは、行がまだ path を参照しているので消えない）。
+  delete from public.attachments where deleted_at < now() - interval '30 days';
   $$
 );
 

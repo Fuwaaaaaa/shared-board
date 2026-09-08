@@ -30,6 +30,9 @@ export interface Trash {
   events: CalendarEvent[]
   todos: Todo[]
   images: BoardImage[]
+  frames: Frame[]
+  connectors: Connector[]
+  attachments: Attachment[]
 }
 
 interface RoomData {
@@ -137,9 +140,9 @@ export function RoomDataProvider({
   const allNotes = useRealtimeTable<Note>('notes', roomId)
   const strokes = useRealtimeTable<Stroke>('strokes', roomId)
   const allImages = useRealtimeTable<BoardImage>('images', roomId)
-  const attachments = useRealtimeTable<Attachment>('attachments', roomId)
-  const connectors = useRealtimeTable<Connector>('connectors', roomId)
-  const frames = useRealtimeTable<Frame>('frames', roomId)
+  const allAttachments = useRealtimeTable<Attachment>('attachments', roomId)
+  const allConnectors = useRealtimeTable<Connector>('connectors', roomId)
+  const allFrames = useRealtimeTable<Frame>('frames', roomId)
   const reactions = useRealtimeTable<NoteReaction>('note_reactions', roomId)
   const allEvents = useRealtimeTable<CalendarEvent>('events', roomId)
   const overrides = useRealtimeTable<EventOverride>('event_overrides', roomId)
@@ -158,6 +161,9 @@ export function RoomDataProvider({
   const [images, trashedImages] = useWithoutDeleted(allImages)
   const [events, trashedEvents] = useWithoutDeleted(allEvents)
   const [todos, trashedTodos] = useWithoutDeleted(allTodos)
+  const [frames, trashedFrames] = useWithoutDeleted(allFrames)
+  const [connectors, trashedConnectors] = useWithoutDeleted(allConnectors)
+  const [attachments, trashedAttachments] = useWithoutDeleted(allAttachments)
 
   const approvedMembers = useMemo(
     () =>
@@ -173,9 +179,9 @@ export function RoomDataProvider({
     allNotes.live &&
     strokes.live &&
     allImages.live &&
-    attachments.live &&
-    connectors.live &&
-    frames.live &&
+    allAttachments.live &&
+    allConnectors.live &&
+    allFrames.live &&
     reactions.live &&
     allEvents.live &&
     overrides.live &&
@@ -198,9 +204,9 @@ export function RoomDataProvider({
     allNotes.refetch,
     strokes.refetch,
     allImages.refetch,
-    attachments.refetch,
-    connectors.refetch,
-    frames.refetch,
+    allAttachments.refetch,
+    allConnectors.refetch,
+    allFrames.refetch,
     reactions.refetch,
     allEvents.refetch,
     overrides.refetch,
@@ -226,8 +232,19 @@ export function RoomDataProvider({
       events: trashedEvents,
       todos: trashedTodos,
       images: trashedImages,
+      frames: trashedFrames,
+      connectors: trashedConnectors,
+      attachments: trashedAttachments,
     }),
-    [trashedNotes, trashedEvents, trashedTodos, trashedImages],
+    [
+      trashedNotes,
+      trashedEvents,
+      trashedTodos,
+      trashedImages,
+      trashedFrames,
+      trashedConnectors,
+      trashedAttachments,
+    ],
   )
 
   // Provider の value を毎回作り直すと、購読している全タブ・全レイヤーが

@@ -19,7 +19,7 @@ begin;
 
 create extension if not exists pgtap;
 
-select plan(275);
+select plan(290);
 
 
 -- =============================================================================
@@ -2260,7 +2260,131 @@ select is(
 
 
 -- =============================================================================
---  40. 棚卸し — 権限の「形」を固定する
+--  40. ゴミ箱（フレーム・線・ファイル）
+--
+--      いちばん確かめたいのは 4 つめ。添付をゴミ箱に入れただけでは
+--      Storage の実体の掃除が予約されないこと——ここが崩れると、
+--      戻せてもファイルが開けない「壊れた 📎」になる。
+-- =============================================================================
+
+select tests_act_as('22222222-2222-2222-2222-222222222222');   -- けいこ（編集できる）
+
+select is(
+  tests_rowcount($$insert into public.frames (id, room_id, title, author_id, author_name)
+                   values ('88880000-0000-0000-0000-000000000060',
+                           'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '午後の案',
+                           '22222222-2222-2222-2222-222222222222', 'けいこ')$$),
+  1, '編集できる人はフレームを作れる');
+
+select is(
+  tests_rowcount($$update public.frames set deleted_at = now()
+                    where id = '88880000-0000-0000-0000-000000000060'$$),
+  1, '編集できる人はフレームをゴミ箱に入れられる');
+
+select is(
+  tests_rowcount($$update public.frames set deleted_at = null
+                    where id = '88880000-0000-0000-0000-000000000060'$$),
+  1, 'ゴミ箱から戻せる');
+
+-- ---- 添付とストレージの掃除 ------------------------------------------------
+select is(
+  tests_rowcount($$insert into public.attachments
+                     (id, room_id, storage_path, filename, mime, size, author_id, author_name)
+                   values ('88880000-0000-0000-0000-000000000061',
+                           'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                           'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/しおり.pdf',
+                           'しおり.pdf', 'application/pdf', 1024,
+                           '22222222-2222-2222-2222-222222222222', 'けいこ')$$),
+  1, '編集できる人はファイルを置ける');
+
+select is(
+  tests_rowcount($$update public.attachments set deleted_at = now()
+                    where id = '88880000-0000-0000-0000-000000000061'$$),
+  1, 'ファイルをゴミ箱に入れる');
+
+-- purge_queue は RLS 有効・ポリシー無しで、参加者からは 1 行も読めない。
+-- 中身を確かめるときだけ役割を外す（外さないと、いつでも 0 件で素通りしてしまう）。
+reset role;
+select is(
+  (select count(*)::int from public.purge_queue
+    where path = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/しおり.pdf'),
+  0, 'ゴミ箱に入れただけでは、実体の掃除は予約されない（戻せなくならない）');
+set local role authenticated;
+
+select is(
+  tests_rowcount($$delete from public.attachments
+                    where id = '88880000-0000-0000-0000-000000000061'$$),
+  1, 'ファイルを完全に消す');
+
+reset role;
+select is(
+  (select count(*)::int from public.purge_queue
+    where path = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/しおり.pdf'),
+  1, '完全に消すと、実体の掃除が予約される');
+set local role authenticated;
+
+-- ---- 履歴 -----------------------------------------------------------------
+select is(
+  (select count(*)::int from public.activities
+    where room_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+      and target_type = 'attachments'
+      and target_label = 'しおり.pdf'
+      and action = 'deleted'),
+  2, 'ファイルをゴミ箱に入れた・完全に消したことが履歴に残る');
+
+select is(
+  tests_rowcount($$insert into public.attachments
+                     (id, room_id, storage_path, filename, mime, size, author_id, author_name)
+                   values ('88880000-0000-0000-0000-000000000062',
+                           'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                           'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/しおり2.pdf',
+                           'しおり2.pdf', 'application/pdf', 1024,
+                           '22222222-2222-2222-2222-222222222222', 'けいこ')$$),
+  1, 'もう 1 つファイルを置く');
+
+select is(
+  tests_rowcount($$update public.attachments set x = 500
+                    where id = '88880000-0000-0000-0000-000000000062'$$),
+  1, 'ファイルを動かす');
+
+select is(
+  (select count(*)::int from public.activities
+    where room_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+      and target_type = 'attachments'
+      and target_label = 'しおり2.pdf'
+      and action = 'updated'),
+  0, '動かしただけでは履歴に残らない（ドラッグのたびに増えない）');
+
+-- ---- 件数上限はゴミ箱の行を数えない ----------------------------------------
+-- 数えていると、たくさん捨てたボードが 30 日ものあいだ何も足せなくなる。
+-- 保存した状態からの復元は、いったん全部ゴミ箱へ入れてから入れ直すので必ず踏む。
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき（オーナー）
+
+select is(
+  (select count(*)::int from pg_trigger t
+     join pg_class c on c.oid = t.tgrelid
+    where c.relname = 'notes' and t.tgname = 'notes_limit_rows'
+      and pg_get_triggerdef(t.oid) like '%soft%'),
+  1, '付箋の件数上限は、ゴミ箱の行を数えない設定になっている');
+
+select is(
+  (select count(*)::int from pg_trigger t
+     join pg_class c on c.oid = t.tgrelid
+    where c.relname = 'strokes' and t.tgname = 'strokes_limit_rows'
+      and pg_get_triggerdef(t.oid) like '%soft%'),
+  0, '手描きはゴミ箱を持たないので、その設定は付いていない');
+
+-- ---- 閲覧のみ・終了したボード ----------------------------------------------
+select tests_act_as('33333333-3333-3333-3333-333333333333');   -- みなみ（このボードの名簿から外れている）
+
+select is(
+  tests_rowcount($$update public.frames set deleted_at = now()
+                    where id = '88880000-0000-0000-0000-000000000060'$$),
+  0, '参加していない人はフレームをゴミ箱に入れられない');
+
+
+-- =============================================================================
+--  41. 棚卸し — 権限の「形」を固定する
 --
 --      ここだけは中身ではなく形を見ている。ポリシーが増えた・減った、
 --      トリガーが片方の操作にしか付いていない、外から呼べる関数が増えた——を、
@@ -2387,6 +2511,7 @@ select set_eq(
       where trigger_schema = 'public'
       group by 1, 2, 3$q$,
   $q$values
+  ('attachments', 'attachments_activity', 'AFTER', 'DELETE,INSERT,UPDATE'),
   ('attachments', 'attachments_enqueue_purge', 'AFTER', 'DELETE'),
   ('attachments', 'attachments_force_name', 'BEFORE', 'INSERT,UPDATE'),
   ('attachments', 'attachments_freeze', 'BEFORE', 'UPDATE'),
