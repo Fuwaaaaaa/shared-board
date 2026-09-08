@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import { useRoomData } from '../lib/roomData'
+import { isOrphanComment } from '../lib/snapshot'
 import type { TabKey } from '../components/RoomHeader'
 import type { Activity } from '../lib/types'
 
@@ -127,6 +128,8 @@ function accessLine(
       return { icon: '📅', text: 'がカレンダーの購読 URL を作り直しました' }
     case 'calendar_link_cleared':
       return { icon: '📅', text: 'がカレンダーの購読 URL を止めました' }
+    case 'snapshot_restored':
+      return { icon: '⏪', text: 'が保存した状態に戻しました' }
     case 'access_mode':
       return { icon: '🔑', text: `が入り方を「${who}」に変えました` }
     case 'join_settings':
@@ -155,7 +158,8 @@ const COMMENT_TARGETS = {
  * 表示の直前でここに集める。追加のフェッチは要らない。
  */
 export function useBoardUpdates(): BoardUpdate[] {
-  const { activities, comments, polls, pollOptions, members } = useRoomData()
+  const { activities, comments, polls, pollOptions, members, notes, events, todos } =
+    useRoomData()
 
   return useMemo(() => {
     const list: BoardUpdate[] = []
@@ -184,9 +188,22 @@ export function useBoardUpdates(): BoardUpdate[] {
       })
     }
 
+    /*
+     * コメントの target_id には FK が無い（付箋・予定・やることのどれを指すかが
+     * 行によって違うため）。保存した状態から戻すと、控えたあとに作った付箋への
+     * コメントは宙ぶらりんになる。消すのは中身の破壊なので、ここで受ける——
+     * 飛び先を外して、そう書く。
+     */
+    const liveIds = {
+      notes: new Set(notes.rows.map((n) => n.id)),
+      events: new Set(events.rows.map((e) => e.id)),
+      todos: new Set(todos.rows.map((t) => t.id)),
+    }
+
     for (const comment of comments.rows) {
       const target =
         comment.target_type === 'board' ? null : COMMENT_TARGETS[comment.target_type]
+      const orphan = isOrphanComment(comment, liveIds)
 
       list.push({
         id: `comment:${comment.id}`,
@@ -194,10 +211,14 @@ export function useBoardUpdates(): BoardUpdate[] {
         actorId: comment.author_id,
         actorName: comment.author_name,
         icon: '💬',
-        text: target ? `が${target.label}にコメントしました` : 'がチャットに書きました',
+        text: !target
+          ? 'がチャットに書きました'
+          : orphan
+            ? `が${target.label}にコメントしました（もう無い${target.label}です）`
+            : `が${target.label}にコメントしました`,
         detail: comment.body,
         category: 'comment',
-        jump: target ? { tab: target.tab, id: comment.target_id } : null,
+        jump: target && !orphan ? { tab: target.tab, id: comment.target_id } : null,
         opensChat: !target,
       })
     }
@@ -257,5 +278,14 @@ export function useBoardUpdates(): BoardUpdate[] {
     }
 
     return list.sort((a, b) => b.at.localeCompare(a.at)).slice(0, LIMIT)
-  }, [activities.rows, comments.rows, polls.rows, pollOptions.rows, members.rows])
+  }, [
+    activities.rows,
+    comments.rows,
+    polls.rows,
+    pollOptions.rows,
+    members.rows,
+    notes.rows,
+    events.rows,
+    todos.rows,
+  ])
 }

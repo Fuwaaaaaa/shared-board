@@ -353,7 +353,7 @@
 │  ├─ purge-storage      Storage の実体削除（SQL からは消せないため）
 │  └─ _shared/           dates / recurrence / cronAuth（画面と共有）
 ├─ <b>tests/</b>
-│  └─ rls.test.sql       権限が効いているかの確認（pgTAP・290 件）
+│  └─ rls.test.sql       権限が効いているかの確認（pgTAP・303 件）
 └─ <b>stubs/</b>
    └─ _stub_storage.sql  使い捨ての DB で schema.sql を流すための足場
 
@@ -368,7 +368,7 @@
     <p>
       画面から切り離せる判断は <code>src/lib/</code> に集めてあります。
       ブラウザを立ち上げずに速く回せるので、ここが今もテストの主戦場です
-      （<b>25 本のテストで 491 件</b>）。DOM が要るものは <code>*.test.tsx</code> として
+      （<b>26 本のテストで 503 件</b>）。DOM が要るものは <code>*.test.tsx</code> として
       jsdom で書けますが、判断はできるだけこちらへ押し出してください。
     </p>
     <div class="table-scroll">
@@ -393,6 +393,7 @@
           <tr><td>access.ts</td><td>入り方の判定と、合言葉の長さの決まり（サーバーと同じ数）</td></tr>
           <tr><td>attendance.ts</td><td>予定の出欠と、回の並びが動いたかの判定（サーバーのトリガーと同じ条件）</td></tr>
           <tr><td>trash.ts</td><td>ゴミ箱の残り日数と、線を戻せるかの判定</td></tr>
+          <tr><td>snapshot.ts</td><td>控えの大きさ（サーバーと同じ上限）と、宙ぶらりんになったコメントの判定</td></tr>
           <tr><td>roomChannel.ts</td><td>設定が変わったことを、開いている人に知らせる合図（中身は載せない）</td></tr>
           <tr><td>errorMessage.ts</td><td>例外を人に見せる 1 行にする</td></tr>
         </tbody>
@@ -722,6 +723,12 @@
         <code>WhiteboardTab-*.js</code> などが別ファイルとして出ているかを見ます。
       </li>
       <li>
+        <b>控えの大きさの上限も 2 か所にあります。</b>
+        <code>src/lib/snapshot.ts</code> の <code>PAYLOAD_LIMIT</code> と、
+        <code>supabase/schema.sql</code> の <code>v_limits</code> の
+        <code>snapshots.payload</code>。理由は合言葉と同じです。
+      </li>
+      <li>
         <b>合言葉の最短の長さは 2 か所にあります。</b>
         <code>src/lib/access.ts</code> の <code>MIN_PIN_LENGTH</code> と、
         <code>supabase/schema.sql</code> の <code>set_join_pin</code>。
@@ -771,6 +778,14 @@
             <td>
               丸めた回を <code>RDATE</code> で補っていますが、終わりの無い繰り返しでは
               3 年ぶんで区切ります。それより先は書き出し直しが要ります
+            </td>
+          </tr>
+          <tr>
+            <td>控えの大きさ</td>
+            <td>
+              手描きの多いボードは <code>payload</code> の 3MB に当たって保存できません。
+              上限を握っているのは <code>strokes</code> の <code>points</code> です。
+              押す前に断るようにしてありますが、根本は変えていません
             </td>
           </tr>
           <tr>

@@ -1194,11 +1194,18 @@ begin
 end;
 $$;
 
--- 投票した人の名前も同じ扱い（列名だけが違う）
+-- 投票した人の名前も同じ扱い（列名だけが違う）。
+-- 復元の抜け道も同じく要る。無いと、控えから戻したときに
+-- 投票・出欠をした人の名前が全員「戻した人」に書き換わる。
 create or replace function public.tg_force_voter_name()
 returns trigger language plpgsql security definer
 set search_path = '' as $$
 begin
+  if coalesce(pg_catalog.current_setting('app.restoring_snapshot', true), '')
+       = NEW.room_id::text then
+    return NEW;
+  end if;
+
   if TG_OP = 'UPDATE' then
     NEW.voter_name := OLD.voter_name;
     return NEW;
@@ -1247,6 +1254,14 @@ declare
   v_name   text;
   v_keep   boolean := true;
 begin
+  -- 復元中は 1 行ずつ残さない。2000 枚のボードなら、消した分と入れ直した分で
+  -- 4000 行が 📣 更新に積まれてしまう。代わりに restore_snapshot が
+  -- 「戻しました」を 1 行だけ書く。
+  if coalesce(pg_catalog.current_setting('app.restoring_snapshot', true), '')
+       = coalesce(NEW.room_id, OLD.room_id)::text then
+    return null;
+  end if;
+
   if TG_OP = 'DELETE' then
     v_room := OLD.room_id;
     v_action := 'deleted';
@@ -2704,7 +2719,10 @@ declare
   v_room    uuid;
   v_payload jsonb;
   v_rows    jsonb;
+  v_keep    jsonb;
   v_cols    text;
+  v_set     text;
+  v_soft    boolean;
   t         text;
 begin
   select s.room_id, s.payload into v_room, v_payload
@@ -2722,16 +2740,56 @@ begin
 
   perform pg_catalog.set_config('app.restoring_snapshot', v_room::text, true);
 
-  -- 線は付箋を、「この回だけ」は予定を指すので、親を入れ直したあとに入れる
+  /*
+   * 消してから入れ直すのではなく、「控えに無いものはゴミ箱へ」＋「控えにあるものは upsert」。
+   *
+   * 以前は delete + insert だったが、3 つ困ることがあった。
+   *   1. 30 日のゴミ箱を素通りしていた。戻す操作は取り返しがつかなかった。
+   *   2. ゴミ箱にあった行まで消していた（控えるのは見えている行だけなので、
+   *      戻すとゴミ箱が空になった）。
+   *   3. 生き残るはずの付箋にぶら下がった 👍・絵文字・線や、予定にぶら下がった
+   *      「この回だけ」・出欠が、cascade で巻き添えになって消えていた。
+   *
+   * on conflict (id) do update は、payload に他のボードの行の id が混ざっていると
+   * その行に room_id を書きに行くが、そこで tg_freeze_columns（room_id を凍らせている）が
+   * insufficient_privilege を上げ、トランザクションごと巻き戻る。
+   * 既存の門番がそのまま新しい経路を守っている（pgTAP で固定してある）。
+   */
   foreach t in array array[
+    -- 親から先に。線は付箋を、「この回だけ」と出欠は予定を指す
     'notes', 'strokes', 'connectors', 'frames',
-    'events', 'event_overrides', 'todos', 'images'
+    'events', 'event_overrides', 'todos', 'images', 'attachments',
+    'note_votes', 'note_reactions',
+    'polls', 'poll_options', 'poll_votes', 'event_attendance'
   ] loop
-    execute format('delete from public.%I where room_id = $1', t) using v_room;
-
     select jsonb_agg(e || jsonb_build_object('room_id', v_room, 'author_id', auth.uid()))
       into v_rows
       from jsonb_array_elements(coalesce(v_payload -> t, '[]'::jsonb)) e;
+
+    -- 控えに載っている id。載っていない今の行は、このあと片付ける
+    select coalesce(jsonb_agg(e ->> 'id'), '[]'::jsonb)
+      into v_keep
+      from jsonb_array_elements(coalesce(v_payload -> t, '[]'::jsonb)) e;
+
+    -- ゴミ箱を持つ表は消さずに入れる。持たない表は消すしかない
+    select exists (
+      select 1 from information_schema.columns c
+       where c.table_schema = 'public' and c.table_name = t and c.column_name = 'deleted_at'
+    ) into v_soft;
+
+    if v_soft then
+      execute format(
+        'update public.%I set deleted_at = now()
+          where room_id = $1 and deleted_at is null
+            and not (id::text = any (select jsonb_array_elements_text($2)))', t)
+        using v_room, v_keep;
+    else
+      execute format(
+        'delete from public.%I
+          where room_id = $1
+            and not (id::text = any (select jsonb_array_elements_text($2)))', t)
+        using v_room, v_keep;
+    end if;
 
     if v_rows is null then
       continue;
@@ -2749,12 +2807,32 @@ begin
       continue;
     end if;
 
-    execute format(
-      'insert into public.%I (%s) select %s from jsonb_populate_recordset(null::public.%I, $1)',
-      t, v_cols, v_cols, t) using v_rows;
+    -- id 以外を、控えの値で上書きする
+    select string_agg(format('%I = excluded.%I', c.column_name, c.column_name), ', '
+                      order by c.ordinal_position)
+      into v_set
+      from information_schema.columns c
+     where c.table_schema = 'public' and c.table_name = t
+       and c.column_name <> 'id'
+       and exists (select 1 from jsonb_array_elements(v_rows) e where e ? c.column_name);
+
+    if v_set is null then
+      execute format(
+        'insert into public.%I (%s) select %s from jsonb_populate_recordset(null::public.%I, $1)
+           on conflict (id) do nothing',
+        t, v_cols, v_cols, t) using v_rows;
+    else
+      execute format(
+        'insert into public.%I (%s) select %s from jsonb_populate_recordset(null::public.%I, $1)
+           on conflict (id) do update set %s',
+        t, v_cols, v_cols, t, v_set) using v_rows;
+    end if;
   end loop;
 
   perform pg_catalog.set_config('app.restoring_snapshot', '', true);
+
+  -- 1 行ずつの履歴は上で止めてあるので、まとめて 1 行だけ残す
+  perform public.log_access(v_room, 'snapshot_restored');
 end;
 $$;
 

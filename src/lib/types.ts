@@ -113,6 +113,7 @@ export type ActivityAction =
   | 'join_settings'
   | 'pin_set'
   | 'pin_cleared'
+  | 'snapshot_restored'
 
 /**
  * ゴミ箱に入るもの。

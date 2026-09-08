@@ -19,7 +19,7 @@ begin;
 
 create extension if not exists pgtap;
 
-select plan(290);
+select plan(303);
 
 
 -- =============================================================================
@@ -1534,13 +1534,24 @@ values (
   '99990000-0000-0000-0000-000000000001',
   'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
   'テスト用に控えたもの',
-  jsonb_build_object('notes', jsonb_build_array(jsonb_build_object(
-    'id',          '11110000-0000-0000-0000-000000000099',
-    'room_id',     'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
-    'text',        '控えたときの付箋',
-    'author_id',   '11111111-1111-1111-1111-111111111111',
-    'author_name', 'むかしの人'
-  ))),
+  jsonb_build_object(
+    'notes', jsonb_build_array(jsonb_build_object(
+      'id',          '11110000-0000-0000-0000-000000000099',
+      'room_id',     'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      'text',        '控えたときの付箋',
+      'author_id',   '11111111-1111-1111-1111-111111111111',
+      'author_name', 'むかしの人'
+    )),
+    -- 日程調整も控えの対象になった。ここに入れておかないと、戻したときに
+    -- 消える（それが正しい動きで、あとの節が使う投票なので残す）
+    'polls', jsonb_build_array(jsonb_build_object(
+      'id',          '88880000-0000-0000-0000-000000000001',
+      'room_id',     'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      'title',       '次はいつにする？',
+      'author_id',   '11111111-1111-1111-1111-111111111111',
+      'author_name', 'ゆうき'
+    ))
+  ),
   '11111111-1111-1111-1111-111111111111', 'ゆうき');
 set local role authenticated;
 
@@ -1563,8 +1574,29 @@ select is(
 
 select is(
   (select count(*)::int from public.notes
-    where room_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
+    where room_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+      and deleted_at is null),
   1, '戻すと、いまの中身は控えたときのものに置き換わる');
+
+-- ここが以前と変わったところ。消すのではなくゴミ箱へ入れるので、
+-- 「戻したら間違いだった」を 30 日は取り返せる。
+select isnt(
+  (select count(*)::int from public.notes
+    where room_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+      and deleted_at is not null),
+  0, '置き換えで消えたものは、消えずにゴミ箱へ入る');
+
+-- 1 行ずつの履歴は止めて、まとめて 1 行だけ残す
+-- （2000 枚のボードなら、消した分と入れ直した分で 4000 行が積まれていた）
+select is(
+  (select count(*)::int from public.activities
+    where room_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+      and action = 'snapshot_restored'),
+  1, '戻したことは 📣 更新に 1 行だけ残る');
+
+select is(
+  (select title from public.polls where id = '88880000-0000-0000-0000-000000000001'),
+  '次はいつにする？', '日程調整も控えの対象になり、戻すと残る');
 
 
 -- =============================================================================
@@ -2384,7 +2416,142 @@ select is(
 
 
 -- =============================================================================
---  41. 棚卸し — 権限の「形」を固定する
+--  41. 保存した状態からの復元で、取りこぼさない
+--
+--      31. で基本の動きは見ている。ここでは、以前に取りこぼしていた 3 つを見る。
+--        ・付箋にぶら下がる 👍 が、巻き添えで消えないこと
+--        ・投票した人の名前が「戻した人」に化けないこと
+--        ・もともとゴミ箱にあったものが、復元で空にならないこと
+--      最後に、他のボードの行を混ぜた控えが既存の門番で止まることを固定する。
+-- =============================================================================
+
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき（オーナー）
+
+-- 控えに載せる付箋と、それに付いた 👍
+select lives_ok(
+  $$insert into public.notes (id, room_id, text, author_id, author_name)
+     values ('11110000-0000-0000-0000-000000000101',
+             'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '残る付箋',
+             '11111111-1111-1111-1111-111111111111', 'ゆうき')$$,
+  '控えに載せる付箋を作る');
+
+select tests_act_as('22222222-2222-2222-2222-222222222222');   -- けいこ
+
+select is(
+  tests_rowcount($$insert into public.note_votes (id, room_id, note_id, user_id)
+                   values ('11110000-0000-0000-0000-000000000102',
+                           'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                           '11110000-0000-0000-0000-000000000101',
+                           '22222222-2222-2222-2222-222222222222')$$),
+  1, 'けいこがその付箋に 👍 を入れる');
+
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき
+
+-- 控えたあとに作る付箋（復元でゴミ箱へ入るはず）
+select lives_ok(
+  $$insert into public.notes (id, room_id, text, author_id, author_name)
+     values ('11110000-0000-0000-0000-000000000103',
+             'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'あとから作った付箋',
+             '11111111-1111-1111-1111-111111111111', 'ゆうき')$$,
+  '控えたあとに作る付箋');
+
+-- もともとゴミ箱にある付箋（復元で空にならないはず）
+select lives_ok(
+  $$insert into public.notes (id, room_id, text, deleted_at, author_id, author_name)
+     values ('11110000-0000-0000-0000-000000000104',
+             'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'もともとゴミ箱にある付箋', now(),
+             '11111111-1111-1111-1111-111111111111', 'ゆうき')$$,
+  'もともとゴミ箱にある付箋');
+
+reset role;
+insert into public.snapshots (id, room_id, label, payload, author_id, author_name)
+values (
+  '99990000-0000-0000-0000-000000000002',
+  'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+  '👍 ごと控えたもの',
+  jsonb_build_object(
+    'notes', jsonb_build_array(jsonb_build_object(
+      'id',          '11110000-0000-0000-0000-000000000101',
+      'room_id',     'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      'text',        '残る付箋',
+      'author_id',   '11111111-1111-1111-1111-111111111111',
+      'author_name', 'ゆうき'
+    )),
+    'note_votes', jsonb_build_array(jsonb_build_object(
+      'id',         '11110000-0000-0000-0000-000000000102',
+      'room_id',    'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      'note_id',    '11110000-0000-0000-0000-000000000101',
+      'user_id',    '22222222-2222-2222-2222-222222222222',
+      'voter_name', 'けいこ'
+    )),
+    'polls', jsonb_build_array(jsonb_build_object(
+      'id',          '88880000-0000-0000-0000-000000000001',
+      'room_id',     'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      'title',       '次はいつにする？',
+      'author_id',   '11111111-1111-1111-1111-111111111111',
+      'author_name', 'ゆうき'
+    ))
+  ),
+  '11111111-1111-1111-1111-111111111111', 'ゆうき');
+set local role authenticated;
+
+select tests_act_as('11111111-1111-1111-1111-111111111111');
+
+select lives_ok(
+  $$select public.restore_snapshot('99990000-0000-0000-0000-000000000002')$$,
+  '控えに戻す');
+
+select is(
+  (select count(*)::int from public.note_votes
+    where note_id = '11110000-0000-0000-0000-000000000101'),
+  1, '付箋にぶら下がる 👍 が、巻き添えで消えない');
+
+select is(
+  (select voter_name from public.note_votes
+    where id = '11110000-0000-0000-0000-000000000102'),
+  'けいこ', '投票した人の名前が「戻した人」に化けない');
+
+select is(
+  (select deleted_at is not null from public.notes
+    where id = '11110000-0000-0000-0000-000000000103'),
+  true, '控えに無い付箋は、消えずにゴミ箱へ入る');
+
+select is(
+  (select deleted_at is not null from public.notes
+    where id = '11110000-0000-0000-0000-000000000104'),
+  true, 'もともとゴミ箱にあったものは、そのまま残る（復元で空にならない）');
+
+-- ---- 他のボードの行を混ぜた控え -------------------------------------------
+-- payload に他のボードの id が混ざっていると、on conflict do update が
+-- その行に room_id を書きに行く。そこで既存の tg_freeze_columns が止める。
+reset role;
+insert into public.snapshots (id, room_id, label, payload, author_id, author_name)
+values (
+  '99990000-0000-0000-0000-000000000003',
+  'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+  '他のボードの付箋を混ぜたもの',
+  jsonb_build_object('notes', jsonb_build_array(jsonb_build_object(
+    -- 1713 行あたりで、承認制のボードに作ってある付箋
+    'id',          '11110000-0000-0000-0000-000000000020',
+    'room_id',     'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    'text',        'よそのボードから奪う',
+    'author_id',   '11111111-1111-1111-1111-111111111111',
+    'author_name', 'ゆうき'
+  ))),
+  '11111111-1111-1111-1111-111111111111', 'ゆうき');
+set local role authenticated;
+
+select tests_act_as('11111111-1111-1111-1111-111111111111');
+
+select throws_ok(
+  $$select public.restore_snapshot('99990000-0000-0000-0000-000000000003')$$,
+  '42501',
+  null,
+  '他のボードの行を混ぜた控えは、room_id が凍っているので通らない');
+
+
+-- =============================================================================
+--  42. 棚卸し — 権限の「形」を固定する
 --
 --      ここだけは中身ではなく形を見ている。ポリシーが増えた・減った、
 --      トリガーが片方の操作にしか付いていない、外から呼べる関数が増えた——を、

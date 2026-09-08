@@ -139,7 +139,8 @@ export default function SnapshotModal({ onClose }: { onClose: () => void }) {
   async function restore(snapshot: Snapshot) {
     const ok = window.confirm(
       `「${snapshot.label || '名前なし'}」の状態に戻します。\n` +
-        'いまの付箋・手描き・予定・やることは置き換わります。\n' +
+        'いまのボードの中身は、この状態に置き換わります。\n' +
+        '置き換えで消えるものはゴミ箱に 30 日残るので、あとから拾えます。\n' +
         '（戻す直前の状態も自動で保存します）',
     )
     if (!ok) return
@@ -246,9 +247,11 @@ export default function SnapshotModal({ onClose }: { onClose: () => void }) {
       )}
 
       <p className="mt-4 border-t border-slate-100 pt-4 text-xs text-slate-400">
-        戻すと、いまの付箋・手描き・線・フレーム・予定・やること・画像が置き換わります。
-        付箋を入れ替えるため、付箋への 👍 と絵文字は消えます。
-        チャット・コメント・日程調整・参加者はそのままです。
+        戻すと、付箋・手描き・線・フレーム・予定・やること・画像・ファイルと、
+        付箋への 👍・絵文字、日程調整、予定の出欠が、控えたときの状態に戻ります。
+        置き換えで消えるものはゴミ箱に 30 日残ります。
+        チャット・コメント・参加者はそのままです。
+        30 日より古い控えから戻すと、ファイルの実体はすでに掃除されていることがあります。
       </p>
     </Modal>
   )
