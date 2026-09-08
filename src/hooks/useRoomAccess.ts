@@ -1,7 +1,19 @@
 import { useCallback, useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { useIdentity } from '../lib/identity'
+import { samePreview } from '../lib/access'
 import type { RoomPreview } from '../lib/types'
+
+/*
+ * 設定の変更は presence チャンネルの合図で届くが、送り手のチャンネルが
+ * 繋がっていなければ送られないし、途中で切れれば届かない。取りこぼしても
+ * いつかは追いつくように、開いている間だけ定期的に取り直す。
+ *
+ * ボードの設定はめったに変わらないので、間隔は長めでよい。
+ */
+const PREVIEW_POLL_MS = 60000
+/** これより長く裏にいたら、表に戻ったときに取り直す */
+const HIDDEN_REFRESH_MS = 30000
 
 export type AccessLevel =
   | 'loading'
@@ -36,7 +48,9 @@ export function useRoomAccess(slug: string | undefined) {
       return
     }
 
-    setPreview(room)
+    // 中身が同じなら前のオブジェクトのまま。保険の取り直しで
+    // 画面全体が描き直されるのを避ける
+    setPreview((current) => (samePreview(current, room) ? current : room))
 
     /*
      * 名簿に載っている人の状態を、ボードの公開設定より先に見る。
@@ -80,6 +94,43 @@ export function useRoomAccess(slug: string | undefined) {
       supabase.removeChannel(channel)
     }
   }, [preview?.id, userId, refresh])
+
+  /*
+   * 合図（lib/roomChannel）を取りこぼしたときの保険。
+   *
+   * 名前の変更・終了・リンクの作り直し・公開設定の切り替えは rooms の更新で、
+   * rooms は Realtime 配信に載せていない（載せると、締め出したはずの
+   * 承認待ち・取り消し済みの人にも新しい slug が届いてしまう）。
+   * 送り手側の合図が唯一の即時経路なので、届かなかったときのために
+   * 表に戻ったとき・オンラインに戻ったとき・開いている間は一定間隔で取り直す。
+   */
+  useEffect(() => {
+    if (!slug) return
+    let hiddenAt: number | null = null
+
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        hiddenAt = Date.now()
+        return
+      }
+      const wasHidden = hiddenAt !== null && Date.now() - hiddenAt >= HIDDEN_REFRESH_MS
+      hiddenAt = null
+      if (wasHidden) void refresh()
+    }
+    const onOnline = () => void refresh()
+
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void refresh()
+    }, PREVIEW_POLL_MS)
+
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('online', onOnline)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('online', onOnline)
+    }
+  }, [slug, refresh])
 
   /**
    * 参加申請（公開ルームなら即参加）。戻り値は申請後のステータス。

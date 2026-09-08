@@ -62,6 +62,26 @@ export function accessInfo(room: Pick<RoomPreview, 'visibility' | 'needs_pin'>):
   return ACCESS_MODE_MAP[accessMode(room)]
 }
 
+/**
+ * 2 つの概要が同じ中身か。
+ *
+ * get_room_preview は合図を取りこぼしたときの保険として一定間隔でも呼ぶので、
+ * 中身が同じなら前のオブジェクトを使い回して、ヘッダーやモーダルの描き直しを避ける。
+ *
+ * 項目を並べずに両方のキーを回すのは、RoomPreview に列が増えたときに
+ * ここを直し忘れても自動で比べられるようにするため（中身はすべて文字列・真偽値・null）。
+ */
+export function samePreview(a: RoomPreview | null, b: RoomPreview | null): boolean {
+  if (a === b) return true
+  if (!a || !b) return false
+
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]) as Set<keyof RoomPreview>
+  for (const key of keys) {
+    if (a[key] !== b[key]) return false
+  }
+  return true
+}
+
 /*
  * 合言葉の最短の長さ。
  *

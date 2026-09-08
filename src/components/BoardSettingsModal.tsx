@@ -2,6 +2,7 @@ import { lazy, Suspense, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Modal from './Modal'
 import { generateSlug, supabase } from '../lib/supabase'
+import { notifyRoomChanged } from '../lib/roomChannel'
 import { useIdentity } from '../lib/identity'
 import { accessInfo } from '../lib/access'
 import type { BoardImage, CalendarEvent, Note, RoomPreview, Stroke, Todo } from '../lib/types'
@@ -218,6 +219,9 @@ export default function BoardSettingsModal({
       setError(deleteError.message)
       return
     }
+    // 開いている人の画面を「ボードが見つかりません」に切り替える。
+    // 消えたことは rooms を消しても届かない（Realtime 配信に載せていないため）
+    notifyRoomChanged(preview.id)
     navigate('/', { replace: true })
   }
 

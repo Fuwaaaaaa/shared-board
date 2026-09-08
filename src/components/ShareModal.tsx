@@ -4,6 +4,7 @@ import { format, parseISO } from 'date-fns'
 import Modal from './Modal'
 import QrCode from './QrCode'
 import { supabase } from '../lib/supabase'
+import { notifyRoomChanged } from '../lib/roomChannel'
 import { ACCESS_MODES, accessMode, checkPin, visibilityFor, type AccessMode } from '../lib/access'
 import type { JoinSettings, RoomPreview } from '../lib/types'
 
@@ -126,7 +127,12 @@ export default function ShareModal({ preview, onClose, onUpdated }: Props) {
     const { error: failed } = await supabase.from('rooms').update(patch).eq('id', preview.id)
 
     if (failed) setError(failed.message)
-    else setSettings({ ...settings, ...patch })
+    else {
+      setSettings({ ...settings, ...patch })
+      // 受付停止・参加期限・人数上限は join_blocked に効くので、概要も取り直す
+      // （呼んでいなかったため、押した本人の画面すら古いままだった）
+      onUpdated()
+    }
     setBusy(false)
   }
 
@@ -148,6 +154,9 @@ export default function ShareModal({ preview, onClose, onUpdated }: Props) {
       setBusy(false)
       return
     }
+    // 自分は新しい URL へ移るが、開いている他の人には移り先を教えない。
+    // 合図を受けた側は古い slug で概要を取り直し、「見つかりません」になる（それが正しい）
+    notifyRoomChanged(preview.id)
     navigate(`/r/${data as string}`, { replace: true })
   }
 
@@ -187,6 +196,7 @@ export default function ShareModal({ preview, onClose, onUpdated }: Props) {
 
     const nextSlug = data as string
     if (nextSlug && nextSlug !== preview.slug) {
+      notifyRoomChanged(preview.id)
       navigate(`/r/${nextSlug}`, { replace: true })
       return
     }

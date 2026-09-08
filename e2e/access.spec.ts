@@ -155,6 +155,39 @@ test('終了したボードでは、作った人も書けなくなる', async ({
   await expect(boardToolbar(page)).toBeDisabled()
 })
 
+test('ボードを終了すると、開いたままの相手もリロードなしで読むだけになる', async ({
+  page,
+  browser,
+}) => {
+  await signIn(page, 'ひとり目')
+  const { title, url } = await boardWithNote(page, '来年の予定')
+
+  const { context, page: guest } = await openAsGuest(browser, url, 'ふたり目')
+  try {
+    await expect(guest.getByText('来年の予定')).toBeVisible({ timeout: 20_000 })
+    await expect(boardToolbar(guest)).toBeEnabled()
+
+    page.on('dialog', (dialog) => void dialog.accept())
+    await openBoardSettings(page, title)
+    await page.getByRole('button', { name: 'このボードを終了する' }).click()
+
+    /*
+     * rooms は Realtime 配信に載せていない（載せると、締め出したはずの
+     * 承認待ち・取り消し済みの人にも新しい slug が届いてしまう）ので、
+     * 終了したことは presence チャンネルの合図で伝えている。
+     * ここが動いていないと、相手はリロードするまで書けるつもりのままになる。
+     */
+    await expect(guest.getByText('このボードは終了しています', { exact: false })).toBeVisible({
+      timeout: 20_000,
+    })
+    await expect(boardToolbar(guest)).toBeDisabled()
+    // 中身はそのまま読める
+    await expect(guest.getByText('来年の予定')).toBeVisible()
+  } finally {
+    await context.close()
+  }
+})
+
 test('アクセスを取り消された人は、その場で締め出される', async ({ page, browser }) => {
   await signIn(page, 'ひとり目')
   const { url } = await boardWithNote(page, '買い出しの担当')

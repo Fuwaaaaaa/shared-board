@@ -8,6 +8,7 @@ import { usePwa } from '../hooks/usePwa'
 import { RoomDataProvider, useRoomData } from '../lib/roomData'
 import { useIdentity } from '../lib/identity'
 import { supabase } from '../lib/supabase'
+import { notifyRoomChanged } from '../lib/roomChannel'
 import RoomHeader, { type TabKey } from '../components/RoomHeader'
 import AccessRequestPanel from '../components/AccessRequestPanel'
 import Loading from '../components/Loading'
@@ -165,7 +166,28 @@ function RoomShell({
 
   const [searchParams, setSearchParams] = useSearchParams()
 
-  const { peers, sendCursor, setEditing } = usePresence(preview.id, userId, displayName, tab)
+  const { peers, sendCursor, setEditing } = usePresence(
+    preview.id,
+    userId,
+    displayName,
+    tab,
+    onRefreshPreview,
+  )
+
+  /*
+   * 設定を変えたときの後始末。自分の画面を取り直し、開いている他の人にも合図を送る。
+   *
+   * モーダルには 1 つにまとめて渡す。片方だけ呼ぶ書き方にすると、
+   * 「自分には反映されるのに相手には届かない」が必ずどこかで起きる。
+   */
+  const onUpdated = useCallback(() => {
+    onRefreshPreview()
+    notifyRoomChanged(preview.id)
+  }, [onRefreshPreview, preview.id])
+
+  // 終了したことを知らせる帯は RoomHeader が preview.archived を見て出している。
+  // 合図で preview が更新されるようになったので、リロードなしでその場に出る。
+
   const reminders = useRoomReminders(events.rows, todos.rows, overrides.rows, preview.name)
   const notifications = useAppNotifications(preview.id)
   const pwa = usePwa()
@@ -346,7 +368,7 @@ function RoomShell({
         {showShare && (
           <ShareModal
             preview={preview}
-            onUpdated={onRefreshPreview}
+            onUpdated={onUpdated}
             onClose={() => setShowShare(false)}
           />
         )}
@@ -355,7 +377,7 @@ function RoomShell({
           <BoardSettingsModal
             preview={preview}
             onClose={() => setShowSettings(false)}
-            onUpdated={onRefreshPreview}
+            onUpdated={onUpdated}
             onOpenShare={() => {
               setShowSettings(false)
               setShowShare(true)
