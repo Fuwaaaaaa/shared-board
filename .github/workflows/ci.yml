@@ -1,0 +1,119 @@
+# みんなのボード — 自動テスト
+#
+# 手元でやっている検証を、そのまま押したときに回す。
+#
+#   1. checks  … lint / tsc / vitest。何も要らないので数分で返る
+#   2. backend … Supabase を立てて pgTAP と Playwright
+#
+# backend を 1 つのジョブにまとめてあるのは、supabase start が
+# 10 個ほどの image を取ってくるため。pgTAP と E2E で 2 回払うより、
+# 立てたスタックを使い回すほうが安い。順番は pgTAP が先——
+# スキーマが壊れているときの E2E の赤は読む価値がないので、先に落とす。
+#
+# 引き金を push だけにしてあるのは、pull_request も足すと同じ commit を
+# 2 回走らせるため。fork からの PR を受けるようになったら足す。
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  workflow_dispatch:
+
+# 同じ枝を続けて push したら、前の実行は捨てる
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: lint / 型 / 単体テスト
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: ESLint
+        run: npm run lint
+
+      # build は tsc --noEmit を含む。型だけでなく、実際に束ねられることも見る
+      - name: 型と build
+        run: npm run build
+
+      - name: 単体テスト（node / jsdom）
+        run: npm test
+
+  backend:
+    name: 権限（pgTAP）とブラウザ（Playwright）
+    runs-on: ubuntu-latest
+    # 手元での初回は image の取得込みで数分かかる。CI では余裕を持たせる
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # 手元と同じ版に固定する。上げるときはここも一緒に上げる
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.117.0
+
+      - name: Supabase を立てる
+        run: supabase start
+
+      # このリポジトリに supabase/migrations はない。DB は冪等な schema.sql 1 本で、
+      # 手元では SQL Editor に貼って適用している（docs/SETUP.md）。
+      # ここでは同じものを、立てた DB の postgres へそのまま流す。
+      # ON_ERROR_STOP=1 なので、途中で 1 つでもエラーが出れば赤くなる。
+      # コンテナ名の末尾は supabase/config.toml の project_id。
+      - name: schema.sql を流す
+        run: |
+          docker exec -i supabase_db_shared-board \
+            psql -v ON_ERROR_STOP=1 -U postgres -d postgres < supabase/schema.sql
+
+      # 冪等であることを、毎回ここで確かめる。2 回目で落ちたら
+      # 「create table if not exists」を書き忘れたということ
+      - name: schema.sql をもう一度流す（冪等の確認）
+        run: |
+          docker exec -i supabase_db_shared-board \
+            psql -v ON_ERROR_STOP=1 -U postgres -d postgres < supabase/schema.sql
+
+      - name: 権限のテスト（pgTAP）
+        run: supabase test db
+
+      # 手元の .env.local は git に入れていないので、ここで作る。
+      # ローカルの anon key は誰の環境でも同じ既定値で、秘密ではない。
+      - name: .env.local を作る
+        run: |
+          eval "$(supabase status -o env | sed 's/^/export /')"
+          printf 'VITE_SUPABASE_URL=%s\nVITE_SUPABASE_ANON_KEY=%s\n' \
+            "$API_URL" "$ANON_KEY" > .env.local
+
+      - name: ブラウザを入れる
+        run: npx playwright install --with-deps chromium
+
+      # CI では e2e/global-setup.ts が「つながらない」を握りつぶさず落とす。
+      # 飛ばして緑になると、通ったのか何も走らなかったのか分からないため
+      - name: ブラウザのテスト（Playwright）
+        run: npm run test:e2e
+
+      # trace: 'on-first-retry' と video: 'retain-on-failure' の出力先。
+      # pgTAP で落ちたときは何も無いので、無くても怒らせない
+      - name: 失敗したときの記録（trace / 動画）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7

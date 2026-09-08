@@ -343,6 +343,9 @@
 
 <b>e2e/</b>                  ブラウザで実際に触るテスト（Playwright）
 
+<b>.github/workflows/</b>
+└─ ci.yml                push したときに上のテストを全部回す
+
 <b>supabase/</b>
 ├─ schema.sql            テーブル・RLS・トリガー・関数（これ 1 本で完結）
 ├─ cron.sql              定期実行の登録（プッシュ通知・掃除。任意）
@@ -353,7 +356,7 @@
 │  ├─ purge-storage      Storage の実体削除（SQL からは消せないため）
 │  └─ _shared/           dates / recurrence / cronAuth（画面と共有）
 ├─ <b>tests/</b>
-│  └─ rls.test.sql       権限が効いているかの確認（pgTAP・303 件）
+│  └─ rls.test.sql       権限が効いているかの確認（pgTAP・304 件）
 └─ <b>stubs/</b>
    └─ _stub_storage.sql  使い捨ての DB で schema.sql を流すための足場
 
@@ -842,10 +845,12 @@
             </td>
           </tr>
           <tr>
-            <td>CI</td>
+            <td>CI が見ていないもの</td>
             <td>
-              ありません。<code>npm run lint</code> / <code>npm test</code> /
-              <code>npm run test:e2e</code> / <code>supabase test db</code> は手元で走らせます
+              push すると lint・型・単体・pgTAP・Playwright は自動で回りますが、
+              <b>Edge Function は 1 つも走っていません</b>
+              （<code>supabase start</code> だけでは配られないため）。
+              ブラウザも Chromium だけです。デプロイも自動化していません
             </td>
           </tr>
         </tbody>

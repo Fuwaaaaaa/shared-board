@@ -506,7 +506,7 @@ npm run test:e2e
 
 画面からの確認より先に、**DB だけで完結するテスト**を用意してあります。
 `supabase/tests/rls.test.sql` に、許可されるはずのことと拒否されるはずのことを
-303 件ぶん書いてあります（終了したボードへの書き込み、閲覧のみの人の編集、
+304 件ぶん書いてあります（終了したボードへの書き込み、閲覧のみの人の編集、
 変更履歴の偽造、全員締め出し、アクセスの取り消しと申し込み直し、参加期限、
 リンクの作り直し、他人のボードの行を指す「この回だけ」や投票、Storage の
 パスとポリシー、書いた人の名前の上書き、保存した状態からの復元など）。
@@ -519,7 +519,7 @@ supabase test db
 psql -U postgres -f supabase/tests/rls.test.sql
 ```
 
-`1..303` と出て `not ok` が 1 件も無ければ通っています。
+`1..304` と出て `not ok` が 1 件も無ければ通っています。
 すべてトランザクションの中で行い、最後に巻き戻すのでデータは残りません。
 
 > **本番のプロジェクトに流す前に、使い捨ての DB で試してください。**
@@ -541,6 +541,29 @@ psql -U postgres -f supabase/tests/rls.test.sql
 > `supabase/tests/` の外に置いてあるのは、`supabase test db` が
 > その下の `.sql` を全部テストとして拾ってしまうためです（足場には
 > pgTAP の plan が無いので、混ぜると必ず失敗します）。
+
+### 押したときに自動で回す（GitHub Actions）
+
+`.github/workflows/ci.yml` が、上の 4 つをそのまま回します。
+
+| ジョブ | 中身 |
+| --- | --- |
+| `checks` | `npm run lint` / `npm run build`（`tsc --noEmit` 込み）/ `npm test` |
+| `backend` | `supabase start` → `schema.sql` を 2 回 → `supabase test db` → `npm run test:e2e` |
+
+`schema.sql` を 2 回流すのは冪等の確認です。このリポジトリには
+`supabase/migrations/` が無く、DB は何度でも流せる 1 本で成り立っているので、
+2 回目で落ちたら `if not exists` を書き忘れたということになります。
+
+pgTAP を Playwright より先に置いてあります。スキーマが壊れているときの
+ブラウザの赤は読む価値がないので、先に落とします。
+
+CI では `e2e/global-setup.ts` が「Supabase につながらない」を握りつぶさず
+落とします（手元では飛ばします）。飛ばして緑になると、通ったのか
+何も走らなかったのかが色から区別できないためです。
+
+`supabase/setup-cli@v1` の `version` は手元の CLI に合わせて固定してあります。
+上げるときは一緒に上げてください。
 
 ### 権限（RLS）が効いているか — 画面から
 

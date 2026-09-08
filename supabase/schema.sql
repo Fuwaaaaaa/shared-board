@@ -424,6 +424,18 @@ create index if not exists access_attempts_idx  on public.access_attempts (room_
 create index if not exists purge_queue_idx      on public.purge_queue (queued_at);
 create index if not exists client_errors_idx    on public.client_errors (user_id, created_at desc);
 
+-- Storage の実体を掃除するときに引く。
+--
+-- purge-storage（毎時）は purge_queue から取り出した path を最大 200 件まとめて
+-- 「まだ行から参照されていないか」で照合する（.in('storage_path', […])）。
+-- 索引が無いと、そのたびに images / attachments の全表走査になる。
+create index if not exists images_path_idx      on public.images (storage_path);
+create index if not exists attachments_path_idx on public.attachments (storage_path);
+
+-- 「自分の担当」の絞り込み。いまは画面側で絞っているので効いていないが、
+-- サーバー側で絞る日が来たときにここが無いと全表走査になる。
+create index if not exists todos_assignee_idx   on public.todos (room_id, assignee_id);
+
 
 -- =============================================================================
 --  1.5 既存テーブルへの追加カラム

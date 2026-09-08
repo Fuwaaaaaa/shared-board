@@ -19,7 +19,7 @@ begin;
 
 create extension if not exists pgtap;
 
-select plan(303);
+select plan(304);
 
 
 -- =============================================================================
@@ -2829,6 +2829,52 @@ select set_eq(
   ('tg_touch_note_updated_at')
   $q$,
   'ログイン済みの人が呼べる関数が、控えと一致する');
+
+-- リアルタイム配信に載っているテーブルの顔ぶれ。
+--
+-- ポリシー・トリガー・関数は上で固定しているのに、ここだけ野放しだった。
+-- 配信に足すのは 1 行の書き足しで済むぶん、影響が見えにくい：
+-- 配信された行は購読者ごとに RLS で絞られるが、その RLS はテーブルごとに違う。
+--
+-- とくに rooms を足してはいけない。rooms_select は
+-- 「作った人」または「名簿に載っている人」で、pending と rejected も通す。
+-- 載せると、共有リンクを作り直して締め出したその相手のタブに、新しい slug が
+-- その場で push されてしまう（作り直しの目的そのものと矛盾する）。
+-- ボード設定の変更は、代わりに presence チャンネルへ合図だけを流している
+-- （src/lib/roomChannel.ts）。
+--
+-- DELETE のイベントは RLS を素通りするので、載せるテーブルには
+-- (id, room_id) の一意索引を REPLICA IDENTITY にして、
+-- 漏れるのが id と絞り込みキーだけになるようにしてある（schema.sql の 6 節）。
+select set_eq(
+  $q$select c.relname::text
+       from pg_publication_tables t
+       join pg_class c on c.relname = t.tablename
+       join pg_namespace n on n.oid = c.relnamespace and n.nspname = t.schemaname
+      where t.pubname = 'supabase_realtime' and t.schemaname = 'public'$q$,
+  $q$values
+  ('activities'),
+  ('attachments'),
+  ('calendar_feeds'),
+  ('comments'),
+  ('connectors'),
+  ('event_attendance'),
+  ('event_overrides'),
+  ('events'),
+  ('frames'),
+  ('images'),
+  ('note_reactions'),
+  ('note_votes'),
+  ('notes'),
+  ('notifications'),
+  ('poll_options'),
+  ('poll_votes'),
+  ('polls'),
+  ('room_members'),
+  ('strokes'),
+  ('todos')
+  $q$,
+  'リアルタイム配信に載っているテーブルが、控えと一致する');
 
 set local role authenticated;
 

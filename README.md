@@ -176,6 +176,8 @@ supabase/
 
 e2e/                              ブラウザで実際に触るテスト（Playwright）
 
+.github/workflows/ci.yml          push したときに上のテストを全部回す
+
 public/sw.js                      プッシュ通知の Service Worker
 
 src/
@@ -297,15 +299,20 @@ src/
 | 純粋関数（Vitest / node） | 繰り返し・祝日・ics・CSV・検索・オフラインの送信箱など。27 本 544 件 | `npm test` |
 | コンポーネント（Vitest / jsdom） | ドラッグの確定など、DOM が要るもの。5 本 37 件 | `npm test` |
 | ブラウザ（Playwright） | 保存されて残るか、2 人目に届くか、入り方と権限、設定の反映、タブの切り替え、繰り返し予定・出欠・ゴミ箱・検索・オフライン。25 件 | `npm run test:e2e` |
-| 権限（pgTAP） | RLS が効いているか。303 件 | `supabase test db` |
+| 権限（pgTAP） | RLS が効いているか。304 件 | `supabase test db` |
 
 ブラウザのテストはローカルの Supabase が要ります。動いていなければ自動で
 飛ばすので、`npm test` の邪魔にはなりません。
 
+この 4 つは push すると [`.github/workflows/ci.yml`](.github/workflows/ci.yml) が
+そのまま回します。`supabase start` を立てて `schema.sql` を 2 回流し（冪等の確認）、
+pgTAP と Playwright まで通します。CI では「Supabase につながらないから飛ばす」を
+しません — 飛ばして緑になると、通ったのか何も走らなかったのか分からないからです。
+
 ### 権限（RLS）
 
 `supabase/tests/rls.test.sql` に、**サーバー側の権限が効いているか**を確かめる
-テストが 303 件あります。終了したボードへの書き込み、閲覧のみの人の編集、
+テストが 304 件あります。終了したボードへの書き込み、閲覧のみの人の編集、
 変更履歴の偽造、全員締め出し、アクセスの取り消しと申し込み直し、参加期限、
 リンクの作り直し、他人のボードの行を指す「この回だけ」や投票、Storage の
 パスとポリシー、書いた人の名前の上書き、保存した状態からの復元などを、
