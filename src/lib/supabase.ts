@@ -36,6 +36,18 @@ function trackedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Res
     },
     (error: unknown) => {
       endWrite(false)
+      /*
+       * 通信そのものが届かなかったことに、ここで印を付ける。
+       *
+       * navigator.onLine は true のまま回線が死んでいることが普通にある
+       * （キャプティブポータル、不安定なモバイル）ので、フラグでは判定できない。
+       * supabase-js は投げられた fetch のエラーを
+       * { message: 'TypeError: Failed to fetch' } に潰してしまうため、
+       * 送信箱側は文言でも見分けられるようにしてある（lib/writeQueue.ts）。
+       */
+      if (error && typeof error === 'object') {
+        ;(error as { isTransport?: boolean }).isTransport = true
+      }
       throw error
     },
   )

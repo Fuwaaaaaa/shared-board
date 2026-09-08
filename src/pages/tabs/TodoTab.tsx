@@ -68,7 +68,7 @@ export default function TodoTab({ reminders, focusId, focusNonce, onJump }: Prop
 
   // 書き込みは 1 か所に寄せる。散らばっていたころは、失敗しても
   // 画面が黙って元に戻るだけで、理由が出なかった
-  const todoOps = useOptimisticTable<Todo>('todos', todos, setNotice)
+  const todoOps = useOptimisticTable<Todo>('todos', todos, setNotice, { roomId, userId })
 
   const [title, setTitle] = useState('')
   const [editing, setEditing] = useState<Todo | null>(null)

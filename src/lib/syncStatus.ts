@@ -92,12 +92,16 @@ export function useSyncStatus(): SyncState {
 }
 
 export const SYNC_LABELS: Record<SyncState, { icon: string; label: string; title: string }> = {
-  saved: { icon: '✓', label: '保存済み', title: '書いたものはみんなに届いています' },
+  saved: {
+    icon: '✓',
+    label: '保存済み',
+    title: '書いたものはみんなに届いています。送信待ちのものもありません',
+  },
   saving: { icon: '↻', label: '同期中', title: '保存しています' },
   offline: {
     icon: '⚠',
     label: 'オフライン',
-    title: 'つながっていません。いま書いたものは保存されません',
+    title: 'つながっていません。書いたものは手元にためて、つながったら送ります',
   },
   error: {
     icon: '⚠',

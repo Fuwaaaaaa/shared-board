@@ -30,7 +30,10 @@ export default function CommentList({
   const { userId, displayName } = useIdentity()
   const { roomId, comments, approvedMembers } = useRoomData()
   const [notice, setNotice] = useNotice()
-  const commentOps = useOptimisticTable<Comment>('comments', comments, setNotice)
+  const commentOps = useOptimisticTable<Comment>('comments', comments, setNotice, {
+    roomId,
+    userId,
+  })
   const [body, setBody] = useState('')
   const [mentionQuery, setMentionQuery] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)

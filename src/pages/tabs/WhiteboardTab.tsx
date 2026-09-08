@@ -256,7 +256,7 @@ export default function WhiteboardTab({
   const panRef = useRef<{ x: number; y: number; left: number; top: number } | null>(null)
 
   // 各テーブルの「保留 → ローカル反映 → 送信 → 失敗なら戻す」をここに寄せる
-  const noteOps = useOptimisticTable<Note>('notes', notes, setNotice)
+  const noteOps = useOptimisticTable<Note>('notes', notes, setNotice, { roomId, userId })
   const strokeOps = useOptimisticTable<Stroke>('strokes', strokes, setNotice)
   const imageOps = useOptimisticTable<BoardImage>('images', images, setNotice)
   const attachmentOps = useOptimisticTable<Attachment>('attachments', attachments, setNotice)
@@ -1629,6 +1629,19 @@ export default function WhiteboardTab({
 
   async function uploadImage(file: File, x: number, y: number) {
     if (!canEdit) return
+
+    /*
+     * オフラインのあいだは、はっきり断る。
+     *
+     * 送信箱にためられるのは文字だけで、画像とファイルは入れていない
+     * （実体の置き場と行の作成が一度に決まらないため。README の「制約」を参照）。
+     * 黙って進めると、進む気配のスピナーだけが残って嘘になる。
+     */
+    if (!navigator.onLine) {
+      setNotice('オフラインのあいだは画像を貼れません。つながってからもう一度どうぞ。')
+      return
+    }
+
     if (file.size > MAX_IMAGE_ACCEPT_BYTES) {
       setNotice('画像は 20MB までです。')
       return
@@ -1693,6 +1706,19 @@ export default function WhiteboardTab({
 
   async function uploadFile(file: File, x: number, y: number) {
     if (!canEdit) return
+
+    /*
+     * オフラインのあいだは、はっきり断る。
+     *
+     * 送信箱にためられるのは文字だけで、画像とファイルは入れていない
+     * （実体の置き場と行の作成が一度に決まらないため。README の「制約」を参照）。
+     * 黙って進めると、進む気配のスピナーだけが残って嘘になる。
+     */
+    if (!navigator.onLine) {
+      setNotice('オフラインのあいだはファイルを置けません。つながってからもう一度どうぞ。')
+      return
+    }
+
     if (file.type.startsWith('image/')) {
       await uploadImage(file, x, y)
       return

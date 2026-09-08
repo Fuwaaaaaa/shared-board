@@ -1,7 +1,26 @@
 import { useMemo, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { messageOf } from '../lib/errorMessage'
+import { cancelPendingCreate, enqueue, nextSeq } from '../lib/outboxStore'
+import {
+  decideOnFailure,
+  lockedFields,
+  previewOf,
+  type QueueTable,
+} from '../lib/writeQueue'
 import type { useRealtimeTable } from './useRealtimeTable'
+
+/*
+ * オフラインのあいだ、ためておける表。
+ *
+ * 文字が惜しいものだけ。手描き・画像・ファイル・投票などは入れない
+ * （理由は README の「制約」と lib/writeQueue.ts の頭）。
+ */
+const QUEUEABLE: QueueTable[] = ['notes', 'events', 'todos', 'comments']
+
+function queueTableOf(tableName: string): QueueTable | null {
+  return (QUEUEABLE as string[]).includes(tableName) ? (tableName as QueueTable) : null
+}
 
 interface Row {
   id: string
@@ -60,14 +79,47 @@ export function useOptimisticTable<T extends Row>(
   tableName: string,
   table: OptimisticSource<T>,
   notify: (msg: string) => void,
+  /** ためるときに要る。渡さなければ、ためずにこれまでどおり失敗する */
+  queueContext?: { roomId: string; userId: string },
 ) {
   // notify（setNotice を包んだもの）は毎回変わり得るので ref 経由にし、戻り値の identity を保つ
   const notifyRef = useRef(notify)
   notifyRef.current = notify
 
+  const contextRef = useRef(queueContext)
+  contextRef.current = queueContext
+
   return useMemo(() => {
     const fail = (what: string, e: unknown) => {
       notifyRef.current(`${what}できませんでした: ${messageOf(e)}`)
+    }
+
+    /*
+     * 送れなかったものを送信箱へ回す。回せたら true。
+     *
+     * 回すのは「通信そのものが届かなかった」ときだけ。権限や決まりの違反は
+     * つながり直しても同じ結果なので、これまでどおりその場で失敗にする。
+     * 回したときはローカルの見た目を戻さず、通知も出さない——書いた人からは
+     * 「保存された」ように見えるのが正しい（ヘッダーのピルが未送信を示す）。
+     */
+    async function queueOrFail(
+      e: unknown,
+      make: () => Parameters<typeof enqueue>[0] | null,
+    ): Promise<boolean> {
+      const context = contextRef.current
+      const queueTable = queueTableOf(tableName)
+      if (!context || !queueTable) return false
+      if (decideOnFailure(e) !== 'queue') return false
+
+      const op = make()
+      if (!op) return false
+
+      if (await enqueue(op)) return true
+
+      notifyRef.current(
+        'この内容は大きすぎて、オフラインのあいだ手元にためておけません。つながってからお試しください。',
+      )
+      return false
     }
 
     /** 行を足す。成功したら true。失敗した分は画面から消して知らせる */
@@ -86,6 +138,34 @@ export function useOptimisticTable<T extends Row>(
         }
         return true
       } catch (e) {
+        const rest = rows.filter((row) => !done.has(row.id))
+        const context = contextRef.current
+        const queueTable = queueTableOf(tableName)
+
+        if (context && queueTable && decideOnFailure(e) === 'queue') {
+          let queued = 0
+          for (const row of rest) {
+            const ok = await queueOrFail(e, () => ({
+              roomId: context.roomId,
+              table: queueTable,
+              rowId: row.id,
+              userId: context.userId,
+              kind: 'create' as const,
+              row: row as unknown as Record<string, unknown>,
+              label: what,
+              preview: previewOf(
+                (row as unknown as Record<string, unknown>).text ??
+                  (row as unknown as Record<string, unknown>).title ??
+                  (row as unknown as Record<string, unknown>).body,
+              ),
+              seq: nextSeq(),
+            }))
+            if (ok) queued++
+          }
+          // 全部ためられたなら、書いた人から見れば「保存された」でよい
+          if (queued === rest.length) return true
+        }
+
         // 途中まで入った分は残し、入らなかった分だけ戻す
         for (const row of rows) if (!done.has(row.id)) table.removeLocal(row.id)
         fail(what, e)
@@ -133,6 +213,28 @@ export function useOptimisticTable<T extends Row>(
         }
         return true
       } catch (e) {
+        const context = contextRef.current
+        const queueTable = queueTableOf(tableName)
+
+        /*
+         * オフラインで作ってすぐ消したときは、送信箱の「作成」を取り消せば済む。
+         * まだ 1 度も送っていないので、送るものが残らない。
+         *
+         * サーバーにもうある行の削除は、ためない。ためると
+         * 「本当に消す」を「ゴミ箱へ入れる」に読み替えることになり、意味が変わる。
+         */
+        if (context && queueTable && decideOnFailure(e) === 'queue') {
+          const canceled: string[] = []
+          for (const row of rows) {
+            if (done.has(row.id)) continue
+            if (await cancelPendingCreate(context.roomId, queueTable, row.id)) {
+              canceled.push(row.id)
+            }
+          }
+          if (canceled.length === rows.filter((row) => !done.has(row.id)).length) return true
+          for (const id of canceled) done.add(id)
+        }
+
         for (const row of rows) if (!done.has(row.id)) table.upsertLocal(row)
         fail(what, e)
         return false
@@ -220,6 +322,45 @@ export function useOptimisticTable<T extends Row>(
         }
         throw new Error('他の人の変更と重なりました')
       } catch (e) {
+        const context = contextRef.current
+        const queueTable = queueTableOf(tableName)
+
+        if (context && queueTable && decideOnFailure(e) === 'queue') {
+          const locked = lockedFields(queueTable, changes as Record<string, unknown>)
+          const queued = await queueOrFail(e, () => ({
+            roomId: context.roomId,
+            table: queueTable,
+            rowId: id,
+            userId: context.userId,
+            kind: 'update' as const,
+            patch: changes as Record<string, unknown>,
+            base: before ? (pick(before, fields) as Record<string, unknown>) : undefined,
+            /*
+             * 文字と意味を持つ列を変えるときだけ、楽観ロックを掛けて送り直す。
+             * 位置や色は掛けない（掛けると譲り合いになって動かせなくなる）。
+             */
+            expectUpdatedAt:
+              locked.length > 0
+                ? (expectUpdatedAt ??
+                  ((before as Record<string, unknown> | undefined)?.updated_at as
+                    | string
+                    | undefined))
+                : undefined,
+            label: what,
+            preview: previewOf(
+              (changes as Record<string, unknown>).text ??
+                (changes as Record<string, unknown>).title ??
+                (changes as Record<string, unknown>).body ??
+                (before as Record<string, unknown> | undefined)?.text,
+            ),
+            seq: nextSeq(),
+          }))
+          if (queued) {
+            release()
+            return 'ok'
+          }
+        }
+
         release()
         rollback()
         fail(what, e)

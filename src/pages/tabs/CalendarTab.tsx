@@ -135,7 +135,10 @@ export default function CalendarTab({
 
   // 予定の書き込みは 1 か所に寄せる。散らばっていたころは、失敗しても
   // 画面が黙って元に戻るだけで、理由が出なかった
-  const eventOps = useOptimisticTable<CalendarEvent>('events', events, setNotice)
+  const eventOps = useOptimisticTable<CalendarEvent>('events', events, setNotice, {
+    roomId,
+    userId,
+  })
 
   const [view, setView] = useState<View>('month')
   const [cursor, setCursor] = useState(() => new Date())

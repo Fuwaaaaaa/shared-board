@@ -3,6 +3,7 @@ import PresenceAvatars from './PresenceAvatars'
 import { useIdentity } from '../lib/identity'
 import { accessInfo } from '../lib/access'
 import { SYNC_LABELS, useSyncStatus } from '../lib/syncStatus'
+import { useOutbox } from '../lib/outboxStore'
 import { ThemeToggle } from '../lib/theme'
 import type { Peer } from '../hooks/usePresence'
 import type { RoomPreview } from '../lib/types'
@@ -37,6 +38,7 @@ interface Props {
   onOpenSettings: () => void
   onOpenNotifications: () => void
   onOpenPolls: () => void
+  onOpenOutbox: () => void
   onToggleChat: () => void
 }
 
@@ -59,17 +61,22 @@ export default function RoomHeader({
   onOpenSettings,
   onOpenNotifications,
   onOpenPolls,
+  onOpenOutbox,
   onToggleChat,
 }: Props) {
   const { userId, displayName, setDisplayName } = useIdentity()
   const access = accessInfo(preview)
   const sync = useSyncStatus()
+  const outbox = useOutbox()
 
   return (
     <header className="shrink-0 border-b border-slate-200 bg-white print:hidden">
       {offline && (
         <div className="bg-amber-100 px-4 py-1 text-center text-xs text-amber-900">
-          オフラインです。いま書いたものは保存されません。つながってから書き直してください。
+          オフラインです。書いたものは手元にためて、つながったら送ります。
+          {outbox.pending > 0 && `（${outbox.pending} 件が送信待ち）`}
+          {!outbox.persistent &&
+            'この端末では、ためておくことができません。つながってから書き直してください。'}
         </div>
       )}
       {/*
@@ -136,19 +143,41 @@ export default function RoomHeader({
         <PresenceAvatars peers={peers} meId={userId} />
 
         <div className="toolbar-scroll flex items-center gap-1.5">
-          <span
-            title={SYNC_LABELS[sync].title}
-            className={`shrink-0 rounded-full px-2 py-1 text-xs ${
-              sync === 'saved'
-                ? 'text-slate-400'
-                : sync === 'saving'
-                  ? 'text-slate-500'
-                  : 'bg-amber-50 text-amber-700'
-            }`}
-          >
-            {SYNC_LABELS[sync].icon}{' '}
-            <span className="hidden lg:inline">{SYNC_LABELS[sync].label}</span>
-          </span>
+          {/*
+            送信箱に何かあるあいだは、つながり具合の代わりに未送信を出す。
+            5 つのタブすべてで見えて、リロードにも耐えるので、ここが置き場として正しい
+            （トーストだと、書いた人が気づかないまま閉じてしまう）。
+          */}
+          {outbox.failed > 0 || outbox.pending > 0 ? (
+            <button
+              type="button"
+              onClick={onOpenOutbox}
+              title={
+                outbox.failed > 0
+                  ? '送れなかったものがあります。中身は残っています'
+                  : 'まだ送っていないものがあります'
+              }
+              className={`shrink-0 rounded-full px-2 py-1 text-xs ${
+                outbox.failed > 0 ? 'bg-rose-50 text-rose-700' : 'bg-amber-50 text-amber-700'
+              }`}
+            >
+              {outbox.failed > 0 ? `⚠ ${outbox.failed}件送れません` : `↑ ${outbox.pending}件未送信`}
+            </button>
+          ) : (
+            <span
+              title={SYNC_LABELS[sync].title}
+              className={`shrink-0 rounded-full px-2 py-1 text-xs ${
+                sync === 'saved'
+                  ? 'text-slate-400'
+                  : sync === 'saving'
+                    ? 'text-slate-500'
+                    : 'bg-amber-50 text-amber-700'
+              }`}
+            >
+              {SYNC_LABELS[sync].icon}{' '}
+              <span className="hidden lg:inline">{SYNC_LABELS[sync].label}</span>
+            </span>
+          )}
 
           <IconButton title="ボード内を検索" onClick={onOpenSearch}>
             🔍

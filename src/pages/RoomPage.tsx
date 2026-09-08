@@ -9,6 +9,8 @@ import { RoomDataProvider, useRoomData } from '../lib/roomData'
 import { useIdentity } from '../lib/identity'
 import { supabase } from '../lib/supabase'
 import { notifyRoomChanged } from '../lib/roomChannel'
+import { useOutboxReady } from '../lib/outboxStore'
+import { useWriteQueue } from '../hooks/useWriteQueue'
 import RoomHeader, { type TabKey } from '../components/RoomHeader'
 import AccessRequestPanel from '../components/AccessRequestPanel'
 import Loading from '../components/Loading'
@@ -39,6 +41,7 @@ const ChatPanel = lazy(() => import('../components/ChatPanel'))
 const NotificationPanel = lazy(() => import('../components/NotificationPanel'))
 const ShortcutsModal = lazy(() => import('../components/ShortcutsModal'))
 const PollPanel = lazy(() => import('../components/PollPanel'))
+const OutboxModal = lazy(() => import('../components/OutboxModal'))
 
 export default function RoomPage() {
   const { slug } = useParams<{ slug: string }>()
@@ -46,6 +49,8 @@ export default function RoomPage() {
   const { preview, level, refresh, requestAccess, claimOwner } = useRoomAccess(slug)
 
   const canAccess = level === 'owner' || level === 'member'
+  // ためてある書き込みを読み終わるまで、ボードを描き始めない（main.tsx を参照）
+  const queueReady = useOutboxReady()
 
   // ?owner=<token> でオーナー権限を回収する
   const claimedRef = useRef(false)
@@ -82,7 +87,7 @@ export default function RoomPage() {
   }, [level, join])
 
   // guest は「リンク公開のボードに来たが、まだ登録が済んでいない」状態
-  if (level === 'loading' || (level === 'guest' && !joinFailed)) {
+  if (!queueReady || level === 'loading' || (level === 'guest' && !joinFailed)) {
     return (
       <div className="grid min-h-screen place-items-center bg-slate-50 text-sm text-slate-400">
         読み込み中…
@@ -158,6 +163,9 @@ function RoomShell({
   const { userId, displayName } = useIdentity()
   const { members, events, todos, overrides, comments, live, refetchAll } = useRoomData()
 
+  // ためた書き込みを、つながったら送る
+  useWriteQueue(userId)
+
   const [tab, setTab] = useState<TabKey>('board')
   const [focus, setFocus] = useState<{ tab: TabKey; id: string; nonce: number } | null>(null)
   const [showMembers, setShowMembers] = useState(false)
@@ -167,6 +175,7 @@ function RoomShell({
   const [showNotifications, setShowNotifications] = useState(false)
   const [showShortcuts, setShowShortcuts] = useState(false)
   const [showPolls, setShowPolls] = useState(false)
+  const [showOutbox, setShowOutbox] = useState(false)
   const [chatOpen, setChatOpen] = useState(false)
 
   const [searchParams, setSearchParams] = useSearchParams()
@@ -311,6 +320,7 @@ function RoomShell({
         onOpenSettings={() => setShowSettings(true)}
         onOpenNotifications={() => setShowNotifications(true)}
         onOpenPolls={() => setShowPolls(true)}
+        onOpenOutbox={() => setShowOutbox(true)}
         onToggleChat={() => setChatOpen((open) => !open)}
       />
 
@@ -403,6 +413,7 @@ function RoomShell({
         {showPolls && (
           <PollPanel onClose={() => setShowPolls(false)} onCreateEvent={createEventFromPoll} />
         )}
+        {showOutbox && <OutboxModal onClose={() => setShowOutbox(false)} />}
         {chatOpen && <ChatPanel onClose={() => setChatOpen(false)} />}
       </Suspense>
     </div>

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
+import { entriesFor, subscribeOutbox } from '../lib/outboxStore'
+import type { QueueTable } from '../lib/writeQueue'
 
 interface Row {
   id: string
@@ -289,6 +291,81 @@ export function useRealtimeTable<T extends Row>(
       supabase.removeChannel(channel)
     }
   }, [table, roomId, enabled, commit, refetch])
+
+  /*
+   * 送信箱にたまっている行を、ローカルに重ねておく（オーバーレイ）。
+   *
+   * ここが無いと、まだ送れていない行はリロードで消える。holdsRef は
+   * 上の購読の効果が走るたびに作り直されるので、この効果はその「あと」に
+   * 置かなければならない（React は宣言順に走らせる）。作り直されたあとに
+   * もう一度 hold を取り直すのが、この効果の仕事。
+   *
+   * hold は参照カウント式なので、useOptimisticTable が送信中に取る一時的な
+   * hold と自然に重なる。hold の中身には手を入れていない。
+   */
+  useEffect(() => {
+    if (!roomId || !enabled) return
+    const queueTable = table as QueueTable
+
+    // 1 件につき 1 つだけ hold を持つ。解放する道も 1 本にして、取りこぼしを防ぐ
+    const held = new Map<string, { release: () => void; signature: string }>()
+
+    const reconcile = () => {
+      const wanted = entriesFor(roomId, queueTable)
+      const seen = new Set<string>()
+
+      for (const entry of wanted) {
+        seen.add(entry.key)
+        const signature =
+          entry.kind === 'update'
+            ? `update:${Object.keys(entry.patch ?? {}).sort().join(',')}`
+            : entry.kind
+
+        const current = held.get(entry.key)
+        if (current && current.signature === signature) continue
+        current?.release()
+
+        if (entry.kind === 'create') {
+          const release = holdLocal(entry.rowId, 'insert')
+          held.set(entry.key, { release, signature })
+          commit((rows) =>
+            rows.some((row) => row.id === entry.rowId)
+              ? rows
+              : [...rows, entry.row as unknown as T],
+          )
+        } else if (entry.kind === 'update') {
+          const fields = Object.keys(entry.patch ?? {}) as (keyof T)[]
+          const release = holdLocal(entry.rowId, fields)
+          held.set(entry.key, { release, signature })
+          commit((rows) =>
+            rows.map((row) =>
+              row.id === entry.rowId ? ({ ...row, ...entry.patch } as T) : row,
+            ),
+          )
+        } else {
+          const release = holdLocal(entry.rowId, 'delete')
+          held.set(entry.key, { release, signature })
+          commit((rows) => rows.filter((row) => row.id !== entry.rowId))
+        }
+      }
+
+      // 送れた・捨てられた分の hold を外す
+      for (const [key, entry] of held) {
+        if (seen.has(key)) continue
+        entry.release()
+        held.delete(key)
+      }
+    }
+
+    reconcile()
+    const stop = subscribeOutbox(reconcile)
+    return () => {
+      stop()
+      for (const entry of held.values()) entry.release()
+      held.clear()
+    }
+    // holdLocal / commit は identity が安定している
+  }, [table, roomId, enabled, holdLocal, commit])
 
   // タブに戻ったとき・オンラインに戻ったときは取り直す。
   // 裏にいる間は Realtime が止められることがあり、その間の変更は届かない。
