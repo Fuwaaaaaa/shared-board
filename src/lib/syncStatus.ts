@@ -75,8 +75,16 @@ function subscribe(listener: () => void) {
   }
 }
 
-function getSnapshot(): SyncState {
+/**
+ * いまの状態。画面は useSyncStatus を使う。
+ * こちらは React の外（テストなど）から覗くとき用。
+ */
+export function syncSnapshot(): SyncState {
   return snapshot
+}
+
+function getSnapshot(): SyncState {
+  return syncSnapshot()
 }
 
 export function useSyncStatus(): SyncState {
