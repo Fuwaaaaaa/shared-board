@@ -21,6 +21,7 @@ import {
 import { ja } from 'date-fns/locale'
 import Modal from '../../components/Modal'
 import CommentList from '../../components/CommentList'
+import AttendancePanel from '../../components/AttendancePanel'
 import NotificationBanner from '../../components/NotificationBanner'
 import TagInput, { TagFilterBar } from '../../components/TagInput'
 import {
@@ -33,6 +34,15 @@ import {
   ruleOf,
   type RecurrenceRule,
 } from '../../lib/recurrence'
+import {
+  attendanceDateOf,
+  attendanceFor,
+  describeOccurrenceReset,
+  myAttendance,
+  occurrenceGridMoved,
+  yesCountByOccurrence,
+  yesCountOf,
+} from '../../lib/attendance'
 import { getHolidayName } from '../../lib/holidays'
 import {
   allDayEndIso,
@@ -61,6 +71,9 @@ import {
   EVENT_KIND_LABELS,
   MONTH_WEEK_OPTIONS,
   RECURRENCE_LABELS,
+  type AttendanceAnswer,
+  type EventAttendance,
+  type RoomMember,
   REMIND_OPTIONS,
   WEEKDAY_LABELS,
   type CalendarEvent,
@@ -102,7 +115,19 @@ export default function CalendarTab({
   onJump,
 }: Props) {
   const { userId, displayName } = useIdentity()
-  const { roomId, canEdit, events, todos, overrides, comments, feeds, notes } = useRoomData()
+  const {
+    roomId,
+    canEdit,
+    archived,
+    events,
+    todos,
+    overrides,
+    comments,
+    feeds,
+    notes,
+    attendance,
+    approvedMembers,
+  } = useRoomData()
 
   const [view, setView] = useState<View>('month')
   const [cursor, setCursor] = useState(() => new Date())
@@ -184,6 +209,9 @@ export default function CalendarTab({
   )
   const byDay = useMemo(() => groupOccurrencesByDay(occurrences), [occurrences])
 
+  // 一覧の行ごとに数え直さないよう、○ の数は 1 回だけ表にする
+  const yesCounts = useMemo(() => yesCountByOccurrence(attendance.rows), [attendance.rows])
+
   /**
    * カレンダーに重ねて表示する期限つき TODO。
    *
@@ -224,6 +252,40 @@ export default function CalendarTab({
    * 同じ回に既に例外があればその行を上書きする。楽観的更新が効くよう、
    * 既存行の id を引き継いでから upsert する。
    */
+  /**
+   * その回の出欠に答える / 答えを変える / 取り消す。
+   * 日程調整の投票（PollPanel.vote）と同じ形にそろえている。
+   */
+  async function saveAttendance(occurrence: EventOccurrence, answer: AttendanceAnswer) {
+    const existing = myAttendance(attendance.rows, occurrence, userId)
+
+    if (existing) {
+      // 同じ答えをもう一度押したら取り消す
+      if (existing.answer === answer) {
+        attendance.removeLocal(existing.id)
+        await supabase.from('event_attendance').delete().eq('id', existing.id)
+        return
+      }
+      attendance.upsertLocal({ ...existing, answer })
+      await supabase.from('event_attendance').update({ answer }).eq('id', existing.id)
+      return
+    }
+
+    const row = {
+      id: crypto.randomUUID(),
+      room_id: roomId,
+      event_id: occurrence.event.id,
+      occurrence_date: attendanceDateOf(occurrence),
+      user_id: userId,
+      voter_name: displayName,
+      answer,
+      created_at: new Date().toISOString(),
+    }
+    attendance.upsertLocal(row)
+    const { error } = await supabase.from('event_attendance').insert(row)
+    if (error) attendance.removeLocal(row.id)
+  }
+
   async function saveOverride(
     occurrence: EventOccurrence,
     patch: Partial<EventOverride> & { canceled: boolean },
@@ -339,33 +401,33 @@ export default function CalendarTab({
       const existing = occurrence.event
 
       /*
-       * 開始日や繰り返し方を変えると回の並びがずれ、例外の対応づけが崩れる。
-       * 時刻だけの変更なら日付キーは動かないのでそのまま残す。
+       * 回の並びが動いたか。判定はサーバー側の tg_reset_event_occurrences と
+       * 同じ条件で、src/lib/attendance.ts に 1 か所だけ置いてある。
        *
-       * 曜日は「減らした・入れ替えた」ときだけ崩れたとみなす。増やすのは
-       * 加算的で、それまでに出ていた回はすべてそのまま残るため、
-       * 火曜に木曜を足しただけで火曜の「この回だけ」を消すのは理不尽になる。
+       * 実際に落とすのもサーバー側。画面からは他人の出欠を消せない
+       * （DELETE ポリシーが user_id = auth.uid()）し、画面側だけの削除は
+       * REST を直接叩けば素通りできる。ここでは確認を出して、
+       * 手元の表示をサーバーに先回りして合わせるだけ。
        */
-      const before = ruleOf(existing)
-      const daysRemoved = before.days.some((d) => !rule.days.includes(d))
-
-      const gridMoved =
-        toBoardDate(patch.start_at) !== toBoardDate(existing.start_at) ||
-        draft.recurrence !== existing.recurrence ||
-        (patch.recurrence_until ?? null) !== (existing.recurrence_until ?? null) ||
-        rule.week !== before.week ||
-        daysRemoved
+      const gridMoved = occurrenceGridMoved(
+        {
+          date: toBoardDate(patch.start_at),
+          recurrence: rule.recurrence,
+          recurrenceUntil: patch.recurrence_until ?? '',
+          days: rule.days,
+          week: rule.week,
+        },
+        existing,
+      )
 
       const mine = overrides.rows.filter((o) => o.event_id === existing.id)
-      if (gridMoved && mine.length > 0) {
-        const ok = window.confirm(
-          `この予定には「この回だけ」の変更が ${mine.length} 件あります。\n` +
-            'すべての回を変更すると、それらは取り消されます。よろしいですか？',
-        )
-        if (!ok) return
+      const answers = attendance.rows.filter((a) => a.event_id === existing.id)
+
+      if (gridMoved && (mine.length > 0 || answers.length > 0)) {
+        if (!window.confirm(describeOccurrenceReset(mine.length, answers.length))) return
 
         for (const override of mine) overrides.removeLocal(override.id)
-        await supabase.from('event_overrides').delete().eq('event_id', existing.id)
+        for (const answer of answers) attendance.removeLocal(answer.id)
       }
 
       events.upsertLocal({ ...existing, ...patch })
@@ -680,6 +742,7 @@ export default function CalendarTab({
             byDay={byDay}
             todosByDay={todosByDay}
             feedsByDay={feedsByDay}
+            yesCounts={yesCounts}
             canEdit={canEdit}
             onSelectDay={canEdit ? setCreatingOn : () => {}}
             onSelectEvent={setEditing}
@@ -705,6 +768,7 @@ export default function CalendarTab({
           <ListView
             occurrences={occurrences}
             commentCounts={commentCounts}
+            yesCounts={yesCounts}
             onSelectEvent={setEditing}
           />
         )}
@@ -717,6 +781,11 @@ export default function CalendarTab({
           canEdit={canEdit}
           allTags={allTags}
           commentCount={editing ? (commentCounts[editing.event.id] ?? 0) : 0}
+          archived={archived}
+          attendance={editing ? attendanceFor(attendance.rows, editing) : []}
+          approvedMembers={approvedMembers}
+          myAnswer={editing ? (myAttendance(attendance.rows, editing, userId)?.answer ?? null) : null}
+          onAnswer={saveAttendance}
           onSave={saveEvent}
           onDelete={deleteEvent}
           onCancelOccurrence={cancelOccurrence}
@@ -766,6 +835,7 @@ function MonthView({
   byDay,
   todosByDay,
   feedsByDay,
+  yesCounts,
   canEdit,
   onSelectDay,
   onSelectEvent,
@@ -776,6 +846,8 @@ function MonthView({
   byDay: Map<string, EventOccurrence[]>
   todosByDay: Map<string, Todo[]>
   feedsByDay: Map<string, FeedEvent[]>
+  /** その回に ○ と答えた人の数（yesCountByOccurrence で作る） */
+  yesCounts: Map<string, number>
   canEdit: boolean
   onSelectDay: (day: Date) => void
   onSelectEvent: (occurrence: EventOccurrence) => void
@@ -883,6 +955,7 @@ function MonthView({
                   occurrence={occurrence}
                   day={day}
                   draggable={canEdit}
+                  yesCount={yesCountOf(yesCounts, occurrence)}
                   onDragStart={() => {
                     dragRef.current = occurrence
                   }}
@@ -920,12 +993,15 @@ function EventChip({
   occurrence,
   day,
   draggable,
+  yesCount,
   onDragStart,
   onSelect,
 }: {
   occurrence: EventOccurrence
   day: Date
   draggable: boolean
+  /** その回に ○ と答えた人の数。0 なら出さない */
+  yesCount: number
   onDragStart: () => void
   onSelect: (occurrence: EventOccurrence) => void
 }) {
@@ -981,6 +1057,11 @@ function EventChip({
       )}
       {occurrence.view.title}
       {deadline && <span className="ml-0.5 text-slate-400">〆</span>}
+      {yesCount > 0 && (
+        <span className="ml-1 opacity-70" title={`${yesCount} 人が行くと答えています`}>
+          ○{yesCount}
+        </span>
+      )}
     </div>
   )
 }
@@ -1144,6 +1225,7 @@ function WeekView({
                   occurrence={occurrence}
                   day={day}
                   draggable={false}
+                  yesCount={0}
                   onDragStart={() => {}}
                   onSelect={onSelectEvent}
                 />
@@ -1299,10 +1381,12 @@ function WeekView({
 function ListView({
   occurrences,
   commentCounts,
+  yesCounts,
   onSelectEvent,
 }: {
   occurrences: EventOccurrence[]
   commentCounts: Record<string, number>
+  yesCounts: Map<string, number>
   onSelectEvent: (occurrence: EventOccurrence) => void
 }) {
   const sorted = useMemo(
@@ -1377,6 +1461,14 @@ function ListView({
                   #{tag}
                 </span>
               ))}
+              {yesCountOf(yesCounts, occurrence) > 0 && (
+                <span
+                  className="shrink-0 text-xs text-slate-400"
+                  title={`${yesCountOf(yesCounts, occurrence)} 人が行くと答えています`}
+                >
+                  ○ {yesCountOf(yesCounts, occurrence)}
+                </span>
+              )}
               {count > 0 && <span className="shrink-0 text-xs text-slate-400">💬 {count}</span>}
             </button>
           </li>
@@ -1604,6 +1696,11 @@ function EventModal({
   canEdit,
   allTags,
   commentCount,
+  archived,
+  attendance,
+  approvedMembers,
+  myAnswer,
+  onAnswer,
   onSave,
   onDelete,
   onCancelOccurrence,
@@ -1616,6 +1713,13 @@ function EventModal({
   canEdit: boolean
   allTags: string[]
   commentCount: number
+  /** 終了したボードでは、出欠にも答えられない（サーバー側の room_is_open と対） */
+  archived: boolean
+  /** この回に付いている出欠 */
+  attendance: EventAttendance[]
+  approvedMembers: RoomMember[]
+  myAnswer: AttendanceAnswer | null
+  onAnswer: (occurrence: EventOccurrence, answer: AttendanceAnswer) => Promise<void>
   /** この予定が生まれたもとの付箋 */
   origin: {
     label: string
@@ -2047,6 +2151,22 @@ function EventModal({
             >
               ＋ 準備することを追加
             </button>
+          )}
+
+          {/*
+            出欠は「集まる予定」にだけ出す。締切は行く・行かないの話ではない。
+            新しく作っているところ（occurrence が無い）にも出さない — まだ回が無い。
+          */}
+          {occurrence && occurrence.event.kind === 'event' && (
+            <div className="mb-3">
+              <AttendancePanel
+                rows={attendance}
+                approvedMembers={approvedMembers}
+                mine={myAnswer}
+                disabled={archived}
+                onAnswer={(answer) => void onAnswer(occurrence, answer)}
+              />
+            </div>
           )}
 
           <button

@@ -16,6 +16,7 @@ import type {
   Poll,
   PollOption,
   PollVote,
+  EventAttendance,
   RoomMember,
   Stroke,
   Todo,
@@ -37,6 +38,14 @@ interface RoomData {
   canEdit: boolean
   /** ボードを作った人か。中身を丸ごと置き換える操作（保存した状態から戻す）に使う */
   isOwner: boolean
+  /**
+   * 終了したボードか。
+   *
+   * canEdit では代わりにならない。出欠やコメントは「閲覧のみ」の人も書けるが、
+   * 終了したボードでは誰も書けない（サーバー側の room_is_open）。
+   * その 2 つを画面側で見分けるのに要る。
+   */
+  archived: boolean
   notes: Table<Note>
   strokes: Table<Stroke>
   images: Table<BoardImage>
@@ -53,6 +62,8 @@ interface RoomData {
   polls: Table<Poll>
   pollOptions: Table<PollOption>
   pollVotes: Table<PollVote>
+  /** 予定の回ごとの出欠（○/△/×） */
+  attendance: Table<EventAttendance>
   feeds: Table<CalendarFeed>
   activities: Table<Activity>
   members: Table<RoomMember>
@@ -114,11 +125,13 @@ export function RoomDataProvider({
   roomId,
   canEdit,
   isOwner,
+  archived,
   children,
 }: {
   roomId: string
   canEdit: boolean
   isOwner: boolean
+  archived: boolean
   children: ReactNode
 }) {
   const allNotes = useRealtimeTable<Note>('notes', roomId)
@@ -136,6 +149,7 @@ export function RoomDataProvider({
   const polls = useRealtimeTable<Poll>('polls', roomId)
   const pollOptions = useRealtimeTable<PollOption>('poll_options', roomId)
   const pollVotes = useRealtimeTable<PollVote>('poll_votes', roomId)
+  const attendance = useRealtimeTable<EventAttendance>('event_attendance', roomId)
   const feeds = useRealtimeTable<CalendarFeed>('calendar_feeds', roomId)
   const activities = useRealtimeTable<Activity>('activities', roomId)
   const members = useRealtimeTable<RoomMember>('room_members', roomId)
@@ -171,11 +185,12 @@ export function RoomDataProvider({
     polls.live &&
     pollOptions.live &&
     pollVotes.live &&
+    attendance.live &&
     feeds.live &&
     activities.live &&
     members.live
 
-  // refetch を 18 個そのまま useCallback の依存に並べると、どれか 1 つが
+  // refetch を 19 個そのまま useCallback の依存に並べると、どれか 1 つが
   // 作り直されるたびに refetchAll の identity が変わって Provider の value が
   // 揺れる。ref 経由にして、refetchAll 自体は一度きりにする。
   const refetchersRef = useRef<(() => Promise<void>)[]>([])
@@ -195,6 +210,7 @@ export function RoomDataProvider({
     polls.refetch,
     pollOptions.refetch,
     pollVotes.refetch,
+    attendance.refetch,
     feeds.refetch,
     activities.refetch,
     members.refetch,
@@ -222,6 +238,7 @@ export function RoomDataProvider({
       roomId,
       canEdit,
       isOwner,
+      archived,
       notes,
       strokes,
       images,
@@ -237,6 +254,7 @@ export function RoomDataProvider({
       polls,
       pollOptions,
       pollVotes,
+      attendance,
       feeds,
       activities,
       members,
@@ -249,6 +267,7 @@ export function RoomDataProvider({
       roomId,
       canEdit,
       isOwner,
+      archived,
       notes,
       strokes,
       images,
@@ -264,6 +283,7 @@ export function RoomDataProvider({
       polls,
       pollOptions,
       pollVotes,
+      attendance,
       feeds,
       activities,
       members,

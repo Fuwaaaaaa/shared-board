@@ -6,6 +6,8 @@ import { useRoomData } from '../../lib/roomData'
 import { expandOccurrences } from '../../lib/recurrence'
 import { colorForUser } from '../../hooks/usePresence'
 import { EVENT_KIND_LABELS } from '../../lib/types'
+import { myAttendance, yesCountByOccurrence, yesCountOf } from '../../lib/attendance'
+import { useIdentity } from '../../lib/identity'
 import type { TabKey } from '../../components/RoomHeader'
 
 interface Props {
@@ -20,8 +22,12 @@ interface Props {
  * 誰が何をしたかの記録は更新タブにあるので、こちらでは繰り返さない。
  */
 export default function DashboardTab({ onJump }: Props) {
-  const { todos, events, overrides, members } = useRoomData()
+  const { todos, events, overrides, members, attendance } = useRoomData()
+  const { userId } = useIdentity()
   const now = useNow()
+
+  // 一覧の行ごとに数え直さないよう、○ の数は 1 回だけ表にする
+  const yesCounts = useMemo(() => yesCountByOccurrence(attendance.rows), [attendance.rows])
 
   const upcoming = useMemo(
     () =>
@@ -160,6 +166,22 @@ export default function DashboardTab({ onJump }: Props) {
                           <span className="ml-0.5 text-slate-400">〆</span>
                         )}
                       </span>
+                      {/*
+                        出欠は集まる予定にだけ。バッジは 1 つまでにして、
+                        「まだ答えていない」ときだけ促す
+                      */}
+                      {occurrence.view.kind === 'event' &&
+                        (myAttendance(attendance.rows, occurrence, userId) === null ? (
+                          <span className="shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700">
+                            未回答
+                          </span>
+                        ) : (
+                          yesCountOf(yesCounts, occurrence) > 0 && (
+                            <span className="shrink-0 text-xs text-slate-400">
+                              ○ {yesCountOf(yesCounts, occurrence)}
+                            </span>
+                          )
+                        ))}
                     </button>
                   </li>
                 ))}

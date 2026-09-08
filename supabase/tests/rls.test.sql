@@ -19,7 +19,7 @@ begin;
 
 create extension if not exists pgtap;
 
-select plan(252);
+select plan(275);
 
 
 -- =============================================================================
@@ -2082,7 +2082,185 @@ select is(
 
 
 -- =============================================================================
---  39. 棚卸し — 権限の「形」を固定する
+--  39. 予定の出欠
+--
+--      出欠は「ボードの編集」ではないので、閲覧のみの人も答えられる。
+--      一方で、終了したボードでは誰も答えられないし、取り下げもできない。
+--      その 2 つを取り違えていないかを見る。
+--
+--      最後の 3 つ（回の並びが動いたときの掃除）が、この機能でいちばん壊れやすい。
+--      画面側の occurrenceGridMoved（src/lib/attendance.ts）と同じ条件でなければ
+--      「確認が出ないのに消える」「出るのに消えない」になる。
+-- =============================================================================
+
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき（オーナー）
+
+-- 出欠を付ける先の予定。繰り返しにしておく
+select lives_ok(
+  $$insert into public.events (id, room_id, title, start_at, recurrence, author_id, author_name)
+     values ('88880000-0000-0000-0000-000000000050',
+             'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '練習',
+             '2026-09-01T10:00:00Z', 'weekly',
+             '11111111-1111-1111-1111-111111111111', 'ゆうき')$$,
+  '出欠を試すための繰り返し予定を作る');
+
+-- けいこを一時的に「閲覧のみ」に落として、書けない人でも答えられることを見る
+select is(
+  tests_rowcount($$update public.room_members set can_edit = false
+                    where room_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+                      and user_id = '22222222-2222-2222-2222-222222222222'$$),
+  1, 'けいこを閲覧のみにする');
+
+select tests_act_as('22222222-2222-2222-2222-222222222222');   -- けいこ（いま閲覧のみ）
+
+select is(
+  tests_rowcount($$insert into public.notes (room_id, text, author_id, author_name)
+                   values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '書けるはずがない',
+                           '22222222-2222-2222-2222-222222222222', 'けいこ')$$),
+  -1, '閲覧のみの人は付箋を書けない（前提の確認）');
+
+select is(
+  tests_rowcount($$insert into public.event_attendance
+                     (id, room_id, event_id, occurrence_date, user_id)
+                   values ('88880000-0000-0000-0000-000000000051',
+                           'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                           '88880000-0000-0000-0000-000000000050', '2026-09-01',
+                           '22222222-2222-2222-2222-222222222222')$$),
+  1, '閲覧のみの人でも出欠には答えられる');
+
+select is(
+  (select voter_name from public.event_attendance
+    where id = '88880000-0000-0000-0000-000000000051'),
+  'けいこ',
+  '出欠の名前は本人の表示名に直される');
+
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき
+
+select is(
+  tests_rowcount($$update public.room_members set can_edit = true
+                    where room_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+                      and user_id = '22222222-2222-2222-2222-222222222222'$$),
+  1, 'けいこを編集できる人に戻す');
+
+select tests_act_as('22222222-2222-2222-2222-222222222222');   -- けいこ
+
+select is(
+  tests_rowcount($$insert into public.event_attendance
+                     (room_id, event_id, occurrence_date, user_id)
+                   values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                           '88880000-0000-0000-0000-000000000050', '2026-09-08',
+                           '11111111-1111-1111-1111-111111111111')$$),
+  -1, '他人になりかわって出欠は入れられない');
+
+select is(
+  tests_rowcount($$update public.event_attendance
+                      set occurrence_date = '2026-09-08'
+                    where id = '88880000-0000-0000-0000-000000000051'$$),
+  -1, '出欠が指す回（occurrence_date）は、あとから動かせない');
+
+select is(
+  tests_rowcount($$update public.event_attendance
+                      set user_id = '11111111-1111-1111-1111-111111111111'
+                    where id = '88880000-0000-0000-0000-000000000051'$$),
+  -1, '出欠の user_id は動かせない');
+
+select throws_ok(
+  $$insert into public.event_attendance (room_id, event_id, occurrence_date, user_id)
+     values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+             '88880000-0000-0000-0000-000000000050', '2026-09-01',
+             '22222222-2222-2222-2222-222222222222')$$,
+  '23505',
+  null,
+  '同じ回に、同じ人が 2 回は答えられない');
+
+select tests_act_as('33333333-3333-3333-3333-333333333333');   -- みなみ（このボードの名簿から外れている）
+
+select is(
+  tests_rowcount($$insert into public.event_attendance
+                     (room_id, event_id, occurrence_date, user_id)
+                   values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                           '88880000-0000-0000-0000-000000000050', '2026-09-01',
+                           '33333333-3333-3333-3333-333333333333')$$),
+  -1, '取り消された人は出欠に答えられない');
+
+-- ---- 回の並びが動いたときの掃除 -------------------------------------------
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき
+
+select is(
+  tests_rowcount($$update public.events set start_at = '2026-09-01T12:00:00Z'
+                    where id = '88880000-0000-0000-0000-000000000050'$$),
+  1, '時刻だけを変える');
+
+select is(
+  (select count(*)::int from public.event_attendance
+    where event_id = '88880000-0000-0000-0000-000000000050'),
+  1, '時刻だけの変更では、出欠は落ちない');
+
+select is(
+  tests_rowcount($$update public.events set start_at = '2026-09-02T12:00:00Z'
+                    where id = '88880000-0000-0000-0000-000000000050'$$),
+  1, '開始日を変える');
+
+select is(
+  (select count(*)::int from public.event_attendance
+    where event_id = '88880000-0000-0000-0000-000000000050'),
+  0, '開始日を変えると、回に紐づく出欠が落ちる');
+
+-- 繰り返しなしの予定は、日付を動かしても回が 1 つのままなので落とさない
+select lives_ok(
+  $$insert into public.events (id, room_id, title, start_at, recurrence, author_id, author_name)
+     values ('88880000-0000-0000-0000-000000000052',
+             'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '打ち上げ',
+             '2026-10-01T10:00:00Z', 'none',
+             '11111111-1111-1111-1111-111111111111', 'ゆうき')$$,
+  '繰り返しなしの予定を作る');
+
+select is(
+  tests_rowcount($$insert into public.event_attendance
+                     (room_id, event_id, occurrence_date, user_id)
+                   values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                           '88880000-0000-0000-0000-000000000052', '2026-10-01',
+                           '11111111-1111-1111-1111-111111111111')$$),
+  1, '繰り返しなしの予定にも出欠を付けられる');
+
+select is(
+  tests_rowcount($$update public.events set start_at = '2026-10-20T10:00:00Z'
+                    where id = '88880000-0000-0000-0000-000000000052'$$),
+  1, '繰り返しなしの予定を別の日へ動かす');
+
+select is(
+  (select count(*)::int from public.event_attendance
+    where event_id = '88880000-0000-0000-0000-000000000052'),
+  1, '繰り返しなしの予定を動かしても、出欠は残る');
+
+-- ---- 終了したボード -------------------------------------------------------
+-- 32. でこのボードは終了していないので、ここで終了させて確かめてから戻す
+select is(
+  tests_rowcount($$update public.rooms set archived = true
+                    where id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'$$),
+  1, 'ボードを終了する');
+
+select is(
+  tests_rowcount($$insert into public.event_attendance
+                     (room_id, event_id, occurrence_date, user_id)
+                   values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                           '88880000-0000-0000-0000-000000000052', '2026-11-01',
+                           '11111111-1111-1111-1111-111111111111')$$),
+  -1, '終了したボードでは出欠に答えられない');
+
+select is(
+  tests_rowcount($$delete from public.event_attendance
+                    where event_id = '88880000-0000-0000-0000-000000000052'$$),
+  0, '終了したボードでは、自分の出欠も取り下げられない');
+
+select is(
+  tests_rowcount($$update public.rooms set archived = false
+                    where id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'$$),
+  1, 'ボードを再開する');
+
+
+-- =============================================================================
+--  40. 棚卸し — 権限の「形」を固定する
 --
 --      ここだけは中身ではなく形を見ている。ポリシーが増えた・減った、
 --      トリガーが片方の操作にしか付いていない、外から呼べる関数が増えた——を、
@@ -2130,6 +2308,10 @@ select set_eq(
   ('event_overrides', 'event_overrides_insert', 'INSERT'),
   ('event_overrides', 'event_overrides_select', 'SELECT'),
   ('event_overrides', 'event_overrides_update', 'UPDATE'),
+  ('event_attendance', 'event_attendance_delete', 'DELETE'),
+  ('event_attendance', 'event_attendance_insert', 'INSERT'),
+  ('event_attendance', 'event_attendance_select', 'SELECT'),
+  ('event_attendance', 'event_attendance_update', 'UPDATE'),
   ('events', 'events_delete', 'DELETE'),
   ('events', 'events_insert', 'INSERT'),
   ('events', 'events_select', 'SELECT'),
@@ -2227,11 +2409,17 @@ select set_eq(
   ('event_overrides', 'event_overrides_freeze', 'BEFORE', 'UPDATE'),
   ('event_overrides', 'event_overrides_limit_rows', 'BEFORE', 'INSERT'),
   ('event_overrides', 'event_overrides_limit_text', 'BEFORE', 'INSERT,UPDATE'),
+  ('event_attendance', 'event_attendance_force_name', 'BEFORE', 'INSERT,UPDATE'),
+  ('event_attendance', 'event_attendance_freeze', 'BEFORE', 'UPDATE'),
+  ('event_attendance', 'event_attendance_freeze_target', 'BEFORE', 'UPDATE'),
+  ('event_attendance', 'event_attendance_limit_rows', 'BEFORE', 'INSERT'),
+  ('event_attendance', 'event_attendance_limit_text', 'BEFORE', 'INSERT,UPDATE'),
   ('events', 'events_activity', 'AFTER', 'DELETE,INSERT,UPDATE'),
   ('events', 'events_force_name', 'BEFORE', 'INSERT,UPDATE'),
   ('events', 'events_freeze', 'BEFORE', 'UPDATE'),
   ('events', 'events_limit_rows', 'BEFORE', 'INSERT'),
   ('events', 'events_limit_text', 'BEFORE', 'INSERT,UPDATE'),
+  ('events', 'events_reset_occurrences', 'AFTER', 'UPDATE'),
   ('events', 'events_touch', 'BEFORE', 'UPDATE'),
   ('frames', 'frames_force_name', 'BEFORE', 'INSERT,UPDATE'),
   ('frames', 'frames_freeze', 'BEFORE', 'UPDATE'),
@@ -2343,6 +2531,7 @@ select set_eq(
   ('tg_log_activity'),
   ('tg_log_member_access'),
   ('tg_log_room_access'),
+  ('tg_reset_event_occurrences'),
   ('tg_throttle_client_errors'),
   ('tg_touch_event_updated_at'),
   ('tg_touch_note_updated_at')

@@ -240,6 +240,28 @@ create table if not exists public.poll_votes (
   unique (option_id, user_id)
 );
 
+-- 予定の出欠（○ / △ / ×）。
+--
+-- 形は poll_votes に寄せてある（同じ 3 択・同じ「名前は本人のものに直す」・同じ一意制約）。
+-- 違うのは「どの回に対する答えか」を occurrence_date で持つこと。
+-- 繰り返し予定は 1 予定につき 1 日 1 回しか出現しないので、event_overrides と同じく
+-- (event_id, occurrence_date) が回の一意キーになる（上の event_overrides のコメント参照）。
+--
+-- 繰り返しなしの予定は回が 1 つしかないので、読むときは occurrence_date を見ない
+-- （予定を別の日へ動かしても答えが付いてくる）。occurrence_date は
+-- event_attendance_freeze_target が UPDATE で動かせないようにしてある。
+create table if not exists public.event_attendance (
+  id              uuid primary key default gen_random_uuid(),
+  room_id         uuid not null references public.rooms(id) on delete cascade,
+  event_id        uuid not null references public.events(id) on delete cascade,
+  occurrence_date date not null,
+  user_id         uuid not null,
+  voter_name      text not null default '',
+  answer          text not null default 'yes' check (answer in ('yes', 'maybe', 'no')),
+  created_at      timestamptz not null default now(),
+  unique (event_id, occurrence_date, user_id)
+);
+
 -- 外部カレンダー（.ics 公開 URL）の購読設定
 create table if not exists public.calendar_feeds (
   id         uuid primary key default gen_random_uuid(),
@@ -393,6 +415,7 @@ create index if not exists attachments_room_idx on public.attachments (room_id);
 create index if not exists polls_room_idx       on public.polls (room_id, created_at desc);
 create index if not exists poll_options_idx     on public.poll_options (room_id, poll_id, sort);
 create index if not exists poll_votes_idx       on public.poll_votes (room_id, option_id);
+create index if not exists event_attendance_idx on public.event_attendance (room_id, event_id, occurrence_date);
 create index if not exists feeds_room_idx       on public.calendar_feeds (room_id);
 create index if not exists notifications_idx    on public.notifications (user_id, read, created_at desc);
 create index if not exists snapshots_room_idx   on public.snapshots (room_id, created_at desc);
@@ -703,6 +726,7 @@ declare
     'polls.title:200',             'polls.description:2000',
     'polls.author_name:30',
     'poll_votes.voter_name:30',
+    'event_attendance.voter_name:30',
     'note_votes.voter_name:30',
     'note_reactions.emoji:16',
     'calendar_feeds.name:100',     'calendar_feeds.url:2000',
@@ -812,6 +836,7 @@ begin
     ('poll_options',    'poll_id',      'poll_options_poll_id_fkey',     'poll_options_poll_room_fkey',     'polls'),
     ('poll_votes',      'poll_id',      'poll_votes_poll_id_fkey',       'poll_votes_poll_room_fkey',       'polls'),
     ('poll_votes',      'option_id',    'poll_votes_option_id_fkey',     'poll_votes_option_room_fkey',     'poll_options'),
+    ('event_attendance','event_id',     'event_attendance_event_id_fkey','event_attendance_event_room_fkey','events'),
     ('note_votes',      'note_id',      'note_votes_note_id_fkey',       'note_votes_note_room_fkey',       'notes'),
     ('note_reactions',  'note_id',      'note_reactions_note_id_fkey',   'note_reactions_note_room_fkey',   'notes'),
     ('connectors',      'from_note_id', 'connectors_from_note_id_fkey',  'connectors_from_note_room_fkey',  'notes'),
@@ -1173,7 +1198,8 @@ begin
       ('images',          'author'), ('attachments', 'author'),
       ('frames',          'author'), ('polls',       'author'),
       ('comments',        'author'), ('snapshots',   'author'),
-      ('note_votes',      'voter'),  ('poll_votes',  'voter')
+      ('note_votes',      'voter'),  ('poll_votes',  'voter'),
+      ('event_attendance','voter')
     ) as v(tbl, col)
   loop
     execute format('drop trigger if exists %I on public.%I', r.tbl || '_force_name', r.tbl);
@@ -1502,6 +1528,7 @@ begin
       -- user_id を持つテーブル
       ('room_members',    'user_id'),   ('note_votes',     'user_id'),
       ('note_reactions',  'user_id'),   ('poll_votes',     'user_id'),
+      ('event_attendance','user_id'),
       ('notifications',   'user_id'),
       -- 候補日は「どの投票のものか」を動かせない
       ('poll_options',    'poll_id')
@@ -1534,6 +1561,58 @@ drop trigger if exists attachments_freeze_path on public.attachments;
 create trigger attachments_freeze_path
   before update on public.attachments
   for each row execute function public.tg_freeze_columns('storage_path');
+
+-- 出欠が「どの予定のどの回」を指すかは、あとから動かせない。
+-- 動かせると、自分の × を別の回へ付け替えて集計をずらせる。
+drop trigger if exists event_attendance_freeze_target on public.event_attendance;
+create trigger event_attendance_freeze_target
+  before update on public.event_attendance
+  for each row execute function public.tg_freeze_columns('event_id', 'occurrence_date');
+
+-- ---- 繰り返しの並びが動いたら、回に紐づくものを落とす --------------------
+--
+-- 「この回だけ」の変更と出欠は occurrence_date（元の回の JST 開始日）で回を指す。
+-- 開始日・繰り返し方・繰り返しの終了日・第 n 週が変わったり、曜日が減ったりすると
+-- 回の並びごと動くので、その値はもう別の回を指してしまう。残すより落とすほうが安全
+-- （消えた日付に付いた ○ が、別の日の回として見えてしまう）。
+--
+-- 曜日を「足しただけ」なら落とさない。増やすのは加算的で、それまでに出ていた回は
+-- すべてそのまま残るため（画面側の occurrenceGridMoved も同じ条件で確認を出す。
+-- 片方だけ直すと「確認が出ないのに消える」「出るのに消えない」になる）。
+--
+-- これまで event_overrides の削除は画面側（CalendarTab）だけで行っていたが、
+-- REST を直接叩けば素通りできた。出欠は DELETE ポリシーが user_id = auth.uid() なので
+-- そもそも画面側からは他人の行を消せない。両方まとめてここへ移す。
+--
+-- 繰り返しなしのまま日付だけ動いたときは何もしない（回は 1 つのままで、
+-- 出欠は event_id で引くため付いてくる）。
+create or replace function public.tg_reset_event_occurrences()
+returns trigger language plpgsql security definer
+set search_path = '' as $$
+begin
+  if NEW.recurrence = 'none' and OLD.recurrence = 'none' then
+    return null;
+  end if;
+
+  if ((NEW.start_at at time zone 'Asia/Tokyo')::date, NEW.recurrence,
+      NEW.recurrence_until, NEW.recurrence_week)
+     is distinct from
+     ((OLD.start_at at time zone 'Asia/Tokyo')::date, OLD.recurrence,
+      OLD.recurrence_until, OLD.recurrence_week)
+     or not (OLD.recurrence_days <@ NEW.recurrence_days)
+  then
+    delete from public.event_attendance a where a.event_id = NEW.id;
+    delete from public.event_overrides  o where o.event_id = NEW.id;
+  end if;
+
+  return null;
+end;
+$$;
+
+drop trigger if exists events_reset_occurrences on public.events;
+create trigger events_reset_occurrences
+  after update on public.events
+  for each row execute function public.tg_reset_event_occurrences();
 
 drop trigger if exists notifications_freeze_body on public.notifications;
 create trigger notifications_freeze_body
@@ -1584,6 +1663,8 @@ begin
       ('frames',           300, 'フレーム'),
       ('polls',            100, '日程調整'),
       ('poll_options',    2000, '候補日'),
+      -- 毎日の繰り返し × 5 人 × 3 年でも 5,500 行ほど。想定する人数では届かないが、暴走は止まる
+      ('event_attendance', 10000, '出欠'),
       ('calendar_feeds',    20, '外部カレンダー'),
       -- payload は 1 件 3MB まで許している（大きなボードを丸ごと控えるため下げられない）。
       -- そのぶん件数を絞って、1 ボードあたりの最悪ケースを抑える。
@@ -1762,6 +1843,7 @@ alter table public.note_reactions enable row level security;
 alter table public.polls         enable row level security;
 alter table public.poll_options  enable row level security;
 alter table public.poll_votes    enable row level security;
+alter table public.event_attendance enable row level security;
 alter table public.calendar_feeds enable row level security;
 alter table public.notifications enable row level security;
 alter table public.snapshots     enable row level security;
@@ -1947,7 +2029,7 @@ create policy poll_options_write on public.poll_options for all to authenticated
 do $$
 declare t text;
 begin
-  foreach t in array array['poll_votes', 'note_reactions'] loop
+  foreach t in array array['poll_votes', 'note_reactions', 'event_attendance'] loop
     execute format('drop policy if exists %I on public.%I', t || '_select', t);
     execute format(
       'create policy %I on public.%I for select to authenticated using (public.can_access_room(room_id))',
@@ -2709,7 +2791,8 @@ begin
     'notes', 'strokes', 'events', 'event_overrides', 'todos', 'images', 'comments',
     'note_votes', 'activities', 'room_members',
     'connectors', 'frames', 'attachments', 'note_reactions',
-    'polls', 'poll_options', 'poll_votes', 'calendar_feeds', 'notifications'
+    'polls', 'poll_options', 'poll_votes', 'calendar_feeds', 'notifications',
+    'event_attendance'
   ] loop
     v_col := case when t = 'notifications' then 'user_id' else 'room_id' end;
     execute format('create unique index if not exists %I on public.%I (id, %I)',

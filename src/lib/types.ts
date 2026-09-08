@@ -390,6 +390,36 @@ export const POLL_ANSWER_LABELS: Record<PollAnswer, { label: string; mark: strin
   no: { label: '難しい', mark: '×' },
 }
 
+/** 予定の出欠。日程調整（PollAnswer）と同じ 3 択にそろえる */
+export type AttendanceAnswer = 'yes' | 'maybe' | 'no'
+
+/**
+ * 出欠の言い方。
+ *
+ * 日程調整（POLL_ANSWER_LABELS）とは○△×の見た目をそろえつつ、言葉は分ける。
+ * あちらは「候補日に出られるか」、こちらは「決まったその回に行くか」。
+ */
+export const ATTENDANCE_ANSWER_LABELS: Record<
+  AttendanceAnswer,
+  { label: string; mark: string }
+> = {
+  yes: { label: '行く', mark: '○' },
+  maybe: { label: 'たぶん', mark: '△' },
+  no: { label: '行けない', mark: '×' },
+}
+
+export interface EventAttendance {
+  id: string
+  room_id: string
+  event_id: string
+  /** 元の回の開始日（'yyyy-MM-dd'、JST）。event_overrides.occurrence_date と同じ意味 */
+  occurrence_date: string
+  user_id: string
+  voter_name: string
+  answer: AttendanceAnswer
+  created_at: string
+}
+
 export interface Poll {
   id: string
   room_id: string

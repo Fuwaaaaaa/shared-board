@@ -136,7 +136,12 @@ export default function RoomPage() {
   }
 
   return (
-    <RoomDataProvider roomId={preview.id} canEdit={preview.can_edit} isOwner={preview.is_owner}>
+    <RoomDataProvider
+      roomId={preview.id}
+      canEdit={preview.can_edit}
+      isOwner={preview.is_owner}
+      archived={preview.archived}
+    >
       <RoomShell preview={preview} onRefreshPreview={refresh} />
     </RoomDataProvider>
   )

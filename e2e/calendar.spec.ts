@@ -122,3 +122,29 @@ test('繰り返しに曜日を選ぶと、その曜日ぶんだけ並ぶ', async
     'false',
   )
 })
+
+test('繰り返し予定の出欠は、その回にだけ付く', async ({ page }) => {
+  await signIn(page, 'ひとり目')
+  await createBoard(page, stamp())
+  await openCalendar(page)
+
+  await addEvent(page, '合宿の下見', '毎週')
+
+  const all = page.getByTitle('合宿の下見', { exact: true })
+  await expect.poll(async () => await all.count(), { timeout: 20_000 }).toBeGreaterThanOrEqual(2)
+
+  // 2 回目に ○ を付ける
+  await all.nth(1).click()
+  await expect(page.getByText('の回を開いています')).toBeVisible()
+  // ボタンの文字は ○ なので、名前ではなく title で指す
+  await page.getByTitle('行く', { exact: true }).click()
+  await expect(page.getByText('○1 △0 ×0')).toBeVisible()
+  await page.keyboard.press('Escape')
+
+  // その回のチップにだけ ○1 が付く
+  await expect(page.getByTitle('1 人が行くと答えています')).toHaveCount(1)
+
+  // 1 回目は空のまま
+  await all.nth(0).click()
+  await expect(page.getByText('○0 △0 ×0')).toBeVisible()
+})

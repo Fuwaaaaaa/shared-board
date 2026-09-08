@@ -353,7 +353,7 @@
 │  ├─ purge-storage      Storage の実体削除（SQL からは消せないため）
 │  └─ _shared/           dates / recurrence / cronAuth（画面と共有）
 ├─ <b>tests/</b>
-│  └─ rls.test.sql       権限が効いているかの確認（pgTAP・252 件）
+│  └─ rls.test.sql       権限が効いているかの確認（pgTAP・275 件）
 └─ <b>stubs/</b>
    └─ _stub_storage.sql  使い捨ての DB で schema.sql を流すための足場
 
@@ -368,7 +368,7 @@
     <p>
       画面から切り離せる判断は <code>src/lib/</code> に集めてあります。
       ブラウザを立ち上げずに速く回せるので、ここが今もテストの主戦場です
-      （<b>23 本のテストで 454 件</b>）。DOM が要るものは <code>*.test.tsx</code> として
+      （<b>24 本のテストで 480 件</b>）。DOM が要るものは <code>*.test.tsx</code> として
       jsdom で書けますが、判断はできるだけこちらへ押し出してください。
     </p>
     <div class="table-scroll">
@@ -391,6 +391,7 @@
           <tr><td>boardExport.ts</td><td>PNG 書き出し（データから再描画）</td></tr>
           <tr><td>noteFont.ts</td><td>付箋の文字サイズ</td></tr>
           <tr><td>access.ts</td><td>入り方の判定と、合言葉の長さの決まり（サーバーと同じ数）</td></tr>
+          <tr><td>attendance.ts</td><td>予定の出欠と、回の並びが動いたかの判定（サーバーのトリガーと同じ条件）</td></tr>
           <tr><td>roomChannel.ts</td><td>設定が変わったことを、開いている人に知らせる合図（中身は載せない）</td></tr>
           <tr><td>errorMessage.ts</td><td>例外を人に見せる 1 行にする</td></tr>
         </tbody>
