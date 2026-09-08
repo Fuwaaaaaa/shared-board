@@ -5,13 +5,17 @@ import { useIdentity } from '../lib/identity'
 import { useRoomData } from '../lib/roomData'
 import {
   boardDateTimeText,
+  formatWeekdays,
   looksMojibake,
   parseCsvObjects,
   parseFlexibleDate,
+  parseWeekOrdinal,
+  parseWeekdays,
   toCsv,
 } from '../lib/csv'
 import { buildIcs, downloadText } from '../lib/ics'
-import type { CalendarEvent, Todo } from '../lib/types'
+import { normalizeRule } from '../lib/recurrence'
+import { MONTH_WEEK_LABELS, type CalendarEvent, type Todo } from '../lib/types'
 import { messageOf } from '../lib/errorMessage'
 
 const EVENT_HEADERS = [
@@ -21,12 +25,25 @@ const EVENT_HEADERS = [
   '終了',
   '終日',
   '繰り返し',
+  '繰り返しの曜日',
+  '繰り返しの週',
   '繰り返しの終了日',
   '通知(分前)',
   'タグ',
   'メモ',
 ]
-const TODO_HEADERS = ['タイトル', '期限', '状態', '担当', '通知(分前)', '繰り返し', 'タグ', 'メモ']
+const TODO_HEADERS = [
+  'タイトル',
+  '期限',
+  '状態',
+  '担当',
+  '通知(分前)',
+  '繰り返し',
+  '繰り返しの曜日',
+  '繰り返しの週',
+  'タグ',
+  'メモ',
+]
 
 /**
  * 取り込む CSV の上限。
@@ -73,6 +90,10 @@ export default function ImportExportModal({ boardName, onClose }: Props) {
         event.end_at ? boardDateTimeText(event.end_at) : '',
         event.all_day ? 'はい' : 'いいえ',
         event.recurrence,
+        formatWeekdays(event.recurrence_days ?? []),
+        event.recurrence_week === null || event.recurrence_week === undefined
+          ? ''
+          : (MONTH_WEEK_LABELS[String(event.recurrence_week)] ?? ''),
         event.recurrence_until ?? '',
         event.remind_minutes ?? '',
         (event.tags ?? []).join(' '),
@@ -92,6 +113,10 @@ export default function ImportExportModal({ boardName, onClose }: Props) {
         todo.assignee_name,
         todo.remind_minutes ?? '',
         todo.recurrence,
+        formatWeekdays(todo.recurrence_days ?? []),
+        todo.recurrence_week === null || todo.recurrence_week === undefined
+          ? ''
+          : (MONTH_WEEK_LABELS[String(todo.recurrence_week)] ?? ''),
         (todo.tags ?? []).join(' '),
         todo.notes,
       ])
@@ -155,7 +180,7 @@ export default function ImportExportModal({ boardName, onClose }: Props) {
           end_at: end ? end.toISOString() : null,
           all_day: /はい|true|1/i.test(item['終日'] ?? ''),
           color: 'blue',
-          recurrence: normalizeRecurrence(item['繰り返し']),
+          ...csvRule(item),
           recurrence_until: (item['繰り返しの終了日'] ?? '').trim() || null,
           remind_minutes: Number.isFinite(remind) && item['通知(分前)'] ? remind : null,
           tags: splitTags(item['タグ']),
@@ -241,7 +266,7 @@ export default function ImportExportModal({ boardName, onClose }: Props) {
           assignee_id: null,
           assignee_name: item['担当'] ?? '',
           remind_minutes: Number.isFinite(remind) && item['通知(分前)'] ? remind : null,
-          recurrence: normalizeRecurrence(item['繰り返し']),
+          ...csvRule(item),
           subtasks: [],
           tags: splitTags(item['タグ']),
           status: /完了|done/i.test(state) ? 'done' : /進行/i.test(state) ? 'doing' : 'todo',
@@ -387,4 +412,21 @@ function normalizeRecurrence(value: string | undefined) {
   if (['monthly', '毎月'].includes(v)) return 'monthly' as const
   if (['yearly', '毎年'].includes(v)) return 'yearly' as const
   return 'none' as const
+}
+
+/**
+ * CSV の 1 行から繰り返しの 3 列を作る。
+ * 規則に合わない組み合わせ（毎日なのに曜日つき、など）は normalizeRule が落とす。
+ */
+function csvRule(item: Record<string, string>) {
+  const rule = normalizeRule({
+    recurrence: normalizeRecurrence(item['繰り返し']),
+    days: parseWeekdays(item['繰り返しの曜日']),
+    week: parseWeekOrdinal(item['繰り返しの週']),
+  })
+  return {
+    recurrence: rule.recurrence,
+    recurrence_days: rule.days,
+    recurrence_week: rule.week,
+  }
 }

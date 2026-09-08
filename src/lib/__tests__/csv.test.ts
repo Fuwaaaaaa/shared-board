@@ -1,9 +1,12 @@
 import { afterEach, describe, it, expect, vi } from 'vitest'
 import {
   boardDateTimeText,
+  formatWeekdays,
   looksMojibake,
   parseCsv,
   parseCsvObjects,
+  parseWeekOrdinal,
+  parseWeekdays,
   parseFlexibleDate,
   toCsv,
 } from '../csv'
@@ -167,5 +170,60 @@ describe('絵文字（サロゲートペア）', () => {
     expect(rows[0]['タイトル']).toBe(title)
     // カンマを含む絵文字混じりの値も、引用のはがし方を間違えない
     expect(rows[0]['メモ']).toBe('🍻, 乾杯')
+  })
+})
+
+describe('繰り返しの曜日を CSV に載せる', () => {
+  /*
+   * 載せないと、書き出して取り込み直しただけで「毎週 火・木」が
+   * 「毎週（開始日の曜日）」に化ける。予定が黙って変わるのがいちばん困る。
+   */
+  it('曜日の並びを書き出す', () => {
+    expect(formatWeekdays([2, 4])).toBe('火・木')
+    expect(formatWeekdays([0, 6])).toBe('日・土')
+    expect(formatWeekdays([])).toBe('')
+  })
+
+  it('曜日の並びを読む（中黒・読点・カンマ・空白）', () => {
+    expect(parseWeekdays('火・木')).toEqual([2, 4])
+    expect(parseWeekdays('火,木')).toEqual([2, 4])
+    expect(parseWeekdays('火、木')).toEqual([2, 4])
+    expect(parseWeekdays('火 木')).toEqual([2, 4])
+  })
+
+  it('「火曜」「火曜日」や英語表記も読む', () => {
+    expect(parseWeekdays('火曜・木曜日')).toEqual([2, 4])
+    expect(parseWeekdays('TU,TH')).toEqual([2, 4])
+    expect(parseWeekdays('tu th')).toEqual([2, 4])
+  })
+
+  it('読めない語は落とす', () => {
+    expect(parseWeekdays('火・ほげ・木')).toEqual([2, 4])
+    expect(parseWeekdays('')).toEqual([])
+    expect(parseWeekdays(undefined)).toEqual([])
+  })
+
+  it('書き出して読み戻すと元に戻る', () => {
+    for (const days of [[2, 4], [0], [1, 2, 3, 4, 5], []]) {
+      expect(parseWeekdays(formatWeekdays(days))).toEqual(days)
+    }
+  })
+
+  it('第 n 週を読む', () => {
+    expect(parseWeekOrdinal('第2')).toBe(2)
+    expect(parseWeekOrdinal('2')).toBe(2)
+    expect(parseWeekOrdinal('第5')).toBe(5)
+    expect(parseWeekOrdinal('最終')).toBe(-1)
+    expect(parseWeekOrdinal('last')).toBe(-1)
+    expect(parseWeekOrdinal('-1')).toBe(-1)
+  })
+
+  it('範囲の外と読めない値は null', () => {
+    expect(parseWeekOrdinal('第0')).toBeNull()
+    expect(parseWeekOrdinal('第6')).toBeNull()
+    expect(parseWeekOrdinal('-2')).toBeNull()
+    expect(parseWeekOrdinal('ほげ')).toBeNull()
+    expect(parseWeekOrdinal('')).toBeNull()
+    expect(parseWeekOrdinal(undefined)).toBeNull()
   })
 })

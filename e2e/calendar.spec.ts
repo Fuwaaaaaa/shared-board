@@ -84,3 +84,41 @@ test('繰り返し予定を「この回だけ」削除しても、ほかの回�
 
   await expect(all).toHaveCount(before - 1)
 })
+
+test('繰り返しに曜日を選ぶと、その曜日ぶんだけ並ぶ', async ({ page }) => {
+  await signIn(page, 'ひとり目')
+  await createBoard(page, stamp())
+  await openCalendar(page)
+
+  await page.getByRole('button', { name: '予定を追加' }).click()
+  await page.getByPlaceholder('予定のタイトル').fill('練習')
+  await page.getByRole('combobox').first().selectOption({ label: '毎週' })
+  await page.getByRole('button', { name: '火', exact: true }).click()
+  await page.getByRole('button', { name: '木', exact: true }).click()
+  await page.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(page.getByPlaceholder('予定のタイトル')).toHaveCount(0)
+
+  // 1 週に 2 回出るので、月表示では 4 件以上並ぶ
+  const all = page.getByTitle('練習', { exact: true })
+  await expect.poll(async () => await all.count(), { timeout: 20_000 }).toBeGreaterThanOrEqual(4)
+
+  /*
+   * 開き直して、選んだ曜日が保存されていることを見る。
+   * 画面から DB まで新しい 2 列（recurrence_days / recurrence_week）が
+   * 通っていることを、ここで一度だけ確かめる。
+   */
+  await all.first().click()
+  await page.getByRole('radio', { name: 'すべての回を変更' }).click()
+  await expect(page.getByRole('button', { name: '火', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  )
+  await expect(page.getByRole('button', { name: '木', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  )
+  await expect(page.getByRole('button', { name: '水', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'false',
+  )
+})

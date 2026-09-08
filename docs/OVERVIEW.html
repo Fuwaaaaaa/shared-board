@@ -352,7 +352,7 @@
 │  ├─ purge-storage      Storage の実体削除（SQL からは消せないため）
 │  └─ _shared/           dates / recurrence / cronAuth（画面と共有）
 ├─ <b>tests/</b>
-│  └─ rls.test.sql       権限が効いているかの確認（pgTAP・232 件）
+│  └─ rls.test.sql       権限が効いているかの確認（pgTAP・242 件）
 └─ <b>stubs/</b>
    └─ _stub_storage.sql  使い捨ての DB で schema.sql を流すための足場
 
@@ -367,7 +367,7 @@
     <p>
       画面から切り離せる判断は <code>src/lib/</code> に集めてあります。
       ブラウザを立ち上げずに速く回せるので、ここが今もテストの主戦場です
-      （<b>23 本のテストで 375 件</b>）。DOM が要るものは <code>*.test.tsx</code> として
+      （<b>23 本のテストで 454 件</b>）。DOM が要るものは <code>*.test.tsx</code> として
       jsdom で書けますが、判断はできるだけこちらへ押し出してください。
     </p>
     <div class="table-scroll">
@@ -375,9 +375,9 @@
         <thead><tr><th>ファイル</th><th>役割</th></tr></thead>
         <tbody>
           <tr><td>dates.ts</td><td>ボードの暦。Asia/Tokyo 固定</td></tr>
-          <tr><td>recurrence.ts</td><td>繰り返し予定の展開</td></tr>
+          <tr><td>recurrence.ts</td><td>繰り返し予定の展開と、曜日指定（毎週 火・木 / 毎月 第 2 火曜）の規則</td></tr>
           <tr><td>holidays.ts</td><td>日本の祝日（1980〜2099 年、外部通信なし）</td></tr>
-          <tr><td>ics.ts / icsParse.ts</td><td>.ics の書き出しと読み取り</td></tr>
+          <tr><td>ics.ts / icsParse.ts</td><td>.ics の書き出しと読み取り。書き出しの本体は <code>_shared/ics.ts</code> にあり、ここは再エクスポートとダウンロード</td></tr>
           <tr><td>tz.ts</td><td>外部カレンダーの TZID を読むためのゾーン換算（ここだけ Intl に頼る）</td></tr>
           <tr><td>icsRecurrence.ts</td><td>外部カレンダーの繰り返し。予定自身のゾーンで数え、無い日は飛ばす</td></tr>
           <tr><td>csv.ts</td><td>CSV の読み書き（BOM・CSV インジェクション対策つき）</td></tr>
@@ -434,7 +434,10 @@
       <li>
         <b>繰り返しの例外は別テーブル。</b> <code>event_overrides</code> が
         「この回だけ変更・削除」を持ちます。.ics では <code>RECURRENCE-ID</code> /
-        <code>EXDATE</code> に対応します。
+        <code>EXDATE</code> に対応します。回の同定キーは
+        <code>occurrence_date</code>（元の回の JST 開始日）で、これは
+        「1 予定につき 1 日 1 回しか出現しない」ことが前提です。曜日指定を足しても
+        その前提は変わりません（毎週×曜日は各曜日が週 1 回、毎月 第 n 曜日は月 1 回）。
       </li>
     </ul>
 
@@ -519,7 +522,7 @@
     <ul>
       <li><b>月 / 週 / 日 / 一覧</b>を切り替え。週表示と日表示には時間軸があります</li>
       <li><b>ドラッグで移動</b>。週表示では端をつまんで長さを変えられます</li>
-      <li><b>繰り返し</b>は 毎日 / 毎週 / 毎月 / 毎年。終了日も指定できます</li>
+      <li><b>繰り返し</b>は 毎日 / 毎週 / 毎月 / 毎年。毎週は曜日を複数選べ、毎月は「第 2 火曜」のような曜日指定もできます。終了日も指定できます</li>
       <li>定例を <b>「この回だけ」</b> 動かす・休むことができます（変えた回には ✏️ が付きます）</li>
       <li>日本の祝日は内部で計算します（外部通信なし）</li>
     </ul>
@@ -723,6 +726,13 @@
         変えるときは両方そろえてください。
       </li>
       <li>
+        <b>繰り返しの規則も 2 か所にあります。</b>
+        <code>supabase/functions/_shared/recurrence.ts</code> の
+        <code>normalizeRule</code> と、<code>supabase/schema.sql</code> の
+        <code>events_recurrence_days_check</code>。合言葉の長さと同じ理由で、
+        画面側にも同じ決まりを持たせています。変えるときは両方そろえてください。
+      </li>
+      <li>
         <b>ドラッグの確定は、コンポーネントのテストで守っています。</b>
         「確定前に元の値へ戻す」を忘れると画面上は正常に見え、
         <kbd>Ctrl</kbd>+<kbd>Z</kbd> が黙って効かなくなるだけなので、
@@ -739,9 +749,11 @@
             <td>外部カレンダーの <code>RRULE</code></td>
             <td>
               <code>FREQ</code> / <code>INTERVAL</code> / <code>COUNT</code> / <code>UNTIL</code> /
-              <code>RDATE</code> / <code>EXDATE</code> だけを見ています。
-              <code>BYDAY</code> などは無視するので、「毎月第 2 火曜」は
-              <code>DTSTART</code> の日付での単純な毎月になります
+              <code>RDATE</code> / <code>EXDATE</code> に加えて、
+              <code>BYDAY</code>（<code>2TU</code> のような序数つきを含む）・
+              <code>BYSETPOS</code>・<code>WKST</code> まで読みます。
+              <code>BYMONTHDAY</code> / <code>BYMONTH</code> / <code>BYWEEKNO</code> /
+              <code>BYHOUR</code> はまだ読みません
             </td>
           </tr>
           <tr>

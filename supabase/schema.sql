@@ -93,6 +93,8 @@ create table if not exists public.events (
 -- occurrence_date は「元の回」の開始日で、その回を別の日へ動かしてもこの値は変わらない。
 -- 対応している繰り返しは 毎日 / 毎週 / 毎月 / 毎年 なので、1 予定につき 1 日 1 回しか
 -- 出現しない。だから (event_id, occurrence_date) が回の一意キーとして成立する。
+-- 曜日指定（recurrence_days / recurrence_week）を足してもこの前提は変わらない。
+-- 「毎週 火・木」は各曜日が週に 1 回、「毎月 第 2 火曜」は月に 1 回しか出ない。
 create table if not exists public.event_overrides (
   id              uuid primary key default gen_random_uuid(),
   room_id         uuid not null references public.rooms(id) on delete cascade,
@@ -426,6 +428,55 @@ alter table public.todos
   check (recurrence in ('none', 'daily', 'weekly', 'monthly', 'yearly'));
 alter table public.todos
   add column if not exists subtasks jsonb not null default '[]'::jsonb;
+
+-- 繰り返しの曜日指定。
+--
+--   recurrence_days  毎週: 出す曜日（0=日 … 6=土）。空なら開始日の曜日だけ（従来どおり）
+--                    毎月: 「第 n 曜日」のときの曜日を 1 つだけ持つ
+--   recurrence_week  毎月: 第 n 週（1〜5、-1 は最終週）。null なら開始日と同じ日付で繰り返す
+--
+-- どちらも既定値が「これまでと同じ意味」になるようにしてある。この列より前からある
+-- 予定は展開結果が 1 日も変わらないので、event_overrides の対応づけ（occurrence_date）
+-- も崩れない。移行の話はこれで全部で、既存の行に書き足すものはない。
+--
+-- 第 n 曜日の曜日を start_at から導かずに持つのは、開始日を編集したときに
+-- 「第 2 火曜」が黙って「第 2 水曜」に化けないようにするため。
+-- 書き出す RRULE（BYDAY=2TU）も、この曜日をそのまま使う。
+--
+-- 同じ曜日を 2 回入れることは CHECK では弾けない（副問い合わせが書けない）。
+-- 画面側の normalizeRule が並べ替えと重複除去をし、展開側も同じ回を 2 度は出さない。
+alter table public.events add column if not exists recurrence_days smallint[] not null default '{}';
+alter table public.events add column if not exists recurrence_week smallint;
+alter table public.todos  add column if not exists recurrence_days smallint[] not null default '{}';
+alter table public.todos  add column if not exists recurrence_week smallint;
+
+alter table public.events drop constraint if exists events_recurrence_days_check;
+alter table public.events add constraint events_recurrence_days_check check (
+  cardinality(recurrence_days) <= 7
+  and recurrence_days <@ array[0, 1, 2, 3, 4, 5, 6]::smallint[]
+  and (recurrence in ('weekly', 'monthly') or cardinality(recurrence_days) = 0)
+  and (recurrence_week is null or cardinality(recurrence_days) = 1)
+) not valid;
+
+alter table public.events drop constraint if exists events_recurrence_week_check;
+alter table public.events add constraint events_recurrence_week_check check (
+  recurrence_week is null
+  or (recurrence = 'monthly' and recurrence_week between -1 and 5 and recurrence_week <> 0)
+) not valid;
+
+alter table public.todos drop constraint if exists todos_recurrence_days_check;
+alter table public.todos add constraint todos_recurrence_days_check check (
+  cardinality(recurrence_days) <= 7
+  and recurrence_days <@ array[0, 1, 2, 3, 4, 5, 6]::smallint[]
+  and (recurrence in ('weekly', 'monthly') or cardinality(recurrence_days) = 0)
+  and (recurrence_week is null or cardinality(recurrence_days) = 1)
+) not valid;
+
+alter table public.todos drop constraint if exists todos_recurrence_week_check;
+alter table public.todos add constraint todos_recurrence_week_check check (
+  recurrence_week is null
+  or (recurrence = 'monthly' and recurrence_week between -1 and 5 and recurrence_week <> 0)
+) not valid;
 
 -- 参加者ごとの編集権限。false なら「閲覧・コメント・投票だけ」できる。
 alter table public.room_members add column if not exists can_edit boolean not null default true;

@@ -25,14 +25,20 @@ import NotificationBanner from '../../components/NotificationBanner'
 import TagInput, { TagFilterBar } from '../../components/TagInput'
 import {
   expandOccurrences,
+  firstMatchingStart,
   groupOccurrencesByDay,
+  normalizeRule,
   occurrenceKey,
+  recurrenceLabel,
+  ruleOf,
+  type RecurrenceRule,
 } from '../../lib/recurrence'
 import { getHolidayName } from '../../lib/holidays'
 import {
   allDayEndIso,
   allDayStartIso,
   boardDateTimeIso,
+  localDateOf,
   occurrenceKeyDate,
   toBoardDate,
 } from '../../lib/dates'
@@ -53,8 +59,10 @@ import { HOUR_HEIGHT, dragDeltaMs } from '../../lib/calendarGrid'
 import {
   EVENT_COLORS,
   EVENT_KIND_LABELS,
+  MONTH_WEEK_OPTIONS,
   RECURRENCE_LABELS,
   REMIND_OPTIONS,
+  WEEKDAY_LABELS,
   type CalendarEvent,
   type EventKind,
   type EventOccurrence,
@@ -66,7 +74,8 @@ import {
 /** 繰り返し予定の編集・削除を「その回だけ」に効かせるか、「すべての回」に効かせるか */
 type EditScope = 'occurrence' | 'all'
 
-const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土']
+// 曜日の名前は types.ts に 1 か所だけ置く（繰り返しの曜日選びと同じものを使う）
+const WEEKDAYS = WEEKDAY_LABELS
 const WEEK_START_KEY = 'board.weekStart'
 
 type View = 'month' | 'week' | 'day' | 'list'
@@ -288,16 +297,40 @@ export default function CalendarTab({
       return
     }
 
+    /*
+     * 規則に合わない組み合わせ（毎日なのに曜日つき、など）は落としてから保存する。
+     * DB にも同じ CHECK があるので、ここは押してから断られるのを避けるためのもの。
+     * 決まりを変えるときは supabase/schema.sql も一緒に変えること。
+     */
+    const rule = normalizeRule({
+      recurrence: draft.recurrence,
+      days: draft.recurrenceDays,
+      week: draft.recurrenceWeek,
+    })
+
+    /*
+     * 曜日を選んだときは、規則に合う最初の日へ開始を寄せる（RFC 5545）。
+     * 寄せないと、金曜の予定に「毎週 火」を選んだとき、取り込み先で
+     * 金曜の回が 1 つだけ余分に出る。
+     * 終了は同じぶんだけ動かして、予定の長さを保つ。
+     */
+    const snappedStart = firstMatchingStart(start, rule)
+    const shiftMs = new Date(snappedStart).getTime() - new Date(start).getTime()
+    const snappedEnd =
+      end && shiftMs !== 0 ? new Date(new Date(end).getTime() + shiftMs).toISOString() : end
+
     const patch = {
       kind: draft.kind,
       title: draft.title,
       description: draft.description,
-      start_at: start,
-      end_at: end,
+      start_at: snappedStart,
+      end_at: snappedEnd,
       all_day: draft.allDay,
       color: draft.color,
-      recurrence: draft.recurrence,
-      recurrence_until: draft.recurrence === 'none' ? null : draft.recurrenceUntil || null,
+      recurrence: rule.recurrence,
+      recurrence_days: rule.days,
+      recurrence_week: rule.week,
+      recurrence_until: rule.recurrence === 'none' ? null : draft.recurrenceUntil || null,
       remind_minutes: draft.remind,
       tags: draft.tags,
     }
@@ -305,12 +338,23 @@ export default function CalendarTab({
     if (occurrence) {
       const existing = occurrence.event
 
-      // 開始日や繰り返し方を変えると回の並びがずれ、例外の対応づけが崩れる。
-      // 時刻だけの変更なら日付キーは動かないのでそのまま残す。
+      /*
+       * 開始日や繰り返し方を変えると回の並びがずれ、例外の対応づけが崩れる。
+       * 時刻だけの変更なら日付キーは動かないのでそのまま残す。
+       *
+       * 曜日は「減らした・入れ替えた」ときだけ崩れたとみなす。増やすのは
+       * 加算的で、それまでに出ていた回はすべてそのまま残るため、
+       * 火曜に木曜を足しただけで火曜の「この回だけ」を消すのは理不尽になる。
+       */
+      const before = ruleOf(existing)
+      const daysRemoved = before.days.some((d) => !rule.days.includes(d))
+
       const gridMoved =
-        draft.date !== toBoardDate(existing.start_at) ||
+        toBoardDate(patch.start_at) !== toBoardDate(existing.start_at) ||
         draft.recurrence !== existing.recurrence ||
-        (patch.recurrence_until ?? null) !== (existing.recurrence_until ?? null)
+        (patch.recurrence_until ?? null) !== (existing.recurrence_until ?? null) ||
+        rule.week !== before.week ||
+        daysRemoved
 
       const mine = overrides.rows.filter((o) => o.event_id === existing.id)
       if (gridMoved && mine.length > 0) {
@@ -925,7 +969,11 @@ function EventChip({
           <span className="mr-1 font-medium">{format(occurrence.start, 'HH:mm')}</span>
         )
       )}
-      {occurrence.event.recurrence !== 'none' && <span className="mr-0.5">🔁</span>}
+      {occurrence.event.recurrence !== 'none' && (
+        <span className="mr-0.5" title={recurrenceLabel(ruleOf(occurrence.event))}>
+          🔁
+        </span>
+      )}
       {occurrence.override && (
         <span title="この回だけ変更しています" className="mr-0.5">
           ✏️
@@ -1205,7 +1253,9 @@ function WeekView({
                       }}
                     >
                       <span className="font-medium">{format(start, 'HH:mm')}</span>{' '}
-                      {occurrence.event.recurrence !== 'none' && '🔁'}
+                      {occurrence.event.recurrence !== 'none' && (
+                        <span title={recurrenceLabel(ruleOf(occurrence.event))}>🔁</span>
+                      )}
                       {occurrence.override && (
                         <span title="この回だけ変更しています">✏️</span>
                       )}{' '}
@@ -1307,7 +1357,11 @@ function ListView({
                     }`}
               </span>
               <span className="min-w-0 flex-1 truncate text-sm text-slate-800">
-                {occurrence.event.recurrence !== 'none' && <span className="mr-1">🔁</span>}
+                {occurrence.event.recurrence !== 'none' && (
+                  <span className="mr-1" title={recurrenceLabel(ruleOf(occurrence.event))}>
+                    🔁
+                  </span>
+                )}
                 {occurrence.override && (
                   <span title="この回だけ変更しています" className="mr-1">
                     ✏️
@@ -1349,6 +1403,10 @@ interface EventDraft {
   allDay: boolean
   color: string
   recurrence: Recurrence
+  /** 毎週に出す曜日（0=日 … 6=土）。空なら開始日の曜日だけ */
+  recurrenceDays: number[]
+  /** 毎月の第 n 週（1〜5、-1 は最終）。null なら開始日と同じ日付 */
+  recurrenceWeek: number | null
   recurrenceUntil: string
   remind: number | null
   tags: string[]
@@ -1394,10 +1452,150 @@ function buildDraft(
     color: source?.color ?? 'blue',
     // 繰り返しの設定はシリーズの属性なので、常に元の予定から取る
     recurrence: occurrence?.event.recurrence ?? 'none',
+    recurrenceDays: occurrence?.event.recurrence_days ?? [],
+    recurrenceWeek: occurrence?.event.recurrence_week ?? null,
     recurrenceUntil: occurrence?.event.recurrence_until ?? '',
     remind: source ? source.remind_minutes : null,
     tags: source?.tags ?? [],
   }
+}
+
+/**
+ * 繰り返しの曜日を選ぶところ。
+ *
+ * 毎週は曜日を複数（空なら「開始日と同じ曜日」＝これまでの動き）。
+ * 毎月は「日付で」と「曜日で」を選び、曜日でなら第 n 週を選ぶ。曜日そのものは
+ * 開始日から決まるので読むだけにする（選ばせると開始日と食い違う）。
+ */
+function RecurrenceFields({
+  draft,
+  update,
+}: {
+  draft: EventDraft
+  update: (patch: Partial<EventDraft>) => void
+}) {
+  if (draft.recurrence !== 'weekly' && draft.recurrence !== 'monthly') return null
+
+  const startWeekday = localDateOf(draft.date).getDay()
+
+  if (draft.recurrence === 'weekly') {
+    const toggle = (day: number) => {
+      const next = draft.recurrenceDays.includes(day)
+        ? draft.recurrenceDays.filter((d) => d !== day)
+        : [...draft.recurrenceDays, day].sort((a, b) => a - b)
+      update({ recurrenceDays: next })
+    }
+
+    return (
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm text-slate-500">曜日</span>
+        <div className="flex gap-1">
+          {WEEKDAY_LABELS.map((label, day) => {
+            const on = draft.recurrenceDays.includes(day)
+            return (
+              <button
+                key={label}
+                type="button"
+                aria-pressed={on}
+                onClick={() => toggle(day)}
+                className={`h-8 w-8 rounded-lg border text-sm transition ${
+                  on
+                    ? 'border-slate-900 bg-slate-900 text-white'
+                    : 'border-slate-300 text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                {label}
+              </button>
+            )
+          })}
+        </div>
+        {draft.recurrenceDays.length === 0 && (
+          <span className="text-xs text-slate-400">
+            選ばなければ、開始日と同じ {WEEKDAY_LABELS[startWeekday]}曜だけに出ます
+          </span>
+        )}
+      </div>
+    )
+  }
+
+  const byWeekday = draft.recurrenceWeek !== null
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-sm text-slate-500">毎月</span>
+      <div className="flex gap-1">
+        <button
+          type="button"
+          aria-pressed={!byWeekday}
+          onClick={() => update({ recurrenceWeek: null, recurrenceDays: [] })}
+          className={`rounded-lg border px-3 py-1.5 text-sm transition ${
+            !byWeekday
+              ? 'border-slate-900 bg-slate-900 text-white'
+              : 'border-slate-300 text-slate-600 hover:bg-slate-50'
+          }`}
+        >
+          日付で
+        </button>
+        <button
+          type="button"
+          aria-pressed={byWeekday}
+          onClick={() => update({ recurrenceWeek: 1, recurrenceDays: [startWeekday] })}
+          className={`rounded-lg border px-3 py-1.5 text-sm transition ${
+            byWeekday
+              ? 'border-slate-900 bg-slate-900 text-white'
+              : 'border-slate-300 text-slate-600 hover:bg-slate-50'
+          }`}
+        >
+          曜日で
+        </button>
+      </div>
+
+      {byWeekday ? (
+        <>
+          <select
+            value={String(draft.recurrenceWeek)}
+            onChange={(e) => update({ recurrenceWeek: Number(e.target.value) })}
+            aria-label="第何週か"
+            className="rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-800"
+          >
+            {MONTH_WEEK_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <span className="text-sm text-slate-600">{WEEKDAY_LABELS[startWeekday]}曜</span>
+          <span className="text-xs text-slate-400">
+            その曜日が無い月は飛ばします
+          </span>
+        </>
+      ) : (
+        <span className="text-xs text-slate-400">
+          毎月 {localDateOf(draft.date).getDate()} 日（無い月は月末に寄せます）
+        </span>
+      )}
+    </div>
+  )
+}
+
+/**
+ * 開始日が規則に合わないときに、寄せ先を先に見せる。
+ *
+ * 保存すると黙って動くので、押す前に分かるようにしておく
+ * （金曜の予定に「毎週 火」を選ぶと、開始は次の火曜になる）。
+ */
+function SnappedStartHint({ draft, rule }: { draft: EventDraft; rule: RecurrenceRule }) {
+  const start = draft.allDay
+    ? allDayStartIso(draft.date)
+    : boardDateTimeIso(draft.date, draft.time)
+  const snapped = firstMatchingStart(start, rule)
+  if (toBoardDate(snapped) === toBoardDate(start)) return null
+
+  return (
+    <p className="text-xs text-slate-500">
+      最初は {format(parseISO(snapped), 'yyyy年M月d日(E)', { locale: ja })} からになります
+    </p>
+  )
 }
 
 function EventModal({
@@ -1469,9 +1667,22 @@ function EventModal({
       const next = { ...current, ...patch }
       if (next.endDate < next.date) next.endDate = next.date
       if (patch.allDay === false && current.remind === null && !event) next.remind = 0
+
+      // 「毎月 第 n 曜日」の曜日は開始日から決まる。日付を変えたら付いてこないと、
+      // 画面に出ている「第2火曜」と保存される曜日がずれる
+      if (patch.date && next.recurrenceWeek !== null) {
+        next.recurrenceDays = [localDateOf(next.date).getDay()]
+      }
       return next
     })
   }
+
+  /** いま画面が表している繰り返しの規則。保存時と同じ正規化を通す */
+  const draftRule = normalizeRule({
+    recurrence: draft.recurrence,
+    days: draft.recurrenceDays,
+    week: draft.recurrenceWeek,
+  })
 
   /**
    * 「この回だけ」では予定 / 締切を切り替えられない。
@@ -1730,43 +1941,47 @@ function EventModal({
 
         {isRecurring && scope === 'occurrence' ? (
           <p className="text-xs text-slate-400">
-            🔁 {RECURRENCE_LABELS[draft.recurrence]} の予定です。
+            🔁 {recurrenceLabel(draftRule)} の予定です。
             繰り返しの設定はすべての回に共通なので、「すべての回を変更」から変えてください。
           </p>
         ) : (
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-sm text-slate-500">繰り返し</span>
-          <select
-            value={draft.recurrence}
-            onChange={(e) => update({ recurrence: e.target.value as Recurrence })}
-            className="rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-800 disabled:bg-slate-50"
-          >
-            {Object.entries(RECURRENCE_LABELS).map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
-          </select>
-          {draft.recurrence !== 'none' && (
-            <>
-              <span className="text-sm text-slate-500">終了</span>
-              <input
-                type="date"
-                value={draft.recurrenceUntil}
-                onChange={(e) => update({ recurrenceUntil: e.target.value })}
-                className="rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-800 disabled:bg-slate-50"
-              />
-              {draft.recurrenceUntil && (
-                <button
-                  type="button"
-                  onClick={() => update({ recurrenceUntil: '' })}
-                  className="text-sm text-slate-400 transition hover:text-slate-700"
-                >
-                  無期限
-                </button>
-              )}
-            </>
-          )}
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm text-slate-500">繰り返し</span>
+            <select
+              value={draft.recurrence}
+              onChange={(e) => update({ recurrence: e.target.value as Recurrence })}
+              className="rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-800 disabled:bg-slate-50"
+            >
+              {Object.entries(RECURRENCE_LABELS).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+            {draft.recurrence !== 'none' && (
+              <>
+                <span className="text-sm text-slate-500">終了</span>
+                <input
+                  type="date"
+                  value={draft.recurrenceUntil}
+                  onChange={(e) => update({ recurrenceUntil: e.target.value })}
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-800 disabled:bg-slate-50"
+                />
+                {draft.recurrenceUntil && (
+                  <button
+                    type="button"
+                    onClick={() => update({ recurrenceUntil: '' })}
+                    className="text-sm text-slate-400 transition hover:text-slate-700"
+                  >
+                    無期限
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+          <RecurrenceFields draft={draft} update={update} />
+          <SnappedStartHint draft={draft} rule={draftRule} />
         </div>
         )}
 

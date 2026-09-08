@@ -21,6 +21,14 @@ export type Recurrence = 'none' | 'daily' | 'weekly' | 'monthly' | 'yearly'
 /** 暴走防止。表示範囲に入る回の上限（範囲の手前は数えない） */
 export const MAX_OCCURRENCES_IN_RANGE = 400
 
+/*
+ * 区切り（週・月）を進める回数の上限。
+ *
+ * 曜日指定では「1 区切りが 1 回も生まない」ことがある（第 5 火曜の無い月）。
+ * 出た回だけを数えていると、そういう月が続いたときに回り続けてしまう。
+ */
+export const MAX_STEPS_IN_RANGE = 500
+
 /**
  * 基準日から数えて n 回目（0 が基準日そのもの）の開始時刻。
  *
@@ -79,6 +87,167 @@ export function firstIndexAtOrAfter(base: Date, rec: Recurrence, from: Date, int
 }
 
 // ----------------------------------------------------------------------------
+//  曜日指定（毎週 火・木 / 毎月 第 2 火曜）
+
+/**
+ * 繰り返しの規則。
+ *
+ * days は 0=日 … 6=土。毎週なら「出す曜日」、毎月の第 n 曜日なら曜日を 1 つだけ持つ。
+ * week は毎月の第 n 週（1〜5、-1 は最終）。null なら開始日と同じ日付で繰り返す。
+ *
+ * 既定（days が空・week が null）は曜日指定なしで、従来の nthOccurrence と同じ動きになる。
+ */
+export interface RecurrenceRule {
+  recurrence: Recurrence
+  days: number[]
+  week: number | null
+}
+
+/** DB の行やフロントの下書きから規則を取り出すための、緩い形 */
+export interface RecurrenceFields {
+  recurrence: Recurrence
+  recurrence_days?: number[] | null
+  recurrence_week?: number | null
+}
+
+/**
+ * 行から規則を取り出す。
+ * 列が無い（この機能より前からある）行でも、従来どおりの意味になる。
+ */
+export function ruleOf(row: RecurrenceFields): RecurrenceRule {
+  return normalizeRule({
+    recurrence: row.recurrence,
+    days: row.recurrence_days ?? [],
+    week: row.recurrence_week ?? null,
+  })
+}
+
+/**
+ * 保存前・使用前の正規化。並べ替え・重複除去と、規則に合わない値の切り落とし。
+ *
+ * DB の CHECK（supabase/schema.sql の events_recurrence_days_check）と同じ決まりを持つ。
+ * 押してから断られるのを避けるためで、合言葉の最短の長さと同じ理由。
+ * ここを変えるときは schema.sql も一緒に変えること。
+ */
+export function normalizeRule(rule: RecurrenceRule): RecurrenceRule {
+  const rec = rule.recurrence
+
+  // 曜日を持てるのは 毎週 と 毎月 だけ
+  if (rec !== 'weekly' && rec !== 'monthly') {
+    return { recurrence: rec, days: [], week: null }
+  }
+
+  const days = [...new Set(rule.days)]
+    .filter((d) => Number.isInteger(d) && d >= 0 && d <= 6)
+    .sort((a, b) => a - b)
+
+  if (rec === 'weekly') return { recurrence: rec, days, week: null }
+
+  // 毎月の第 n 曜日は、曜日をちょうど 1 つと第 n 週の両方が要る
+  const week = rule.week
+  const usable = week !== null && week !== 0 && week >= -1 && week <= 5 && days.length > 0
+  if (!usable) return { recurrence: rec, days: [], week: null }
+  return { recurrence: rec, days: [days[0]], week }
+}
+
+/** 曜日指定があるか。無ければ従来の経路をそのまま通す */
+export function hasByDay(rule: RecurrenceRule): boolean {
+  if (rule.recurrence === 'weekly') return rule.days.length > 0
+  if (rule.recurrence === 'monthly') return rule.week !== null && rule.days.length > 0
+  return false
+}
+
+/** JST での曜日（0=日 … 6=土） */
+function boardWeekday(y: number, m: number, d: number): number {
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay()
+}
+
+/**
+ * n 番目の区切りの「先頭」。毎週ならその週の日曜、毎月ならその月の 1 日。
+ *
+ * 区切りが生むどの回よりも早い日なので、打ち切りの判定に使える
+ * （先頭が範囲より後なら、その区切りの回はすべて範囲より後）。
+ * 曜日指定が無いときは区切りが 1 回しか生まないので、その回そのもの。
+ */
+function stepAnchor(base: Date, rule: RecurrenceRule, n: number): Date {
+  if (!hasByDay(rule)) return nthOccurrence(base, rule.recurrence, n)
+
+  const p = toBoardParts(base)
+  if (rule.recurrence === 'weekly') {
+    const weekday = boardWeekday(p.y, p.m, p.d)
+    return fromBoardParts({ ...p, d: p.d - weekday + n * 7, hh: 0, mm: 0, ss: 0, ms: 0 })
+  }
+  // 毎月
+  const total = p.m - 1 + n
+  const y = p.y + Math.floor(total / 12)
+  const m = (((total % 12) + 12) % 12) + 1
+  return fromBoardParts({ y, m, d: 1, hh: 0, mm: 0, ss: 0, ms: 0 })
+}
+
+/**
+ * n 番目の区切りが生む回（昇順）。時刻は base の JST 壁時計をそのまま使う。
+ *
+ * 週の先頭は日曜に固定する。閲覧者ごとの「週の始まり」設定に合わせると、
+ * 同じ予定が人によって違う日に出てしまい、Edge Function 側では決めようがない。
+ * 実際には interval が常に 1 なので、週の起点は結果に影響しない。
+ *
+ * base より前の回は出さない（RFC 5545 の「DTSTART が下限」と同じ）。
+ */
+export function stepDates(base: Date, rule: RecurrenceRule, n: number): Date[] {
+  const keep = (dates: Date[]) => dates.filter((d) => d >= base)
+
+  if (!hasByDay(rule)) {
+    if (rule.recurrence === 'none') return n === 0 ? [new Date(base.getTime())] : []
+    return keep([nthOccurrence(base, rule.recurrence, n)])
+  }
+
+  const p = toBoardParts(base)
+
+  if (rule.recurrence === 'weekly') {
+    const weekday = boardWeekday(p.y, p.m, p.d)
+    const sunday = p.d - weekday + n * 7
+    return keep(rule.days.map((dow) => fromBoardParts({ ...p, d: sunday + dow })))
+  }
+
+  // 毎月の第 n 曜日
+  const total = p.m - 1 + n
+  const y = p.y + Math.floor(total / 12)
+  const m = (((total % 12) + 12) % 12) + 1
+  const dow = rule.days[0]
+  const week = rule.week as number
+
+  let day: number
+  if (week === -1) {
+    const last = daysInMonth(y, m)
+    day = last - ((boardWeekday(y, m, last) - dow + 7) % 7)
+  } else {
+    day = 1 + ((dow - boardWeekday(y, m, 1) + 7) % 7) + (week - 1) * 7
+    // 「第 5 火曜」が無い月は、丸めずに飛ばす（.ics の FREQ=MONTHLY と同じ読み方）
+    if (day > daysInMonth(y, m)) return []
+  }
+  return keep([fromBoardParts({ ...p, y, m, d: day })])
+}
+
+/**
+ * 規則に合う最初の開始。
+ *
+ * RFC 5545 は DTSTART が規則を満たすことを求めていて、満たさないときの
+ * 扱いは取り込み先ごとに違う。金曜の予定に「毎週 火」を選んだら開始を
+ * 次の火曜へ寄せておかないと、Google などで金曜の回が 1 つだけ余分に出る。
+ */
+export function firstMatchingStart(startIso: string, rule: RecurrenceRule): string {
+  const normalized = normalizeRule(rule)
+  if (!hasByDay(normalized)) return startIso
+
+  const base = new Date(startIso)
+  for (let i = 0; i < MAX_STEPS_IN_RANGE; i++) {
+    const dates = stepDates(base, normalized, i)
+    if (dates.length > 0) return dates[0].toISOString()
+  }
+  return startIso
+}
+
+// ----------------------------------------------------------------------------
 //  例外（この回だけ）を重ねた展開
 
 /** 展開に必要な予定の列。フロントの CalendarEvent も DB の行もこれを満たす */
@@ -91,6 +260,10 @@ export interface EventLike {
   all_day: boolean
   color: string
   recurrence: Recurrence
+  /** 曜日指定（0=日 … 6=土）。空なら開始日の曜日だけ */
+  recurrence_days: number[]
+  /** 毎月の第 n 週（1〜5、-1 は最終）。null なら開始日と同じ日付 */
+  recurrence_week: number | null
   recurrence_until: string | null
   remind_minutes: number | null
   tags: string[]
@@ -235,26 +408,45 @@ export function expandOccurrences<E extends EventLike, O extends OverrideLike>(
       continue
     }
 
+    const rule = ruleOf(event)
     const limit = untilLimit(event.recurrence_until)
     // 範囲の手前で始まって範囲にかかる回（複数日の予定）も拾えるよう、長さのぶんだけ前から見る
-    const first = firstIndexAtOrAfter(
-      baseStart,
-      event.recurrence,
-      new Date(rangeStart.getTime() - durationMs),
-    )
+    const from = new Date(rangeStart.getTime() - durationMs)
+    const at = firstIndexAtOrAfter(baseStart, event.recurrence, from)
+
+    /*
+     * 曜日指定のときは 1 区切り手前から見る。
+     *
+     * firstIndexAtOrAfter が数えているのは「開始日と同じ曜日 / 同じ日付」の回で、
+     * 実際に出る回はそれより前に来ることがある。毎週なら同じ週の先行する曜日、
+     * 毎月の第 n 曜日なら同じ日付の回から最大 4 週ぶん離れる。
+     * 1 区切り戻せばどちらも覆え、余分は下の範囲判定が落とす。
+     */
+    const first = hasByDay(rule) ? Math.max(0, at - 1) : at
 
     let emittedCount = 0
-    for (let i = first; emittedCount < MAX_OCCURRENCES_IN_RANGE; i++) {
-      const cursor = nthOccurrence(baseStart, event.recurrence, i)
-      if (cursor > rangeEnd) break
-      if (limit && cursor >= limit) break
-      emittedCount++
+    for (
+      let i = first, steps = 0;
+      emittedCount < MAX_OCCURRENCES_IN_RANGE && steps < MAX_STEPS_IN_RANGE;
+      i++, steps++
+    ) {
+      // 区切りの先頭で打ち切る。1 回も生まない区切り（第 5 火曜の無い月）が
+      // 続いても、ここで必ず前に進む
+      const anchor = stepAnchor(baseStart, rule, i)
+      if (anchor > rangeEnd) break
+      if (limit && anchor >= limit) break
 
-      const override = overrideMap.get(overrideKeyOf(event.id, cursor)) ?? null
-      if (override?.canceled) continue
+      for (const cursor of stepDates(baseStart, rule, i)) {
+        if (cursor > rangeEnd) continue
+        if (limit && cursor >= limit) continue
+        emittedCount++
 
-      const end = durationMs > 0 ? new Date(cursor.getTime() + durationMs) : null
-      push(makeOccurrence(event, cursor, end, override))
+        const override = overrideMap.get(overrideKeyOf(event.id, cursor)) ?? null
+        if (override?.canceled) continue
+
+        const end = durationMs > 0 ? new Date(cursor.getTime() + durationMs) : null
+        push(makeOccurrence(event, cursor, end, override))
+      }
     }
   }
 
@@ -283,11 +475,30 @@ export function expandOccurrences<E extends EventLike, O extends OverrideLike>(
  * 繰り返し TODO を完了したときの、次回の期限。
  * 期限を過ぎたまま放置されていても、now より後の回を直接求める。
  */
-export function nextDueDate(dueAt: string, rec: Recurrence, now: Date = new Date()): string | null {
-  if (rec === 'none') return null
+export function nextDueDate(
+  dueAt: string,
+  rec: Recurrence | RecurrenceRule,
+  now: Date = new Date(),
+): string | null {
+  const rule = typeof rec === 'string' ? ruleOf({ recurrence: rec }) : normalizeRule(rec)
+  if (rule.recurrence === 'none') return null
 
   const base = new Date(dueAt)
-  // 「now より後」= 「now + 1ms 以上」。少なくとも 1 回は進める
-  const n = Math.max(1, firstIndexAtOrAfter(base, rec, new Date(now.getTime() + 1)))
-  return nthOccurrence(base, rec, n).toISOString()
+  // 「now より後」= 「now + 1ms 以上」
+  const after = new Date(now.getTime() + 1)
+
+  if (!hasByDay(rule)) {
+    // 少なくとも 1 回は進める（期限より前に完了しても、次回分は先へ動く）
+    const n = Math.max(1, firstIndexAtOrAfter(base, rule.recurrence, after))
+    return nthOccurrence(base, rule.recurrence, n).toISOString()
+  }
+
+  const first = Math.max(0, firstIndexAtOrAfter(base, rule.recurrence, after) - 1)
+  for (let i = first, steps = 0; steps < MAX_STEPS_IN_RANGE; i++, steps++) {
+    for (const date of stepDates(base, rule, i)) {
+      // now より後、かつ いまの期限より後。曜日指定なしの Math.max(1, …) と同じ意味
+      if (date >= after && date.getTime() > base.getTime()) return date.toISOString()
+    }
+  }
+  return null
 }

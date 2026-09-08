@@ -19,7 +19,7 @@ begin;
 
 create extension if not exists pgtap;
 
-select plan(232);
+select plan(242);
 
 
 -- =============================================================================
@@ -1928,7 +1928,96 @@ select is(
 
 
 -- =============================================================================
---  37. 棚卸し — 権限の「形」を固定する
+--  37. 繰り返しの曜日指定は、DB でも形が決まっている
+--
+--      画面側（_shared/recurrence.ts の normalizeRule）と同じ決まりを、
+--      DB の CHECK にも持たせてある。片方だけ直したときに気づけるよう、
+--      ここで DB 側の判定そのものを見る。
+-- =============================================================================
+
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき（オーナー）
+
+-- 使い回す予定。id を固定しておく
+select lives_ok(
+  $$insert into public.events (id, room_id, title, start_at, recurrence, author_id, author_name)
+     values ('88880000-0000-0000-0000-000000000040',
+             'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '練習',
+             '2026-09-01T10:00:00Z', 'weekly',
+             '11111111-1111-1111-1111-111111111111', 'ゆうき')$$,
+  '曜日を指定しない毎週は、これまでどおり作れる');
+
+select throws_ok(
+  $$update public.events set recurrence_days = array[7]::smallint[]
+     where id = '88880000-0000-0000-0000-000000000040'$$,
+  '23514',
+  null,
+  '曜日は 0〜6 の外を受け付けない');
+
+select throws_ok(
+  $$update public.events set recurrence = 'daily', recurrence_days = array[2]::smallint[]
+     where id = '88880000-0000-0000-0000-000000000040'$$,
+  '23514',
+  null,
+  '毎日には曜日を付けられない');
+
+select throws_ok(
+  $$update public.events set recurrence_week = 2
+     where id = '88880000-0000-0000-0000-000000000040'$$,
+  '23514',
+  null,
+  '毎週には第 n 週を付けられない');
+
+select throws_ok(
+  $$update public.events
+       set recurrence = 'monthly', recurrence_days = array[2]::smallint[], recurrence_week = 0
+     where id = '88880000-0000-0000-0000-000000000040'$$,
+  '23514',
+  null,
+  '第 0 週は受け付けない');
+
+select throws_ok(
+  $$update public.events
+       set recurrence = 'monthly',
+           recurrence_days = array[2, 4]::smallint[],
+           recurrence_week = 2
+     where id = '88880000-0000-0000-0000-000000000040'$$,
+  '23514',
+  null,
+  '第 n 曜日に曜日を 2 つは持たせられない');
+
+select lives_ok(
+  $$update public.events set recurrence_days = array[2, 4]::smallint[]
+     where id = '88880000-0000-0000-0000-000000000040'$$,
+  '毎週 火・木は保存できる');
+
+select lives_ok(
+  $$update public.events
+       set recurrence = 'monthly',
+           recurrence_days = array[2]::smallint[],
+           recurrence_week = -1
+     where id = '88880000-0000-0000-0000-000000000040'$$,
+  '毎月 最終火曜も保存できる');
+
+-- やること側も同じ形で守られている
+select throws_ok(
+  $$insert into public.todos (room_id, title, recurrence, recurrence_days, author_id, author_name)
+     values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '掃除', 'yearly',
+             array[2]::smallint[],
+             '11111111-1111-1111-1111-111111111111', 'ゆうき')$$,
+  '23514',
+  null,
+  'やることも、毎年には曜日を付けられない');
+
+select lives_ok(
+  $$insert into public.todos (room_id, title, recurrence, recurrence_days, author_id, author_name)
+     values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '掃除', 'weekly',
+             array[2, 4]::smallint[],
+             '11111111-1111-1111-1111-111111111111', 'ゆうき')$$,
+  'やることも、毎週 火・木は保存できる');
+
+
+-- =============================================================================
+--  38. 棚卸し — 権限の「形」を固定する
 --
 --      ここだけは中身ではなく形を見ている。ポリシーが増えた・減った、
 --      トリガーが片方の操作にしか付いていない、外から呼べる関数が増えた——を、

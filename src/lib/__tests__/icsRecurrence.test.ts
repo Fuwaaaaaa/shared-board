@@ -5,6 +5,7 @@ import {
   expandRecurrence,
   fromWall,
   occurrenceAt,
+  occurrencesAt,
   toWall,
   type RecurrenceSpec,
   type Zone,
@@ -24,6 +25,10 @@ function spec(
   return {
     zone: UTC_ZONE,
     interval: 1,
+    byDay: [],
+    bySetPos: [],
+    // RFC 5545 の既定は月曜
+    wkst: 1,
     count: null,
     until: null,
     untilInclusive: false,
@@ -243,6 +248,254 @@ describe('expandRecurrence', () => {
       '2026-11-01T14:00:00.000Z',
       '2026-11-02T14:00:00.000Z',
       '2026-11-03T14:00:00.000Z',
+    ])
+  })
+})
+
+describe('occurrencesAt（BYDAY）', () => {
+  /** 展開結果を 'yyyy-MM-dd' の並びに（UTC で読む） */
+  const utcDays = (dates: Date[]) => dates.map((d) => d.toISOString().slice(0, 10))
+
+  const base = { y: 2026, m: 9, d: 1, hh: 10, mm: 0, ss: 0 }
+
+  it('毎週 + BYDAY は、その週の選ばれた曜日ぶんに増える', () => {
+    // 2026-09-01 は火曜。週の起点は既定の月曜（8/31〜9/6）
+    const dates = occurrencesAt(UTC_ZONE, base, {
+      freq: 'weekly',
+      interval: 1,
+      byDay: [
+        { weekday: 2, nth: null },
+        { weekday: 4, nth: null },
+      ],
+      bySetPos: [],
+      wkst: 1,
+    }, 0)
+    expect(utcDays(dates)).toEqual(['2026-09-01', '2026-09-03'])
+  })
+
+  it('週の起点が変わると、同じ週に入る日が変わる', () => {
+    // 日曜起点なら 8/30〜9/5。月曜起点でも同じ週に火・木が入るので、
+    // 差が出るのは日曜を選んだとき
+    const sunday = [{ weekday: 0, nth: null }]
+    const mondayStart = occurrencesAt(UTC_ZONE, base, {
+      freq: 'weekly',
+      interval: 1,
+      byDay: sunday,
+      bySetPos: [],
+      wkst: 1,
+    }, 0)
+    const sundayStart = occurrencesAt(UTC_ZONE, base, {
+      freq: 'weekly',
+      interval: 1,
+      byDay: sunday,
+      bySetPos: [],
+      wkst: 0,
+    }, 0)
+    expect(utcDays(mondayStart)).toEqual(['2026-09-06'])
+    expect(utcDays(sundayStart)).toEqual(['2026-08-30'])
+  })
+
+  it('毎日 + BYDAY は絞り込み（その曜日でなければ生まれない）', () => {
+    const spec = {
+      freq: 'daily' as const,
+      interval: 1,
+      byDay: [{ weekday: 2, nth: null }],
+      bySetPos: [],
+      wkst: 1,
+    }
+    // 9/1 は火曜、9/2 は水曜
+    expect(utcDays(occurrencesAt(UTC_ZONE, base, spec, 0))).toEqual(['2026-09-01'])
+    expect(occurrencesAt(UTC_ZONE, base, spec, 1)).toEqual([])
+  })
+
+  it('毎月 + 序数つき BYDAY は、その位置の曜日 1 日', () => {
+    const spec = {
+      freq: 'monthly' as const,
+      interval: 1,
+      byDay: [{ weekday: 2, nth: 2 }],
+      bySetPos: [],
+      wkst: 1,
+    }
+    expect(utcDays(occurrencesAt(UTC_ZONE, base, spec, 0))).toEqual(['2026-09-08'])
+    expect(utcDays(occurrencesAt(UTC_ZONE, base, spec, 1))).toEqual(['2026-10-13'])
+  })
+
+  it('毎月 + 序数なし BYDAY は、その月の該当する曜日すべて', () => {
+    const dates = occurrencesAt(UTC_ZONE, base, {
+      freq: 'monthly',
+      interval: 1,
+      byDay: [{ weekday: 2, nth: null }],
+      bySetPos: [],
+      wkst: 1,
+    }, 0)
+    expect(utcDays(dates)).toEqual([
+      '2026-09-01',
+      '2026-09-08',
+      '2026-09-15',
+      '2026-09-22',
+      '2026-09-29',
+    ])
+  })
+
+  it('BYSETPOS で位置を選べる（-1 は最後）', () => {
+    const spec = (bySetPos: number[]) => ({
+      freq: 'monthly' as const,
+      interval: 1,
+      byDay: [{ weekday: 2, nth: null }],
+      bySetPos,
+      wkst: 1,
+    })
+    expect(utcDays(occurrencesAt(UTC_ZONE, base, spec([2]), 0))).toEqual(['2026-09-08'])
+    expect(utcDays(occurrencesAt(UTC_ZONE, base, spec([-1]), 0))).toEqual(['2026-09-29'])
+  })
+
+  it('第 5 火曜が無い月は空（丸めない）', () => {
+    const spec = {
+      freq: 'monthly' as const,
+      interval: 1,
+      byDay: [{ weekday: 2, nth: 5 }],
+      bySetPos: [],
+      wkst: 1,
+    }
+    // 9 月には第 5 火曜（9/29）がある。10 月・11 月には無い
+    expect(utcDays(occurrencesAt(UTC_ZONE, base, spec, 0))).toEqual(['2026-09-29'])
+    expect(occurrencesAt(UTC_ZONE, base, spec, 1)).toEqual([])
+    expect(occurrencesAt(UTC_ZONE, base, spec, 2)).toEqual([])
+  })
+
+  it('BYDAY が無ければ、これまでどおり 1 件', () => {
+    const dates = occurrencesAt(UTC_ZONE, base, {
+      freq: 'monthly',
+      interval: 1,
+      byDay: [],
+      bySetPos: [],
+      wkst: 1,
+    }, 1)
+    expect(utcDays(dates)).toEqual(['2026-10-01'])
+  })
+})
+
+describe('BYDAY つきの展開（相手の暦で数える）', () => {
+  it('夏時間をまたいでも、毎週 火・木の壁時計は動かない', () => {
+    // ニューヨークの夏時間は 2026-03-08 に始まる
+    const start = fromWall(NY, { y: 2026, m: 3, d: 3, hh: 9, mm: 0, ss: 0 })
+    const dates = expandRecurrence(
+      spec({
+        start,
+        zone: NY,
+        freq: 'weekly',
+        byDay: [
+          { weekday: 2, nth: null },
+          { weekday: 4, nth: null },
+        ],
+      }),
+      new Date('2026-03-01T00:00:00Z'),
+      new Date('2026-03-20T00:00:00Z'),
+      50,
+    )
+
+    const wall = dates.map((d) => {
+      const p = toWall(NY, d)
+      return `${p.y}-${String(p.m).padStart(2, '0')}-${String(p.d).padStart(2, '0')} ${String(p.hh).padStart(2, '0')}:${String(p.mm).padStart(2, '0')}`
+    })
+    expect(wall).toEqual([
+      '2026-03-03 09:00',
+      '2026-03-05 09:00',
+      '2026-03-10 09:00',
+      '2026-03-12 09:00',
+      '2026-03-17 09:00',
+      '2026-03-19 09:00',
+    ])
+  })
+
+  it('DTSTART より前の回は出さない', () => {
+    // 木曜始まりなら、同じ週の火曜は出ない
+    const start = new Date('2026-09-03T10:00:00Z')
+    const dates = expandRecurrence(
+      spec({
+        start,
+        freq: 'weekly',
+        byDay: [
+          { weekday: 2, nth: null },
+          { weekday: 4, nth: null },
+        ],
+      }),
+      new Date('2026-08-25T00:00:00Z'),
+      new Date('2026-09-12T00:00:00Z'),
+      50,
+    )
+    expect(iso(dates)).toEqual([
+      '2026-09-03T10:00:00.000Z',
+      '2026-09-08T10:00:00.000Z',
+      '2026-09-10T10:00:00.000Z',
+    ])
+  })
+
+  it('COUNT は実際に出た回を数える', () => {
+    const start = new Date('2026-09-01T10:00:00Z')
+    const dates = expandRecurrence(
+      spec({
+        start,
+        freq: 'weekly',
+        byDay: [
+          { weekday: 2, nth: null },
+          { weekday: 4, nth: null },
+        ],
+        count: 3,
+      }),
+      new Date('2026-09-01T00:00:00Z'),
+      new Date('2026-12-31T00:00:00Z'),
+      50,
+    )
+    expect(iso(dates)).toEqual([
+      '2026-09-01T10:00:00.000Z',
+      '2026-09-03T10:00:00.000Z',
+      '2026-09-08T10:00:00.000Z',
+    ])
+  })
+
+  it('毎月 第 2 火曜が、DTSTART の日付ではなく実際の第 2 火曜に出る', () => {
+    // これが「いまの既知の課題」に載っていた劣化そのもの
+    const start = new Date('2026-09-08T10:00:00Z')
+    const dates = expandRecurrence(
+      spec({
+        start,
+        freq: 'monthly',
+        byDay: [{ weekday: 2, nth: 2 }],
+      }),
+      new Date('2026-09-01T00:00:00Z'),
+      new Date('2026-12-31T00:00:00Z'),
+      50,
+    )
+    expect(iso(dates)).toEqual([
+      '2026-09-08T10:00:00.000Z',
+      '2026-10-13T10:00:00.000Z',
+      '2026-11-10T10:00:00.000Z',
+      '2026-12-08T10:00:00.000Z',
+    ])
+  })
+
+  it('UNTIL は BYDAY があっても効く', () => {
+    const start = new Date('2026-09-01T10:00:00Z')
+    const dates = expandRecurrence(
+      spec({
+        start,
+        freq: 'weekly',
+        byDay: [
+          { weekday: 2, nth: null },
+          { weekday: 4, nth: null },
+        ],
+        until: new Date('2026-09-08T10:00:00Z'),
+        untilInclusive: true,
+      }),
+      new Date('2026-09-01T00:00:00Z'),
+      new Date('2026-12-31T00:00:00Z'),
+      50,
+    )
+    expect(iso(dates)).toEqual([
+      '2026-09-01T10:00:00.000Z',
+      '2026-09-03T10:00:00.000Z',
+      '2026-09-08T10:00:00.000Z',
     ])
   })
 })

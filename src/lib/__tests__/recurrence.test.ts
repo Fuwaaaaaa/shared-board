@@ -1,12 +1,19 @@
+import { readFileSync } from 'node:fs'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   expandOccurrences,
   firstIndexAtOrAfter,
+  firstMatchingStart,
+  hasByDay,
   nextDueDate,
+  normalizeRule,
   nthOccurrence,
   occurrenceKey,
   originalStartFor,
   overrideKeyOf,
+  recurrenceLabel,
+  ruleOf,
+  stepDates,
 } from '../recurrence'
 import { nextDueDate as nextDueDateShared } from '../../../supabase/functions/_shared/recurrence.ts'
 import {
@@ -30,6 +37,8 @@ function makeEvent(patch: Partial<CalendarEvent> = {}): CalendarEvent {
     all_day: false,
     color: 'blue',
     recurrence: 'monthly',
+    recurrence_days: [],
+    recurrence_week: null,
     recurrence_until: null,
     remind_minutes: 15,
     tags: [],
@@ -347,5 +356,508 @@ describe('nextDueDate', () => {
     expect(parts[2]).toBeGreaterThanOrEqual(28)
     // JST の時刻は保たれる
     expect(jstTime(new Date(next))).toBe('10:00')
+  })
+})
+
+// ---------------------------------------------------------------------------
+//  繰り返しの曜日指定
+
+/** 展開結果を JST の 'yyyy-MM-dd' の並びに */
+function days(event: CalendarEvent, from: Date, to: Date, overrides: EventOverride[] = []) {
+  return expandOccurrences([event], from, to, overrides).map((o) => toBoardDate(o.start))
+}
+
+describe('normalizeRule', () => {
+  it('曜日を持てるのは 毎週 と 毎月 だけ', () => {
+    expect(normalizeRule({ recurrence: 'daily', days: [1, 3], week: 2 })).toEqual({
+      recurrence: 'daily',
+      days: [],
+      week: null,
+    })
+    expect(normalizeRule({ recurrence: 'yearly', days: [1], week: null })).toEqual({
+      recurrence: 'yearly',
+      days: [],
+      week: null,
+    })
+  })
+
+  it('並べ替えて重複を除く', () => {
+    expect(normalizeRule({ recurrence: 'weekly', days: [4, 2, 2, 0], week: null }).days).toEqual([
+      0, 2, 4,
+    ])
+  })
+
+  it('範囲の外の曜日は落とす', () => {
+    expect(normalizeRule({ recurrence: 'weekly', days: [-1, 7, 3, 1.5], week: null }).days).toEqual([
+      3,
+    ])
+  })
+
+  it('毎週は第 n 週を持たない', () => {
+    expect(normalizeRule({ recurrence: 'weekly', days: [2], week: 3 }).week).toBeNull()
+  })
+
+  it('毎月の第 n 曜日は、曜日をちょうど 1 つに絞る', () => {
+    expect(normalizeRule({ recurrence: 'monthly', days: [2, 4], week: 2 })).toEqual({
+      recurrence: 'monthly',
+      days: [2],
+      week: 2,
+    })
+  })
+
+  it('第 n 週だけ・曜日だけでは成立しないので、どちらも落とす', () => {
+    expect(normalizeRule({ recurrence: 'monthly', days: [], week: 2 })).toEqual({
+      recurrence: 'monthly',
+      days: [],
+      week: null,
+    })
+    // 毎月で曜日だけを選んでも「第何週か」が決まらない
+    expect(normalizeRule({ recurrence: 'monthly', days: [2], week: null })).toEqual({
+      recurrence: 'monthly',
+      days: [],
+      week: null,
+    })
+  })
+
+  it('第 0 週と範囲外の週は落とす（DB の CHECK と同じ）', () => {
+    expect(normalizeRule({ recurrence: 'monthly', days: [2], week: 0 }).week).toBeNull()
+    expect(normalizeRule({ recurrence: 'monthly', days: [2], week: 6 }).week).toBeNull()
+    expect(normalizeRule({ recurrence: 'monthly', days: [2], week: -2 }).week).toBeNull()
+    // 最終週は使える
+    expect(normalizeRule({ recurrence: 'monthly', days: [2], week: -1 }).week).toBe(-1)
+  })
+
+  it('ruleOf は、列が無い（古い）行でも従来の意味になる', () => {
+    expect(ruleOf({ recurrence: 'weekly' })).toEqual({
+      recurrence: 'weekly',
+      days: [],
+      week: null,
+    })
+    expect(hasByDay(ruleOf({ recurrence: 'weekly' }))).toBe(false)
+  })
+})
+
+describe('曜日を指定した毎週', () => {
+  // 2026-09-01 は火曜
+  const base = makeEvent({
+    start_at: boardDateTimeIso('2026-09-01', '19:00'),
+    end_at: null,
+    recurrence: 'weekly',
+    recurrence_days: [2, 4],
+  })
+
+  it('火・木の両方に出て、ほかの曜日には出ない', () => {
+    expect(
+      days(base, new Date('2026-09-01T00:00:00+09:00'), new Date('2026-09-20T23:59:59+09:00')),
+    ).toEqual([
+      '2026-09-01',
+      '2026-09-03',
+      '2026-09-08',
+      '2026-09-10',
+      '2026-09-15',
+      '2026-09-17',
+    ])
+  })
+
+  it('開始日より前の回は出さない（最初の週は切り落とす）', () => {
+    // 木曜 9/3 始まりなら、その週の火曜 9/1 は出ない
+    const thursday = makeEvent({
+      start_at: boardDateTimeIso('2026-09-03', '19:00'),
+      end_at: null,
+      recurrence: 'weekly',
+      recurrence_days: [2, 4],
+    })
+    const list = days(
+      thursday,
+      new Date('2026-08-25T00:00:00+09:00'),
+      new Date('2026-09-12T23:59:59+09:00'),
+    )
+    expect(list).toEqual(['2026-09-03', '2026-09-08', '2026-09-10'])
+  })
+
+  it('表示範囲が週の途中から始まっても、その週の回を落とさない', () => {
+    // 9/10（木）から見る。9/8（火）は範囲外、9/10 は範囲内
+    expect(
+      days(base, new Date('2026-09-10T00:00:00+09:00'), new Date('2026-09-11T23:59:59+09:00')),
+    ).toEqual(['2026-09-10'])
+  })
+
+  it('JST の時刻は保たれる', () => {
+    const [first] = expandOccurrences(
+      [base],
+      new Date('2026-09-01T00:00:00+09:00'),
+      new Date('2026-09-05T23:59:59+09:00'),
+      [],
+    )
+    expect(jstTime(first.start)).toBe('19:00')
+  })
+
+  it('終了日を過ぎた回は出ない', () => {
+    const until = makeEvent({
+      start_at: boardDateTimeIso('2026-09-01', '19:00'),
+      end_at: null,
+      recurrence: 'weekly',
+      recurrence_days: [2, 4],
+      recurrence_until: '2026-09-08',
+    })
+    expect(
+      days(until, new Date('2026-09-01T00:00:00+09:00'), new Date('2026-09-30T23:59:59+09:00')),
+    ).toEqual(['2026-09-01', '2026-09-03', '2026-09-08'])
+  })
+
+  it('曜日を選ばなければ、これまでどおり開始日の曜日だけ', () => {
+    const plain = makeEvent({
+      start_at: boardDateTimeIso('2026-09-01', '19:00'),
+      end_at: null,
+      recurrence: 'weekly',
+    })
+    expect(
+      days(plain, new Date('2026-09-01T00:00:00+09:00'), new Date('2026-09-20T23:59:59+09:00')),
+    ).toEqual(['2026-09-01', '2026-09-08', '2026-09-15'])
+  })
+
+  it('月をまたいでも続く', () => {
+    expect(
+      days(base, new Date('2026-09-28T00:00:00+09:00'), new Date('2026-10-04T23:59:59+09:00')),
+    ).toEqual(['2026-09-29', '2026-10-01'])
+  })
+})
+
+describe('毎月の第 n 曜日', () => {
+  // 2026-09-08 は第 2 火曜
+  const second = makeEvent({
+    start_at: boardDateTimeIso('2026-09-08', '19:00'),
+    end_at: null,
+    recurrence: 'monthly',
+    recurrence_days: [2],
+    recurrence_week: 2,
+  })
+
+  it('各月の第 2 火曜に出る', () => {
+    expect(
+      days(second, new Date('2026-09-01T00:00:00+09:00'), new Date('2026-12-31T23:59:59+09:00')),
+    ).toEqual(['2026-09-08', '2026-10-13', '2026-11-10', '2026-12-08'])
+  })
+
+  it('第 5 火曜が無い月は、丸めずに飛ばす', () => {
+    // 2026-09-29 は第 5 火曜。10 月と 11 月には第 5 火曜が無い
+    const fifth = makeEvent({
+      start_at: boardDateTimeIso('2026-09-29', '19:00'),
+      end_at: null,
+      recurrence: 'monthly',
+      recurrence_days: [2],
+      recurrence_week: 5,
+    })
+    expect(
+      days(fifth, new Date('2026-09-01T00:00:00+09:00'), new Date('2027-01-31T23:59:59+09:00')),
+    ).toEqual(['2026-09-29', '2026-12-29'])
+  })
+
+  it('最終週（-1）は、その月の最後のその曜日', () => {
+    const last = makeEvent({
+      start_at: boardDateTimeIso('2026-09-29', '19:00'),
+      end_at: null,
+      recurrence: 'monthly',
+      recurrence_days: [2],
+      recurrence_week: -1,
+    })
+    expect(
+      days(last, new Date('2026-09-01T00:00:00+09:00'), new Date('2026-12-31T23:59:59+09:00')),
+    ).toEqual(['2026-09-29', '2026-10-27', '2026-11-24', '2026-12-29'])
+  })
+
+  it('年をまたいでも続く', () => {
+    expect(
+      days(second, new Date('2026-12-01T00:00:00+09:00'), new Date('2027-02-28T23:59:59+09:00')),
+    ).toEqual(['2026-12-08', '2027-01-12', '2027-02-09'])
+  })
+
+  it('表示範囲が月の途中から始まっても、その月の回を落とさない', () => {
+    expect(
+      days(second, new Date('2026-10-05T00:00:00+09:00'), new Date('2026-10-20T23:59:59+09:00')),
+    ).toEqual(['2026-10-13'])
+  })
+})
+
+describe('曜日指定と「この回だけ」', () => {
+  it('木曜を足しても、火曜に付けた例外は生き残る', () => {
+    const before = makeEvent({
+      start_at: boardDateTimeIso('2026-09-01', '19:00'),
+      end_at: null,
+      recurrence: 'weekly',
+      recurrence_days: [2],
+    })
+    const override = makeOverride({
+      occurrence_date: '2026-09-08',
+      title: '場所が変わります',
+    })
+
+    const after = { ...before, recurrence_days: [2, 4] }
+    const list = expandOccurrences(
+      [after],
+      new Date('2026-09-01T00:00:00+09:00'),
+      new Date('2026-09-12T23:59:59+09:00'),
+      [override],
+    )
+
+    const changed = list.find((o) => toBoardDate(o.start) === '2026-09-08')
+    expect(changed?.view.title).toBe('場所が変わります')
+    // 木曜ぶんが増えているだけで、火曜の並びは動いていない
+    expect(list.map((o) => toBoardDate(o.start))).toEqual([
+      '2026-09-01',
+      '2026-09-03',
+      '2026-09-08',
+      '2026-09-10',
+    ])
+  })
+})
+
+describe('曜日指定を入れても、これまでの予定の展開は 1 日も変わらない', () => {
+  /*
+   * 既存の行は recurrence_days が空・recurrence_week が null になる。
+   * ここが変わると、event_overrides の occurrence_date が指す回とずれて
+   * 「この回だけ」の変更が一斉に迷子になる。期待値はベタ書きにしておく。
+   */
+  const from = new Date('2026-01-01T00:00:00+09:00')
+  const to = new Date('2026-06-30T23:59:59+09:00')
+
+  it('毎日', () => {
+    const event = makeEvent({
+      start_at: boardDateTimeIso('2026-01-30', '10:00'),
+      end_at: null,
+      recurrence: 'daily',
+    })
+    expect(days(event, from, new Date('2026-02-03T23:59:59+09:00'))).toEqual([
+      '2026-01-30',
+      '2026-01-31',
+      '2026-02-01',
+      '2026-02-02',
+      '2026-02-03',
+    ])
+  })
+
+  it('毎週', () => {
+    const event = makeEvent({
+      start_at: boardDateTimeIso('2026-01-31', '10:00'),
+      end_at: null,
+      recurrence: 'weekly',
+    })
+    expect(days(event, from, new Date('2026-02-28T23:59:59+09:00'))).toEqual([
+      '2026-01-31',
+      '2026-02-07',
+      '2026-02-14',
+      '2026-02-21',
+      '2026-02-28',
+    ])
+  })
+
+  it('毎月 31 日は月末へ丸める（飛ばさない）', () => {
+    const event = makeEvent({
+      start_at: boardDateTimeIso('2026-01-31', '10:00'),
+      end_at: null,
+      recurrence: 'monthly',
+    })
+    expect(days(event, from, to)).toEqual([
+      '2026-01-31',
+      '2026-02-28',
+      '2026-03-31',
+      '2026-04-30',
+      '2026-05-31',
+      '2026-06-30',
+    ])
+  })
+
+  it('毎年', () => {
+    const event = makeEvent({
+      start_at: boardDateTimeIso('2026-02-15', '10:00'),
+      end_at: null,
+      recurrence: 'yearly',
+    })
+    expect(days(event, from, new Date('2029-12-31T23:59:59+09:00'))).toEqual([
+      '2026-02-15',
+      '2027-02-15',
+      '2028-02-15',
+      '2029-02-15',
+    ])
+  })
+})
+
+describe('firstMatchingStart', () => {
+  it('金曜の予定に「毎週 火」を選ぶと、次の火曜へ寄る', () => {
+    // 2026-09-04 は金曜
+    const friday = boardDateTimeIso('2026-09-04', '19:00')
+    const snapped = firstMatchingStart(friday, {
+      recurrence: 'weekly',
+      days: [2],
+      week: null,
+    })
+    expect(toBoardDate(snapped)).toBe('2026-09-08')
+    // 時刻は動かさない
+    expect(jstTime(new Date(snapped))).toBe('19:00')
+  })
+
+  it('すでに規則に合っていれば動かさない', () => {
+    const tuesday = boardDateTimeIso('2026-09-01', '19:00')
+    expect(firstMatchingStart(tuesday, { recurrence: 'weekly', days: [2, 4], week: null })).toBe(
+      tuesday,
+    )
+  })
+
+  it('曜日指定が無ければ、そのまま返す', () => {
+    const any = boardDateTimeIso('2026-09-04', '19:00')
+    expect(firstMatchingStart(any, { recurrence: 'monthly', days: [], week: null })).toBe(any)
+  })
+
+  it('毎月 第 2 火曜なら、その月の第 2 火曜へ寄る', () => {
+    const first = boardDateTimeIso('2026-09-01', '19:00')
+    const snapped = firstMatchingStart(first, {
+      recurrence: 'monthly',
+      days: [2],
+      week: 2,
+    })
+    expect(toBoardDate(snapped)).toBe('2026-09-08')
+  })
+})
+
+describe('stepDates', () => {
+  it('第 5 火曜の無い月は空を返す（呼ぶ側が回り続けないよう、区切りは進む）', () => {
+    const base = new Date(boardDateTimeIso('2026-09-29', '19:00'))
+    const rule = { recurrence: 'monthly' as const, days: [2], week: 5 }
+    expect(stepDates(base, rule, 0).map(toBoardDate)).toEqual(['2026-09-29'])
+    // 10 月・11 月には第 5 火曜が無い
+    expect(stepDates(base, rule, 1)).toEqual([])
+    expect(stepDates(base, rule, 2)).toEqual([])
+    expect(stepDates(base, rule, 3).map(toBoardDate)).toEqual(['2026-12-29'])
+  })
+})
+
+describe('recurrenceLabel', () => {
+  it('曜日と第 n 週を言葉にする', () => {
+    expect(recurrenceLabel({ recurrence: 'weekly', days: [2, 4], week: null })).toBe('毎週 火・木')
+    expect(recurrenceLabel({ recurrence: 'monthly', days: [2], week: 2 })).toBe('毎月 第2火曜')
+    expect(recurrenceLabel({ recurrence: 'monthly', days: [2], week: -1 })).toBe('毎月 最終火曜')
+  })
+
+  it('曜日指定が無ければ、これまでどおりの言い方', () => {
+    expect(recurrenceLabel({ recurrence: 'weekly', days: [], week: null })).toBe('毎週')
+    expect(recurrenceLabel({ recurrence: 'daily', days: [], week: null })).toBe('毎日')
+    expect(recurrenceLabel({ recurrence: 'none', days: [], week: null })).toBe('繰り返さない')
+  })
+})
+
+describe('曜日を指定した繰り返しやることの次回', () => {
+  /*
+   * 「次回」は now より後の回なので、now を渡さないと結果が実行した日で変わる。
+   * 期限のすぐ後に完了した、という状況を作って確かめる。
+   */
+  const justAfter = (dueIso: string) => new Date(new Date(dueIso).getTime() + 60_000)
+
+  it('毎週 火・木なら、火の次は木', () => {
+    // 2026-09-01（火）を完了 → 次は 9/3（木）
+    const due = boardDateTimeIso('2026-09-01', '10:00')
+    const next = nextDueDateShared(
+      due,
+      { recurrence: 'weekly', days: [2, 4], week: null },
+      justAfter(due),
+    )!
+    expect(toBoardDate(next)).toBe('2026-09-03')
+    expect(jstTime(new Date(next))).toBe('10:00')
+  })
+
+  it('木の次は翌週の火', () => {
+    const due = boardDateTimeIso('2026-09-03', '10:00')
+    const next = nextDueDateShared(
+      due,
+      { recurrence: 'weekly', days: [2, 4], week: null },
+      justAfter(due),
+    )!
+    expect(toBoardDate(next)).toBe('2026-09-08')
+  })
+
+  it('期限より前に完了しても、次回は 1 つ先へ進む', () => {
+    const due = boardDateTimeIso('2026-09-08', '10:00')
+    const next = nextDueDateShared(
+      due,
+      { recurrence: 'monthly', days: [2], week: 2 },
+      new Date('2026-09-01T00:00:00Z'),
+    )!
+    expect(toBoardDate(next)).toBe('2026-10-13')
+  })
+
+  it('放置されていても、いまより後の回になる', () => {
+    // 2026-09-01（火）の期限を、11 月に入ってから完了した
+    const due = boardDateTimeIso('2026-09-01', '10:00')
+    const next = nextDueDateShared(
+      due,
+      { recurrence: 'weekly', days: [2, 4], week: null },
+      new Date('2026-11-04T00:00:00+09:00'),
+    )!
+    expect(toBoardDate(next)).toBe('2026-11-05')
+  })
+
+  it('文字列で渡す従来の呼び方も、そのまま動く', () => {
+    const due = boardDateTimeIso('2026-09-01', '10:00')
+    expect(toBoardDate(nextDueDateShared(due, 'weekly', justAfter(due))!)).toBe('2026-09-08')
+    // フロント側のラッパー（now を取らない）も、規則を受け付ける
+    expect(nextDueDate(due, { recurrence: 'none', days: [], week: null })).toBeNull()
+  })
+})
+
+describe('send-reminders が取ってくる列', () => {
+  /*
+   * EVENT_COLUMNS に列を足し忘れても、何もエラーにならない。
+   * ruleOf が undefined を見て従来どおりの並びに落ち、通知だけが違う曜日に飛ぶ。
+   * 画面でもテストでも気づけないので、ここで並びそのものを見る。
+   *
+   * 予定の展開に使う列（EventLike）が 1 つでも欠けていたら落とす。
+   */
+  const EVENT_LIKE_COLUMNS = [
+    'id',
+    'title',
+    'description',
+    'start_at',
+    'end_at',
+    'all_day',
+    'color',
+    'recurrence',
+    'recurrence_days',
+    'recurrence_week',
+    'recurrence_until',
+    'remind_minutes',
+    'tags',
+  ]
+
+  it('EventLike の列がすべて並んでいる', () => {
+    const source = readFileSync(
+      new URL('../../../supabase/functions/send-reminders/index.ts', import.meta.url),
+      'utf8',
+    )
+    const match = /const EVENT_COLUMNS\s*=\s*\n?\s*'([^']+)'/.exec(source)
+    expect(match, 'EVENT_COLUMNS が見つかりません').not.toBeNull()
+
+    const columns = match![1].split(',').map((c) => c.trim())
+    for (const column of EVENT_LIKE_COLUMNS) {
+      expect(columns, `${column} が EVENT_COLUMNS にありません`).toContain(column)
+    }
+  })
+
+  it('この一覧じたいが EventLike と揃っている', () => {
+    // makeEvent が返す行から、展開に関係しない列を除いたものと一致するはず。
+    // EventLike に列が増えたとき、上の一覧を直し忘れたらここで落ちる
+    const notUsedForExpansion = [
+      'room_id',
+      'kind',
+      'source_note_id',
+      'source_synced_at',
+      'deleted_at',
+      'author_id',
+      'author_name',
+      'created_at',
+      'updated_at',
+    ]
+    const fromType = Object.keys(makeEvent())
+      .filter((key) => !notUsedForExpansion.includes(key))
+      .sort()
+    expect(fromType).toEqual([...EVENT_LIKE_COLUMNS].sort())
   })
 })

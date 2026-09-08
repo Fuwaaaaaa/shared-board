@@ -68,6 +68,8 @@ export function buildTodo(seed: TodoSeed): Todo {
     // 期限がなければ事前通知は意味を持たないので落とす
     remind_minutes: seed.dueAt ? (seed.remindMinutes ?? null) : null,
     recurrence: 'none',
+    recurrence_days: [],
+    recurrence_week: null,
     subtasks: [],
     tags: seed.tags ?? [],
     status: 'todo',
@@ -115,6 +117,8 @@ export function buildEvent(seed: EventSeed): CalendarEvent {
     all_day: seed.allDay ?? true,
     color: seed.color ?? 'blue',
     recurrence: 'none',
+    recurrence_days: [],
+    recurrence_week: null,
     recurrence_until: null,
     remind_minutes: seed.remindMinutes ?? null,
     tags: seed.tags ?? [],

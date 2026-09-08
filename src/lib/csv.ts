@@ -157,3 +157,57 @@ export function boardDateTimeText(iso: string): string {
 export function looksMojibake(text: string): boolean {
   return text.includes(String.fromCharCode(0xfffd))
 }
+
+/*
+ * 繰り返しの曜日指定を CSV に載せる。
+ *
+ * 載せないと、書き出して取り込み直しただけで「毎週 火・木」が
+ * 「毎週（開始日の曜日）」に化ける。予定が黙って変わるのがいちばん困る。
+ */
+
+const CSV_WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土']
+
+/** 曜日の並びを「火・木」にする。空なら空文字 */
+export function formatWeekdays(days: number[]): string {
+  return days
+    .filter((d) => Number.isInteger(d) && d >= 0 && d <= 6)
+    .map((d) => CSV_WEEKDAYS[d])
+    .join('・')
+}
+
+/**
+ * 「火・木」「火,木」「TU,TH」を曜日の番号にする。
+ * 読めない語は落とす。並べ替えと重複除去は normalizeRule に任せる。
+ */
+export function parseWeekdays(value: string | undefined): number[] {
+  const text = (value ?? '').trim()
+  if (!text) return []
+
+  const en = ['su', 'mo', 'tu', 'we', 'th', 'fr', 'sa']
+  const days: number[] = []
+  for (const raw of text.split(/[・,、\s]+/)) {
+    const token = raw.trim()
+    if (!token) continue
+    const jp = CSV_WEEKDAYS.indexOf(token.replace(/曜日?$/, ''))
+    if (jp >= 0) {
+      days.push(jp)
+      continue
+    }
+    const idx = en.indexOf(token.slice(0, 2).toLowerCase())
+    if (idx >= 0) days.push(idx)
+  }
+  return days
+}
+
+/** 「第2」「2」「最終」「-1」を第 n 週の番号にする。読めなければ null */
+export function parseWeekOrdinal(value: string | undefined): number | null {
+  const text = (value ?? '').trim()
+  if (!text) return null
+  if (/^(最終|最後|last|-1)$/i.test(text)) return -1
+
+  const match = /^第?(-?\d+)/.exec(text)
+  if (!match) return null
+  const n = Number(match[1])
+  if (n === -1) return -1
+  return n >= 1 && n <= 5 ? n : null
+}

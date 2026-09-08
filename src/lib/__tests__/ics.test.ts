@@ -28,6 +28,8 @@ function makeEvent(patch: Partial<CalendarEvent> = {}): CalendarEvent {
     all_day: false,
     color: 'blue',
     recurrence: 'none',
+    recurrence_days: [],
+    recurrence_week: null,
     recurrence_until: null,
     remind_minutes: null,
     tags: [],
@@ -196,6 +198,8 @@ describe('buildIcs', () => {
       assignee_name: '',
       remind_minutes: null,
       recurrence: 'none',
+      recurrence_days: [],
+      recurrence_week: null,
       subtasks: [],
       tags: [],
       status: 'todo',
@@ -476,5 +480,112 @@ describe('clampedRecurrenceDates（月末へ丸めた回を並べる）', () => 
     const lines = unfold(text)
     expect(lines.some((line) => line.startsWith('EXDATE') && line.includes('20260228'))).toBe(true)
     expect(lines.some((line) => line.startsWith('RDATE') && line.includes('20260228'))).toBe(false)
+  })
+})
+
+describe('繰り返しの曜日指定を書き出す', () => {
+  /** RRULE の行を 1 本取り出す */
+  function rrule(text: string): string {
+    const line = unfold(text).find((l) => l.startsWith('RRULE:'))
+    return line ?? ''
+  }
+
+  it('毎週 火・木は BYDAY=TU,TH になる', () => {
+    const event = makeEvent({
+      start_at: boardDateTimeIso('2026-09-01', '19:00'),
+      end_at: null,
+      recurrence: 'weekly',
+      recurrence_days: [2, 4],
+    })
+    expect(rrule(buildIcs('ボード', [event]))).toBe('RRULE:FREQ=WEEKLY;BYDAY=TU,TH;WKST=SU')
+  })
+
+  it('毎月 第2火曜は BYDAY=2TU になる（序数を前に置く形）', () => {
+    const event = makeEvent({
+      start_at: boardDateTimeIso('2026-09-08', '19:00'),
+      end_at: null,
+      recurrence: 'monthly',
+      recurrence_days: [2],
+      recurrence_week: 2,
+    })
+    expect(rrule(buildIcs('ボード', [event]))).toBe('RRULE:FREQ=MONTHLY;BYDAY=2TU')
+  })
+
+  it('最終週は BYDAY=-1TU になる', () => {
+    const event = makeEvent({
+      start_at: boardDateTimeIso('2026-09-29', '19:00'),
+      end_at: null,
+      recurrence: 'monthly',
+      recurrence_days: [2],
+      recurrence_week: -1,
+    })
+    expect(rrule(buildIcs('ボード', [event]))).toBe('RRULE:FREQ=MONTHLY;BYDAY=-1TU')
+  })
+
+  it('曜日を選ばなければ、これまでどおりの RRULE', () => {
+    const event = makeEvent({
+      start_at: boardDateTimeIso('2026-09-01', '19:00'),
+      end_at: null,
+      recurrence: 'weekly',
+    })
+    expect(rrule(buildIcs('ボード', [event]))).toBe('RRULE:FREQ=WEEKLY')
+  })
+
+  it('終了日つきでも BYDAY と UNTIL が並ぶ', () => {
+    const event = makeEvent({
+      start_at: boardDateTimeIso('2026-09-01', '19:00'),
+      end_at: null,
+      recurrence: 'weekly',
+      recurrence_days: [2, 4],
+      recurrence_until: '2026-09-30',
+    })
+    const line = rrule(buildIcs('ボード', [event]))
+    expect(line).toContain('BYDAY=TU,TH')
+    expect(line).toContain('UNTIL=')
+  })
+
+  it('第 n 曜日には RDATE を出さない（丸めが起きないので）', () => {
+    /*
+     * clampedRecurrenceDates は「29〜31 日始まりの毎月」に RDATE を足す。
+     * 第 n 曜日はその月に無ければ飛ばす決まりで丸めが起きないため、
+     * ここを素通しにすると、開始が 31 日というだけで嘘の回が並ぶ。
+     */
+    freezeAt('2026-09-01T00:00:00Z')
+    const event = makeEvent({
+      // 2026-03-31 は第 5 火曜
+      start_at: boardDateTimeIso('2026-03-31', '19:00'),
+      end_at: null,
+      recurrence: 'monthly',
+      recurrence_days: [2],
+      recurrence_week: 5,
+    })
+    const lines = unfold(buildIcs('ボード', [event]))
+    expect(lines.some((line) => line.startsWith('RDATE'))).toBe(false)
+    expect(
+      clampedRecurrenceDates({
+        start_at: boardDateTimeIso('2026-03-31', '19:00'),
+        recurrence: 'monthly',
+        recurrence_days: [2],
+        recurrence_week: 5,
+        recurrence_until: null,
+      }),
+    ).toEqual([])
+  })
+
+  it('日付で繰り返す毎月 31 日には、これまでどおり RDATE が出る', () => {
+    freezeAt('2026-09-01T00:00:00Z')
+    const event = makeEvent({
+      start_at: boardDateTimeIso('2026-03-31', '19:00'),
+      end_at: null,
+      recurrence: 'monthly',
+    })
+    const lines = unfold(buildIcs('ボード', [event]))
+    expect(lines.some((line) => line.startsWith('RDATE'))).toBe(true)
+  })
+
+  it('DTSTAMP は渡した時刻になる（購読 URL が同じ本文を返せるように）', () => {
+    const at = new Date('2026-09-08T01:02:03.000Z')
+    const lines = unfold(buildIcs('ボード', [makeEvent()], [], [], at))
+    expect(lines.filter((l) => l.startsWith('DTSTAMP:'))).toContain('DTSTAMP:20260908T010203Z')
   })
 })

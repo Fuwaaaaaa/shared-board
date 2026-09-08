@@ -84,6 +84,8 @@ export default function PollPanel({ onClose, onCreateEvent }: Props) {
       all_day: option.all_day,
       color: 'green',
       recurrence: 'none',
+      recurrence_days: [],
+      recurrence_week: null,
       recurrence_until: null,
       remind_minutes: option.all_day ? 1440 : 60,
       tags: [],

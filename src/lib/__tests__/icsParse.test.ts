@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { expandFeedEvents, parseIcs } from '../icsParse'
+import {
+  expandFeedEvents,
+  parseByDay,
+  parseIcs,
+  parseNumberList,
+  parseWkst,
+} from '../icsParse'
 
 const feed = { id: 'f1', name: '外部', color: 'slate' }
 
@@ -507,5 +513,193 @@ END:VEVENT`)
     const [event] = parseIcs(text)
     expect(event.allDay).toBe(true)
     expect(event.start.getTime()).toBe(local(2026, 9, 1).getTime())
+  })
+})
+
+describe('parseByDay / parseNumberList / parseWkst', () => {
+  it('曜日の並びを読む', () => {
+    expect(parseByDay('TU,TH')).toEqual([
+      { weekday: 2, nth: null },
+      { weekday: 4, nth: null },
+    ])
+  })
+
+  it('序数つき（2TU / -1FR）を読む', () => {
+    expect(parseByDay('2TU')).toEqual([{ weekday: 2, nth: 2 }])
+    expect(parseByDay('-1FR')).toEqual([{ weekday: 5, nth: -1 }])
+    expect(parseByDay('+3WE')).toEqual([{ weekday: 3, nth: 3 }])
+  })
+
+  it('読めない語と第 0 週は落とす', () => {
+    expect(parseByDay('XX,TU,0TU,')).toEqual([{ weekday: 2, nth: null }])
+    expect(parseByDay('')).toEqual([])
+    expect(parseByDay(undefined)).toEqual([])
+  })
+
+  it('BYSETPOS を読む（0 は落とす）', () => {
+    expect(parseNumberList('-1,2')).toEqual([-1, 2])
+    expect(parseNumberList('0,3')).toEqual([3])
+    expect(parseNumberList(undefined)).toEqual([])
+  })
+
+  it('WKST の既定は月曜（RFC 5545）', () => {
+    expect(parseWkst(undefined)).toBe(1)
+    expect(parseWkst('SU')).toBe(0)
+    expect(parseWkst('なにか')).toBe(1)
+  })
+})
+
+describe('BYDAY つきの .ics を取り込む', () => {
+  const from = new Date('2026-09-01T00:00:00Z')
+  const to = new Date('2026-12-31T23:59:59Z')
+
+  function dates(rrule: string): string[] {
+    const text = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'BEGIN:VEVENT',
+      'UID:x@example.com',
+      'DTSTART:20260908T100000Z',
+      'DTEND:20260908T110000Z',
+      `RRULE:${rrule}`,
+      'SUMMARY:定例',
+      'END:VEVENT',
+      'END:VCALENDAR',
+    ].join('\r\n')
+    return expandFeedEvents(text, feed, from, to).map((e) => e.start.toISOString().slice(0, 10))
+  }
+
+  it('「毎月 第 2 火曜」が、実際の第 2 火曜に出る', () => {
+    // これが docs/OVERVIEW.html の「いまの既知の課題」に載っていた劣化。
+    // BYDAY を読まなかったころは DTSTART の日（8 日）での単純な毎月になっていた
+    expect(dates('FREQ=MONTHLY;BYDAY=2TU')).toEqual([
+      '2026-09-08',
+      '2026-10-13',
+      '2026-11-10',
+      '2026-12-08',
+    ])
+  })
+
+  it('BYSETPOS で書かれていても同じ結果になる', () => {
+    expect(dates('FREQ=MONTHLY;BYDAY=TU;BYSETPOS=2')).toEqual([
+      '2026-09-08',
+      '2026-10-13',
+      '2026-11-10',
+      '2026-12-08',
+    ])
+  })
+
+  it('毎週 月・水・金 を COUNT=5 で', () => {
+    expect(dates('FREQ=WEEKLY;BYDAY=MO,WE,FR;COUNT=5')).toEqual([
+      '2026-09-09',
+      '2026-09-11',
+      '2026-09-14',
+      '2026-09-16',
+      '2026-09-18',
+    ])
+  })
+
+  it('最終金曜', () => {
+    expect(dates('FREQ=MONTHLY;BYDAY=-1FR')).toEqual([
+      '2026-09-25',
+      '2026-10-30',
+      '2026-11-27',
+      '2026-12-25',
+    ])
+  })
+
+  it('BYDAY が無ければ、これまでどおり DTSTART の日で毎月', () => {
+    expect(dates('FREQ=MONTHLY')).toEqual([
+      '2026-09-08',
+      '2026-10-08',
+      '2026-11-08',
+      '2026-12-08',
+    ])
+  })
+})
+
+describe('書き出したものを読み戻すと、同じ回になる', () => {
+  /*
+   * 書く側（_shared/ics.ts）と読む側（icsParse）を 1 つのテストで結ぶ。
+   * 片方だけ直したときに、ここが落ちる。
+   */
+  it('毎週 火・木', async () => {
+    const { buildIcs } = await import('../ics')
+    const { expandOccurrences } = await import('../recurrence')
+    const { boardDateTimeIso } = await import('../dates')
+
+    const event = {
+      id: 'e1',
+      title: '練習',
+      description: '',
+      start_at: boardDateTimeIso('2026-09-01', '19:00'),
+      end_at: null,
+      all_day: false,
+      recurrence: 'weekly' as const,
+      recurrence_days: [2, 4],
+      recurrence_week: null,
+      recurrence_until: null,
+      remind_minutes: null,
+      color: 'blue',
+      room_id: 'r1',
+      kind: 'event' as const,
+      source_note_id: null,
+      source_synced_at: null,
+      deleted_at: null,
+      author_id: 'u1',
+      author_name: 'A',
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+      tags: [],
+    }
+
+    const from = new Date('2026-09-01T00:00:00+09:00')
+    const to = new Date('2026-10-31T23:59:59+09:00')
+
+    const mine = expandOccurrences([event], from, to, []).map((o) => o.start.toISOString())
+    const theirs = expandFeedEvents(buildIcs('ボード', [event]), feed, from, to).map((e) =>
+      e.start.toISOString(),
+    )
+    expect(theirs).toEqual(mine)
+  })
+
+  it('毎月 第 2 火曜', async () => {
+    const { buildIcs } = await import('../ics')
+    const { expandOccurrences } = await import('../recurrence')
+    const { boardDateTimeIso } = await import('../dates')
+
+    const event = {
+      id: 'e2',
+      title: '定例',
+      description: '',
+      start_at: boardDateTimeIso('2026-09-08', '19:00'),
+      end_at: null,
+      all_day: false,
+      recurrence: 'monthly' as const,
+      recurrence_days: [2],
+      recurrence_week: 2,
+      recurrence_until: null,
+      remind_minutes: null,
+      color: 'blue',
+      room_id: 'r1',
+      kind: 'event' as const,
+      source_note_id: null,
+      source_synced_at: null,
+      deleted_at: null,
+      author_id: 'u1',
+      author_name: 'A',
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+      tags: [],
+    }
+
+    const from = new Date('2026-09-01T00:00:00+09:00')
+    const to = new Date('2027-02-28T23:59:59+09:00')
+
+    const mine = expandOccurrences([event], from, to, []).map((o) => o.start.toISOString())
+    const theirs = expandFeedEvents(buildIcs('ボード', [event]), feed, from, to).map((e) =>
+      e.start.toISOString(),
+    )
+    expect(theirs).toEqual(mine)
   })
 })

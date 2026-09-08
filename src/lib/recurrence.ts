@@ -11,21 +11,57 @@ import {
   nextDueDate as nextDueDateShared,
   buildOverrideMap,
   firstIndexAtOrAfter,
+  firstMatchingStart,
+  hasByDay,
+  normalizeRule,
   nthOccurrence,
   occurrenceKey,
   originalStartFor,
   overrideKeyOf,
+  ruleOf,
+  stepDates,
+  type RecurrenceRule,
 } from '../../supabase/functions/_shared/recurrence.ts'
 import { DAY_MS, isBoardTimeZone, localDateOf, toBoardDate } from './dates'
-import type { CalendarEvent, EventOccurrence, EventOverride, Recurrence } from './types'
+import {
+  MONTH_WEEK_LABELS,
+  RECURRENCE_LABELS,
+  WEEKDAY_LABELS,
+  type CalendarEvent,
+  type EventOccurrence,
+  type EventOverride,
+  type Recurrence,
+} from './types'
 
 export {
   buildOverrideMap,
   firstIndexAtOrAfter,
+  firstMatchingStart,
+  hasByDay,
+  normalizeRule,
   nthOccurrence,
   occurrenceKey,
   originalStartFor,
   overrideKeyOf,
+  ruleOf,
+  stepDates,
+}
+export type { RecurrenceRule }
+
+/**
+ * 画面に出す繰り返しの言い方。「毎週 火・木」「毎月 第2火曜」「毎月 最終火曜」。
+ *
+ * 文言だけをフロントに置いているのは、_shared に画面用の日本語を持ち込まないため
+ * （Edge Function 側では要らないし、RECURRENCE_LABELS を二重に持つことになる）。
+ */
+export function recurrenceLabel(rule: RecurrenceRule): string {
+  const base = RECURRENCE_LABELS[rule.recurrence]
+  if (!hasByDay(rule)) return base
+
+  if (rule.recurrence === 'weekly') {
+    return `${base} ${rule.days.map((d) => WEEKDAY_LABELS[d]).join('・')}`
+  }
+  return `${base} ${MONTH_WEEK_LABELS[String(rule.week)] ?? ''}${WEEKDAY_LABELS[rule.days[0]]}曜`
 }
 
 /** 予定の実効の期間が表示範囲にかかっているか */
@@ -110,6 +146,9 @@ export function groupOccurrencesByDay(
 }
 
 /** 繰り返し TODO を完了したときの、次回の期限（過去に放置されていても未来の回になる） */
-export function nextDueDate(dueAt: string, recurrence: Recurrence): string | null {
+export function nextDueDate(
+  dueAt: string,
+  recurrence: Recurrence | RecurrenceRule,
+): string | null {
   return nextDueDateShared(dueAt, recurrence)
 }

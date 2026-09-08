@@ -173,6 +173,23 @@ export const RECURRENCE_LABELS: Record<Recurrence, string> = {
   yearly: '毎年',
 }
 
+/** 曜日の名前。0=日 … 6=土。カレンダーの見出しと繰り返しの曜日選びで同じものを使う */
+export const WEEKDAY_LABELS = ['日', '月', '火', '水', '木', '金', '土']
+
+/** 毎月の「第 n 週」。-1 は最終週 */
+export const MONTH_WEEK_OPTIONS: { value: number; label: string }[] = [
+  { value: 1, label: '第1' },
+  { value: 2, label: '第2' },
+  { value: 3, label: '第3' },
+  { value: 4, label: '第4' },
+  { value: 5, label: '第5' },
+  { value: -1, label: '最終' },
+]
+
+export const MONTH_WEEK_LABELS: Record<string, string> = Object.fromEntries(
+  MONTH_WEEK_OPTIONS.map((option) => [String(option.value), option.label]),
+)
+
 /** 事前通知の選択肢（分）。null は通知なし */
 export const REMIND_OPTIONS: { value: number | null; label: string }[] = [
   { value: null, label: '通知なし' },
@@ -208,6 +225,10 @@ export interface CalendarEvent {
   all_day: boolean
   color: string
   recurrence: Recurrence
+  /** 曜日指定（0=日 … 6=土）。空なら開始日の曜日だけ */
+  recurrence_days: number[]
+  /** 毎月の第 n 週（1〜5、-1 は最終）。null なら開始日と同じ日付で繰り返す */
+  recurrence_week: number | null
   recurrence_until: string | null
   remind_minutes: number | null
   tags: string[]
@@ -281,6 +302,10 @@ export interface Todo {
   assignee_name: string
   remind_minutes: number | null
   recurrence: Recurrence
+  /** 曜日指定（0=日 … 6=土）。空なら期限の曜日だけ */
+  recurrence_days: number[]
+  /** 毎月の第 n 週（1〜5、-1 は最終）。null なら期限と同じ日付で繰り返す */
+  recurrence_week: number | null
   subtasks: Subtask[]
   tags: string[]
   status: TodoStatus

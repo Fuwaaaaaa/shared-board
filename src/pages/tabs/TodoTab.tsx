@@ -7,8 +7,8 @@ import NotificationBanner from '../../components/NotificationBanner'
 import TagInput, { TagFilterBar } from '../../components/TagInput'
 import { useNow } from '../../hooks/useReminders'
 import { usePushNotifications } from '../../hooks/usePushNotifications'
-import { nextDueDate } from '../../lib/recurrence'
-import { boardDateTimeIso } from '../../lib/dates'
+import { nextDueDate, normalizeRule, recurrenceLabel, ruleOf } from '../../lib/recurrence'
+import { boardDateTimeIso, localDateOf } from '../../lib/dates'
 import {
   acknowledgeOrigin,
   buildEvent,
@@ -23,9 +23,11 @@ import { supabase } from '../../lib/supabase'
 import { useIdentity } from '../../lib/identity'
 import { useRoomData } from '../../lib/roomData'
 import {
+  MONTH_WEEK_OPTIONS,
   RECURRENCE_LABELS,
   REMIND_OPTIONS,
   TODO_STATUS_LABELS,
+  WEEKDAY_LABELS,
   type Recurrence,
   type Subtask,
   type Todo,
@@ -156,7 +158,7 @@ export default function TodoTab({ reminders, focusId, focusNonce, onJump }: Prop
     // 既に次回分があれば作らない（前に完了 → 未完了に戻して、もう一度完了にした場合など）
     if (todos.rows.some((t) => t.source_todo_id === todo.id && !t.done)) return
 
-    const next = nextDueDate(todo.due_at, todo.recurrence)
+    const next = nextDueDate(todo.due_at, ruleOf(todo))
     if (!next) return
 
     const repeated: Todo = {
@@ -570,7 +572,11 @@ function KanbanView({
                         todo.done ? 'text-slate-400 line-through' : 'text-slate-800'
                       }`}
                     >
-                      {todo.recurrence !== 'none' && <span className="mr-1">🔁</span>}
+                      {todo.recurrence !== 'none' && (
+            <span className="mr-1" title={recurrenceLabel(ruleOf(todo))}>
+              🔁
+            </span>
+          )}
                       {todo.title}
                     </span>
 
@@ -727,7 +733,11 @@ function TodoRow({
             todo.done ? 'text-slate-400 line-through' : 'text-slate-800'
           }`}
         >
-          {todo.recurrence !== 'none' && <span className="mr-1">🔁</span>}
+          {todo.recurrence !== 'none' && (
+            <span className="mr-1" title={recurrenceLabel(ruleOf(todo))}>
+              🔁
+            </span>
+          )}
           {todo.title}
         </span>
         <span className="mt-0.5 flex flex-wrap items-center gap-2 text-xs">
@@ -765,6 +775,122 @@ function TodoRow({
         </span>
       </button>
     </li>
+  )
+}
+
+/**
+ * 繰り返しの曜日を選ぶところ（カレンダー側の RecurrenceFields と同じ考え方）。
+ *
+ * 毎週は曜日を複数、毎月は「日付で / 曜日で」。曜日そのものは期限の日付から
+ * 決まるので読むだけにする（選ばせると期限と食い違う）。
+ */
+function TodoRecurrenceFields({
+  date,
+  recurrence,
+  days,
+  week,
+  onDaysChange,
+  onWeekChange,
+}: {
+  date: string
+  recurrence: Recurrence
+  days: number[]
+  week: number | null
+  onDaysChange: (days: number[]) => void
+  onWeekChange: (week: number | null, days: number[]) => void
+}) {
+  if (recurrence !== 'weekly' && recurrence !== 'monthly') return null
+
+  const startWeekday = localDateOf(date).getDay()
+
+  if (recurrence === 'weekly') {
+    const toggle = (day: number) => {
+      onDaysChange(
+        days.includes(day) ? days.filter((d) => d !== day) : [...days, day].sort((a, b) => a - b),
+      )
+    }
+
+    return (
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-slate-500">曜日</span>
+        <div className="flex gap-1">
+          {WEEKDAY_LABELS.map((label, day) => {
+            const on = days.includes(day)
+            return (
+              <button
+                key={label}
+                type="button"
+                aria-pressed={on}
+                onClick={() => toggle(day)}
+                className={`h-7 w-7 rounded-lg border text-xs transition ${
+                  on
+                    ? 'border-slate-900 bg-slate-900 text-white'
+                    : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                {label}
+              </button>
+            )
+          })}
+        </div>
+        {days.length === 0 && (
+          <span className="text-xs text-slate-400">
+            選ばなければ、期限と同じ {WEEKDAY_LABELS[startWeekday]}曜だけ
+          </span>
+        )}
+      </div>
+    )
+  }
+
+  const byWeekday = week !== null
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-xs text-slate-500">毎月</span>
+      <div className="flex gap-1">
+        <button
+          type="button"
+          aria-pressed={!byWeekday}
+          onClick={() => onWeekChange(null, [])}
+          className={`rounded-lg border px-2.5 py-1 text-xs transition ${
+            !byWeekday
+              ? 'border-slate-900 bg-slate-900 text-white'
+              : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'
+          }`}
+        >
+          日付で
+        </button>
+        <button
+          type="button"
+          aria-pressed={byWeekday}
+          onClick={() => onWeekChange(1, [startWeekday])}
+          className={`rounded-lg border px-2.5 py-1 text-xs transition ${
+            byWeekday
+              ? 'border-slate-900 bg-slate-900 text-white'
+              : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'
+          }`}
+        >
+          曜日で
+        </button>
+      </div>
+      {byWeekday && (
+        <>
+          <select
+            value={String(week)}
+            onChange={(e) => onWeekChange(Number(e.target.value), [startWeekday])}
+            aria-label="第何週か"
+            className="rounded-lg border border-slate-300 px-2 py-1 text-xs outline-none focus:border-slate-800"
+          >
+            {MONTH_WEEK_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <span className="text-xs text-slate-600">{WEEKDAY_LABELS[startWeekday]}曜</span>
+        </>
+      )}
+    </div>
   )
 }
 
@@ -809,6 +935,10 @@ function TodoModal({
   const [time, setTime] = useState(due ? format(due, 'HH:mm') : '09:00')
   const [remind, setRemind] = useState<number | null>(todo.remind_minutes)
   const [recurrence, setRecurrence] = useState<Recurrence>(todo.recurrence ?? 'none')
+  const [recurrenceDays, setRecurrenceDays] = useState<number[]>(todo.recurrence_days ?? [])
+  const [recurrenceWeek, setRecurrenceWeek] = useState<number | null>(
+    todo.recurrence_week ?? null,
+  )
   const [subtasks, setSubtasks] = useState<Subtask[]>(todo.subtasks ?? [])
   const [tags, setTags] = useState<string[]>(todo.tags ?? [])
   const [subtaskDraft, setSubtaskDraft] = useState('')
@@ -820,6 +950,14 @@ function TodoModal({
     setSaving(true)
 
     const assignee = members.find((m) => m.id === assigneeId)
+
+    // 規則に合わない組み合わせは落としてから保存する（DB にも同じ CHECK がある）
+    const rule = normalizeRule({
+      recurrence: date ? recurrence : 'none',
+      days: recurrenceDays,
+      week: recurrenceWeek,
+    })
+
     await onSave({
       title: title.trim(),
       notes: notes.trim(),
@@ -827,7 +965,9 @@ function TodoModal({
       assignee_name: assignee?.name ?? '',
       due_at: date ? boardDateTimeIso(date, time) : null,
       remind_minutes: date ? remind : null,
-      recurrence: date ? recurrence : 'none',
+      recurrence: rule.recurrence,
+      recurrence_days: rule.days,
+      recurrence_week: rule.week,
       subtasks,
       tags,
     })
@@ -952,6 +1092,11 @@ function TodoModal({
                 const value = e.target.value
                 setDate(value)
                 if (value && !date && remind === null) setRemind(0)
+                // 「毎月 第 n 曜日」の曜日は期限から決まる。日付を変えたら付いてこないと、
+                // 画面に出ている曜日と保存される曜日がずれる
+                if (value && recurrenceWeek !== null) {
+                  setRecurrenceDays([localDateOf(value).getDay()])
+                }
               }}
               className="rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-800 disabled:bg-slate-50"
             />
@@ -1012,9 +1157,26 @@ function TodoModal({
         )}
 
         {recurrence !== 'none' && date && (
-          <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
-            完了にすると、{RECURRENCE_LABELS[recurrence]}の次回分が自動で作られます。
-          </p>
+          <div className="flex flex-col gap-2 rounded-lg bg-slate-50 px-3 py-2">
+            <TodoRecurrenceFields
+              date={date}
+              recurrence={recurrence}
+              days={recurrenceDays}
+              week={recurrenceWeek}
+              onDaysChange={setRecurrenceDays}
+              onWeekChange={(week, days) => {
+                setRecurrenceWeek(week)
+                setRecurrenceDays(days)
+              }}
+            />
+            <p className="text-xs text-slate-600">
+              完了にすると、
+              {recurrenceLabel(
+                normalizeRule({ recurrence, days: recurrenceDays, week: recurrenceWeek }),
+              )}
+              の次回分が自動で作られます。
+            </p>
+          </div>
         )}
 
         <div>

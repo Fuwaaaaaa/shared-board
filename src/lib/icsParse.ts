@@ -5,6 +5,7 @@ import {
   UTC_ZONE,
   expandRecurrence,
   fromWall,
+  type ByDayPart,
   type IcsFreq,
   type Zone,
 } from './icsRecurrence'
@@ -339,6 +340,50 @@ const FREQ_TO_ICS: Record<string, IcsFreq> = {
  * その月に無い日（2 月の 31 日）はその回を出さない —— RFC 5545 の決まり。
  * ボード自身の予定は逆に月末へ丸めるが、その差は書き出し側が RDATE で埋めている。
  */
+/** RRULE の曜日の綴り。0=日 … 6=土 */
+const ICS_WEEKDAYS = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA']
+
+/**
+ * BYDAY を読む。`TU,TH` と `2TU`（序数つき）、`-1FR`（最後から）を受け付ける。
+ *
+ * 序数つきは Google と Apple が書き出す形。序数なし + BYSETPOS で
+ * 同じことを書く実装（Outlook など）もあるので、そちらは parseNumberList で受ける。
+ * 読めない語は落とす。
+ */
+export function parseByDay(value: string | undefined): ByDayPart[] {
+  const text = (value ?? '').trim()
+  if (!text) return []
+
+  const parts: ByDayPart[] = []
+  for (const token of text.split(',')) {
+    const match = /^([+-]?\d+)?([A-Za-z]{2})$/.exec(token.trim())
+    if (!match) continue
+    const weekday = ICS_WEEKDAYS.indexOf(match[2].toUpperCase())
+    if (weekday < 0) continue
+    const nth = match[1] ? Number(match[1]) : null
+    if (nth !== null && (!Number.isInteger(nth) || nth === 0)) continue
+    parts.push({ weekday, nth })
+  }
+  return parts
+}
+
+/** `-1,2` のような整数の並びを読む。0 と読めない値は落とす */
+export function parseNumberList(value: string | undefined): number[] {
+  const text = (value ?? '').trim()
+  if (!text) return []
+
+  return text
+    .split(',')
+    .map((piece) => Number(piece.trim()))
+    .filter((n) => Number.isInteger(n) && n !== 0)
+}
+
+/** WKST。RFC 5545 の既定は月曜 */
+export function parseWkst(value: string | undefined): number {
+  const index = ICS_WEEKDAYS.indexOf((value ?? '').trim().toUpperCase())
+  return index >= 0 ? index : 1
+}
+
 function expandRrule(event: RawEvent, from: Date, to: Date): Date[] {
   const durationMs = event.end ? Math.max(0, event.end.getTime() - event.start.getTime()) : 0
   // 繰り返さない予定は「開始が範囲内」だけを見る。範囲の手前から続く長い予定を
@@ -376,6 +421,9 @@ function expandRrule(event: RawEvent, from: Date, to: Date): Date[] {
       zone: event.zone,
       freq,
       interval: Math.max(1, Number(parts.INTERVAL ?? 1) || 1),
+      byDay: parseByDay(parts.BYDAY),
+      bySetPos: parseNumberList(parts.BYSETPOS),
+      wkst: parseWkst(parts.WKST),
       count: parts.COUNT ? Number(parts.COUNT) : null,
       until,
       untilInclusive,

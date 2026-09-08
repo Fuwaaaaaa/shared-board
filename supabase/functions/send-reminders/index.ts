@@ -46,13 +46,23 @@ interface EventRow {
   all_day: boolean
   color: string
   recurrence: Recurrence
+  recurrence_days: number[]
+  recurrence_week: number | null
   recurrence_until: string | null
   remind_minutes: number | null
   tags: string[]
 }
 
+/*
+ * 取ってくる列。
+ *
+ * ここに列を足し忘れても何もエラーにならない。ruleOf が undefined を見て
+ * 従来どおりの並びに落ち、通知だけが違う曜日に飛ぶ。気づけないので、
+ * EventLike の全フィールドが並んでいることをテストで押さえてある
+ * （src/lib/__tests__/recurrence.test.ts）。
+ */
 const EVENT_COLUMNS =
-  'id, room_id, title, description, start_at, end_at, all_day, color, recurrence, recurrence_until, remind_minutes, tags'
+  'id, room_id, title, description, start_at, end_at, all_day, color, recurrence, recurrence_days, recurrence_week, recurrence_until, remind_minutes, tags'
 
 interface OverrideRow {
   event_id: string
