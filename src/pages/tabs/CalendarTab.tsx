@@ -59,6 +59,8 @@ import {
   todoFromEvent,
 } from '../../lib/convert'
 import { useCalendarFeeds } from '../../hooks/useCalendarFeeds'
+import { useOptimisticTable } from '../../hooks/useOptimisticTable'
+import { useNotice } from '../../hooks/useNotice'
 import FeedSettingsModal from '../../components/FeedSettingsModal'
 import type { FeedEvent } from '../../lib/icsParse'
 import { buildIcs, downloadText } from '../../lib/ics'
@@ -128,6 +130,12 @@ export default function CalendarTab({
     attendance,
     approvedMembers,
   } = useRoomData()
+
+  const [notice, setNotice] = useNotice()
+
+  // 予定の書き込みは 1 か所に寄せる。散らばっていたころは、失敗しても
+  // 画面が黙って元に戻るだけで、理由が出なかった
+  const eventOps = useOptimisticTable<CalendarEvent>('events', events, setNotice)
 
   const [view, setView] = useState<View>('month')
   const [cursor, setCursor] = useState(() => new Date())
@@ -430,8 +438,7 @@ export default function CalendarTab({
         for (const answer of answers) attendance.removeLocal(answer.id)
       }
 
-      events.upsertLocal({ ...existing, ...patch })
-      await supabase.from('events').update(patch).eq('id', existing.id)
+      await eventOps.patch(existing.id, patch, { what: '保存' })
     } else {
       const now = new Date().toISOString()
       const event: CalendarEvent = {
@@ -446,9 +453,7 @@ export default function CalendarTab({
         created_at: now,
         updated_at: now,
       }
-      events.upsertLocal(event)
-      const { error } = await supabase.from('events').insert(event)
-      if (error) events.removeLocal(event.id)
+      await eventOps.insert([event], '予定の保存')
     }
 
     setEditing(null)
@@ -463,12 +468,8 @@ export default function CalendarTab({
     const current = events.rows.find((e) => e.id === id)
     if (!current) return
 
-    const at = new Date().toISOString()
-    events.upsertLocal({ ...current, deleted_at: at })
     setEditing(null)
-
-    const { error } = await supabase.from('events').update({ deleted_at: at }).eq('id', id)
-    if (error) events.upsertLocal(current)
+    await eventOps.patch(id, { deleted_at: new Date().toISOString() }, { what: '削除を保存' })
   }
 
   /** その回だけ削除する */
@@ -509,9 +510,9 @@ export default function CalendarTab({
       return
     }
 
-    const patch = { start_at: startIso, end_at: endIso }
-    events.upsertLocal({ ...occurrence.event, ...patch })
-    await supabase.from('events').update(patch).eq('id', occurrence.event.id)
+    await eventOps.patch(occurrence.event.id, { start_at: startIso, end_at: endIso }, {
+      what: '移動を保存',
+    })
   }
 
   /** 週表示で終了時刻だけを伸ばす。繰り返しの場合はその回だけ伸ばす */
@@ -533,9 +534,9 @@ export default function CalendarTab({
       return
     }
 
-    const patch = { end_at: newEnd.toISOString() }
-    events.upsertLocal({ ...occurrence.event, ...patch })
-    await supabase.from('events').update(patch).eq('id', occurrence.event.id)
+    await eventOps.patch(occurrence.event.id, { end_at: newEnd.toISOString() }, {
+      what: '長さの変更を保存',
+    })
   }
 
   /** 予定から「準備すること」をつくる */
@@ -574,8 +575,7 @@ export default function CalendarTab({
             : current,
         )
       }
-      events.upsertLocal(next)
-      await supabase.from('events').update(values).eq('id', event.id)
+      await eventOps.patch(event.id, values, { what: '保存' })
     }
 
     return {
@@ -617,6 +617,14 @@ export default function CalendarTab({
 
   return (
     <div className="flex h-full flex-col">
+      {notice && (
+        <div
+          role="status"
+          className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800"
+        >
+          {notice}
+        </div>
+      )}
       <div className="toolbar-scroll flex items-center gap-2 border-b border-slate-200 bg-white px-4 py-2">
         {view !== 'list' && (
           <>

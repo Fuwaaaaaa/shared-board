@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { format, isToday, parseISO } from 'date-fns'
 import { ja } from 'date-fns/locale'
-import { supabase } from '../lib/supabase'
 import { useIdentity } from '../lib/identity'
 import { useRoomData } from '../lib/roomData'
 import { colorForUser } from '../hooks/usePresence'
 import { notifyMentions } from '../hooks/useNotifications'
+import { useOptimisticTable } from '../hooks/useOptimisticTable'
+import { useNotice } from '../hooks/useNotice'
 import type { Comment, CommentTarget } from '../lib/types'
 
 interface Props {
@@ -28,6 +29,8 @@ export default function CommentList({
 }: Props) {
   const { userId, displayName } = useIdentity()
   const { roomId, comments, approvedMembers } = useRoomData()
+  const [notice, setNotice] = useNotice()
+  const commentOps = useOptimisticTable<Comment>('comments', comments, setNotice)
   const [body, setBody] = useState('')
   const [mentionQuery, setMentionQuery] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -83,12 +86,7 @@ export default function CommentList({
 
     setBody('')
     setMentionQuery(null)
-    comments.upsertLocal(comment)
-    const { error } = await supabase.from('comments').insert(comment)
-    if (error) {
-      comments.removeLocal(comment.id)
-      return
-    }
+    if (!(await commentOps.insert([comment], '送信'))) return
 
     // 本文に @名前 があれば、その人に通知を送る
     await notifyMentions({
@@ -103,12 +101,18 @@ export default function CommentList({
   }
 
   async function remove(id: string) {
-    comments.removeLocal(id)
-    await supabase.from('comments').delete().eq('id', id)
+    const target = list.find((c) => c.id === id)
+    if (!target) return
+    await commentOps.remove([target], '削除')
   }
 
   return (
     <div className={autoScroll ? 'flex h-full min-h-0 flex-col' : 'space-y-3'}>
+      {notice && (
+        <p role="status" className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          {notice}
+        </p>
+      )}
       <div className={autoScroll ? 'min-h-0 flex-1 space-y-3 overflow-y-auto p-4' : 'space-y-3'}>
         {list.length === 0 ? (
           <p className="py-6 text-center text-sm text-slate-400">{emptyText}</p>

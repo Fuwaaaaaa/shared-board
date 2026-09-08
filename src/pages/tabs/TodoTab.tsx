@@ -7,6 +7,8 @@ import NotificationBanner from '../../components/NotificationBanner'
 import TagInput, { TagFilterBar } from '../../components/TagInput'
 import { useNow } from '../../hooks/useReminders'
 import { usePushNotifications } from '../../hooks/usePushNotifications'
+import { useOptimisticTable } from '../../hooks/useOptimisticTable'
+import { useNotice } from '../../hooks/useNotice'
 import { nextDueDate, normalizeRule, recurrenceLabel, ruleOf } from '../../lib/recurrence'
 import { boardDateTimeIso, localDateOf } from '../../lib/dates'
 import {
@@ -62,6 +64,11 @@ export default function TodoTab({ reminders, focusId, focusNonce, onJump }: Prop
   const { roomId, canEdit, todos, comments, approvedMembers, notes, events } = useRoomData()
   const now = useNow()
   const push = usePushNotifications()
+  const [notice, setNotice] = useNotice()
+
+  // 書き込みは 1 か所に寄せる。散らばっていたころは、失敗しても
+  // 画面が黙って元に戻るだけで、理由が出なかった
+  const todoOps = useOptimisticTable<Todo>('todos', todos, setNotice)
 
   const [title, setTitle] = useState('')
   const [editing, setEditing] = useState<Todo | null>(null)
@@ -124,9 +131,7 @@ export default function TodoTab({ reminders, focusId, focusNonce, onJump }: Prop
     })
 
     setTitle('')
-    todos.upsertLocal(todo)
-    const { error } = await supabase.from('todos').insert(todo)
-    if (error) todos.removeLocal(todo.id)
+    await todoOps.insert([todo], 'やることの保存')
   }
 
   /** カンバンの列を移動する。完了列に入れたら done も立てる。 */
@@ -143,8 +148,7 @@ export default function TodoTab({ reminders, focusId, focusNonce, onJump }: Prop
   }
 
   async function patchTodo(todo: Todo, patch: Partial<Todo>) {
-    todos.upsertLocal({ ...todo, ...patch })
-    await supabase.from('todos').update(patch).eq('id', todo.id)
+    await todoOps.patch(todo.id, patch, { what: '保存' })
   }
 
   /**
@@ -177,10 +181,9 @@ export default function TodoTab({ reminders, focusId, focusNonce, onJump }: Prop
       created_at: new Date().toISOString(),
     }
 
-    todos.upsertLocal(repeated)
-    const { error } = await supabase.from('todos').insert(repeated)
-    // 失敗（一意制約違反 23505 を含む）は「相手が先に作っただけ」なので、自分の分を引っ込めるだけでよい
-    if (error) todos.removeLocal(repeated.id)
+    // 失敗（一意制約違反 23505 を含む）は「相手が先に作っただけ」なので、
+    // 自分の分が引っ込むだけでよい
+    await todoOps.insert([repeated], '次回分の保存')
   }
 
   /** 完了に切り替える。繰り返しタスクなら次回分を新しく作る。 */
@@ -199,12 +202,8 @@ export default function TodoTab({ reminders, focusId, focusNonce, onJump }: Prop
     const current = todos.rows.find((t) => t.id === id)
     if (!current) return
 
-    const at = new Date().toISOString()
-    todos.upsertLocal({ ...current, deleted_at: at })
     setEditing(null)
-
-    const { error } = await supabase.from('todos').update({ deleted_at: at }).eq('id', id)
-    if (error) todos.upsertLocal(current)
+    await todoOps.patch(id, { deleted_at: new Date().toISOString() }, { what: '削除を保存' })
   }
 
   /**
@@ -302,6 +301,14 @@ export default function TodoTab({ reminders, focusId, focusNonce, onJump }: Prop
 
   return (
     <div className="h-full overflow-auto">
+      {notice && (
+        <div
+          role="status"
+          className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800"
+        >
+          {notice}
+        </div>
+      )}
       <div className="mx-auto max-w-2xl p-3 sm:p-6">
         {canEdit && (
           <form onSubmit={addTodo} className="mb-4 flex gap-2">
