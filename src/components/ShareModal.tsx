@@ -24,6 +24,8 @@ interface Props {
 export default function ShareModal({ preview, onClose, onUpdated }: Props) {
   const navigate = useNavigate()
   const [recoveryToken, setRecoveryToken] = useState<string | null>(null)
+  const [calendarToken, setCalendarToken] = useState<string | null>(null)
+  const [calendarTokenAt, setCalendarTokenAt] = useState<string | null>(null)
   const [pin, setPin] = useState('')
   const [pinDraft, setPinDraft] = useState(false)
   const [settings, setSettings] = useState<JoinSettings | null>(null)
@@ -45,7 +47,7 @@ export default function ShareModal({ preview, onClose, onUpdated }: Props) {
     void Promise.all([
       supabase
         .from('room_secrets')
-        .select('recovery_token')
+        .select('recovery_token, calendar_token, calendar_token_at')
         .eq('room_id', preview.id)
         .maybeSingle(),
       supabase
@@ -55,7 +57,11 @@ export default function ShareModal({ preview, onClose, onUpdated }: Props) {
         .maybeSingle(),
     ]).then(([secret, room]) => {
       if (cancelled) return
-      if (secret.data) setRecoveryToken(secret.data.recovery_token as string)
+      if (secret.data) {
+        setRecoveryToken(secret.data.recovery_token as string)
+        setCalendarToken((secret.data.calendar_token as string | null) ?? null)
+        setCalendarTokenAt((secret.data.calendar_token_at as string | null) ?? null)
+      }
       if (room.data) setSettings(room.data as JoinSettings)
     })
 
@@ -219,7 +225,56 @@ export default function ShareModal({ preview, onClose, onUpdated }: Props) {
     setBusy(false)
   }
 
+  /** 購読 URL を発行する / 作り直す */
+  async function rotateCalendarToken() {
+    if (
+      calendarToken &&
+      !window.confirm(
+        '購読 URL を作り直します。いまの URL は使えなくなり、登録した人のカレンダーからこのボードの予定が消えます。',
+      )
+    ) {
+      return
+    }
+
+    setBusy(true)
+    setError(null)
+
+    const { data, error: failed } = await supabase.rpc('rotate_calendar_token', {
+      p_room_id: preview.id,
+    })
+
+    if (failed) setError(failed.message)
+    else {
+      setCalendarToken(data as string)
+      setCalendarTokenAt(new Date().toISOString())
+    }
+    setBusy(false)
+  }
+
+  async function clearCalendarToken() {
+    if (!window.confirm('購読 URL を止めます。登録した人のカレンダーからは予定が消えます。')) {
+      return
+    }
+
+    setBusy(true)
+    setError(null)
+
+    const { error: failed } = await supabase.rpc('clear_calendar_token', {
+      p_room_id: preview.id,
+    })
+
+    if (failed) setError(failed.message)
+    else {
+      setCalendarToken(null)
+      setCalendarTokenAt(null)
+    }
+    setBusy(false)
+  }
+
   const current = ACCESS_MODES.find((m) => m.key === mode)!
+  const calendarUrl = calendarToken
+    ? `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/board-ics/${calendarToken}.ics`
+    : ''
 
   return (
     <Modal title="このボードを共有" onClose={onClose}>
@@ -417,6 +472,68 @@ export default function ShareModal({ preview, onClose, onUpdated }: Props) {
               </button>
             </section>
           </>
+        )}
+
+        {preview.is_owner && (
+          <section>
+            <h3 className="mb-1 text-sm font-medium text-slate-700">
+              📅 カレンダーの購読 URL
+            </h3>
+            <p className="mb-3 text-xs leading-relaxed text-slate-500">
+              この URL を知っている人は、
+              <strong className="font-semibold text-slate-700">
+                このボードの予定をずっと見られます
+              </strong>
+              （このボードに参加していなくても、合言葉や承認を通らなくても見られます）。
+              渡す相手を選んでください。読み取り専用なので、相手からボードを書き換えることはできません。
+              渡した相手に見せたくなくなったら「作り直す」か「止める」を押してください。
+            </p>
+
+            {calendarToken ? (
+              <>
+                <CopyField value={calendarUrl} label="購読 URL をコピー" secret />
+                <p className="mt-2 text-xs leading-relaxed text-slate-500">
+                  Google カレンダーなら「他のカレンダー ＞ URL で追加」に貼ります。
+                  <strong className="font-semibold text-slate-700">
+                    反映までに数時間かかることがあります
+                  </strong>
+                  （取りに来る間隔は相手のアプリが決めます）。
+                </p>
+                <div className="mt-2 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void rotateCalendarToken()}
+                    className="text-xs text-slate-500 underline transition hover:text-slate-800 disabled:opacity-50"
+                  >
+                    作り直す
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void clearCalendarToken()}
+                    className="text-xs text-slate-500 underline transition hover:text-slate-800 disabled:opacity-50"
+                  >
+                    止める
+                  </button>
+                  {calendarTokenAt && (
+                    <span className="text-xs text-slate-400">
+                      {format(parseISO(calendarTokenAt), 'yyyy/M/d H:mm')} に発行
+                    </span>
+                  )}
+                </div>
+              </>
+            ) : (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void rotateCalendarToken()}
+                className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+              >
+                📅 購読 URL を作る
+              </button>
+            )}
+          </section>
         )}
 
         {preview.is_owner && recoveryToken && (

@@ -79,6 +79,10 @@ export default function FeedSettingsModal({ errors, loading, onRefresh, onClose 
           で、こちらから相手のカレンダーを変えることはありません。
         </p>
 
+        <p className="text-xs leading-relaxed text-slate-400">
+          逆に、このボードの予定を人に渡したいときは「🔗 共有」→「📅 カレンダーの購読 URL」から作れます。
+        </p>
+
         {feeds.rows.length > 0 && (
           <ul className="space-y-2">
             {feeds.rows.map((feed) => {

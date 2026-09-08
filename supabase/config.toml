@@ -8,6 +8,8 @@
 # send-reminders / purge-storage は pg_cron から service_role で叩くので、
 # エッジでの JWT 検証は外し、関数の中で共有シークレットを照合します
 # （supabase/functions/*/index.ts と supabase/cron.sql を参照）。
+# board-ics はカレンダーアプリが取りに来るので JWT を送れません。検証は外し、
+# URL に埋めた購読トークン（room_secrets.calendar_token）だけで照合します。
 #
 # 書いていない項目は CLI の既定値が使われます。
 
@@ -28,4 +30,10 @@ verify_jwt = false
 
 [functions.purge-storage]
 # 同上。
+verify_jwt = false
+
+[functions.board-ics]
+# ボードのカレンダーを購読 URL として配る。Google カレンダーや Apple カレンダーは
+# Authorization ヘッダを付けられないので、エッジでの検証は外すしかない。
+# 認証は URL の 32 桁のトークンだけで、照合は関数の中で行う。
 verify_jwt = false

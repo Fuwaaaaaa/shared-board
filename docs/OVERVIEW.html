@@ -348,11 +348,12 @@
 ├─ cron.sql              定期実行の登録（プッシュ通知・掃除。任意）
 ├─ <b>functions/</b>
 │  ├─ fetch-ics          外部カレンダーの中継（CORS 回避）
+│  ├─ board-ics          ボードの予定を購読 URL（.ics）として配る
 │  ├─ send-reminders     Web Push の送信（pg_cron から毎分）
 │  ├─ purge-storage      Storage の実体削除（SQL からは消せないため）
 │  └─ _shared/           dates / recurrence / cronAuth（画面と共有）
 ├─ <b>tests/</b>
-│  └─ rls.test.sql       権限が効いているかの確認（pgTAP・242 件）
+│  └─ rls.test.sql       権限が効いているかの確認（pgTAP・252 件）
 └─ <b>stubs/</b>
    └─ _stub_storage.sql  使い捨ての DB で schema.sql を流すための足場
 
@@ -768,6 +769,15 @@
             <td>
               丸めた回を <code>RDATE</code> で補っていますが、終わりの無い繰り返しでは
               3 年ぶんで区切ります。それより先は書き出し直しが要ります
+            </td>
+          </tr>
+          <tr>
+            <td>カレンダーの購読 URL</td>
+            <td>
+              作り直すか止めるまで有効な「読み取りの権限」です。
+              <code>revoke_all_members</code>（全員を外す）では止まりません
+              — 別の権限なので、別の操作で切る作りにしています。
+              共有画面の文面でそう伝え、発行と停止は 📣 更新タブに残します
             </td>
           </tr>
           <tr>

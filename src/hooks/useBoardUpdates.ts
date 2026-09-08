@@ -120,6 +120,10 @@ function accessLine(
       return { icon: '🔗', text: 'が共有リンクを作り直しました' }
     case 'owner_link_rotated':
       return { icon: '🔗', text: 'が復帰リンクを作り直しました' }
+    case 'calendar_link_rotated':
+      return { icon: '📅', text: 'がカレンダーの購読 URL を作り直しました' }
+    case 'calendar_link_cleared':
+      return { icon: '📅', text: 'がカレンダーの購読 URL を止めました' }
     case 'access_mode':
       return { icon: '🔑', text: `が入り方を「${who}」に変えました` }
     case 'join_settings':

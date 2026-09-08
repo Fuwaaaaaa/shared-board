@@ -568,6 +568,26 @@ begin
 end;
 $$;
 
+-- カレンダーの購読 URL のトークン。
+--
+-- カレンダーアプリは JWT を送れないので、URL に埋めた 32 桁の乱数そのものが鍵になる。
+-- 発行は任意で、既定は null（発行していない）。ここを既定で埋めてしまうと、
+-- すでにあるボードが黙って「URL を知っていれば誰でも予定を読める」状態になる。
+--
+-- 置き場所を room_secrets にするのは、この表が
+--   ・リアルタイム配信に入っていない
+--   ・SELECT のポリシーがオーナーだけに限られている
+--   ・ボードを消せば一緒に消える
+-- という、必要な性質をすでに全部持っているため。新しい表を作ると、RLS の有効化・
+-- ポリシー 4 つ・棚卸しの行・リアルタイムの判断・件数上限がぜんぶ付いてくる。
+alter table public.room_secrets add column if not exists calendar_token text;
+alter table public.room_secrets add column if not exists calendar_token_at timestamptz;
+
+-- トークンからボードを引くのは board-ics（service_role）だけ。索引が無いと
+-- 総当たりのたびに全表走査になる。部分一意にして重複も防ぐ。
+create unique index if not exists room_secrets_calendar_token_uidx
+  on public.room_secrets (calendar_token) where calendar_token is not null;
+
 alter table public.rooms add column if not exists join_closed     boolean not null default false;
 alter table public.rooms add column if not exists join_expires_at timestamptz;
 alter table public.rooms add column if not exists max_members     integer;
@@ -2303,6 +2323,47 @@ begin
 end;
 $$;
 
+-- カレンダーの購読 URL を発行する / 作り直す。
+--
+-- 返した 32 桁がそのまま URL に入る。作り直すと前の URL は使えなくなるので、
+-- 相手のカレンダーからはこのボードの予定が消える。
+create or replace function public.rotate_calendar_token(p_room_id uuid)
+returns text
+language plpgsql security definer
+set search_path = '' as $$
+declare
+  v_token text;
+begin
+  if not public.is_room_owner(p_room_id) then
+    raise exception 'オーナーだけが変更できます';
+  end if;
+
+  v_token := replace(gen_random_uuid()::text, '-', '');
+  update public.room_secrets
+     set calendar_token = v_token, calendar_token_at = now()
+   where room_id = p_room_id;
+  perform public.log_access(p_room_id, 'calendar_link_rotated');
+  return v_token;
+end;
+$$;
+
+-- カレンダーの購読 URL を止める。以後、その URL は「見つかりません」になる。
+create or replace function public.clear_calendar_token(p_room_id uuid)
+returns void
+language plpgsql security definer
+set search_path = '' as $$
+begin
+  if not public.is_room_owner(p_room_id) then
+    raise exception 'オーナーだけが変更できます';
+  end if;
+
+  update public.room_secrets
+     set calendar_token = null, calendar_token_at = null
+   where room_id = p_room_id;
+  perform public.log_access(p_room_id, 'calendar_link_cleared');
+end;
+$$;
+
 -- 合言葉の設定。room_secrets は SELECT しかポリシーが無いので、ここから書く。
 -- 平文は保存しない（bcrypt）。空文字を渡すと合言葉なしになる。
 create or replace function public.set_join_pin(p_room_id uuid, p_pin text)
@@ -2574,6 +2635,8 @@ grant execute on function public.request_access(text, text, text, text) to authe
 grant execute on function public.rotate_room_slug(uuid)            to authenticated;
 grant execute on function public.rotate_owner_token(uuid)          to authenticated;
 grant execute on function public.set_join_pin(uuid, text)          to authenticated;
+grant execute on function public.rotate_calendar_token(uuid)       to authenticated;
+grant execute on function public.clear_calendar_token(uuid)        to authenticated;
 grant execute on function public.claim_owner(text, text, text)     to authenticated;
 grant execute on function public.revoke_all_members(uuid, boolean) to authenticated;
 grant execute on function public.delete_my_account(boolean)        to authenticated;
@@ -2602,6 +2665,8 @@ begin
     'public.claim_owner(text, text, text)',
     'public.rotate_room_slug(uuid)',
     'public.rotate_owner_token(uuid)',
+    'public.rotate_calendar_token(uuid)',
+    'public.clear_calendar_token(uuid)',
     'public.set_join_pin(uuid, text)',
     'public.revoke_all_members(uuid, boolean)',
     'public.delete_my_account(boolean)',

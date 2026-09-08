@@ -19,7 +19,7 @@ begin;
 
 create extension if not exists pgtap;
 
-select plan(242);
+select plan(252);
 
 
 -- =============================================================================
@@ -1114,6 +1114,16 @@ select throws_ok(
   '42501', null,
   'anon は claim_owner を呼べない');
 
+select throws_ok(
+  $$select public.rotate_calendar_token('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')$$,
+  '42501', null,
+  'anon はカレンダーの購読 URL を発行できない');
+
+select throws_ok(
+  $$select public.clear_calendar_token('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')$$,
+  '42501', null,
+  'anon はカレンダーの購読 URL を止められない');
+
 set local role authenticated;
 
 
@@ -2017,7 +2027,62 @@ select lives_ok(
 
 
 -- =============================================================================
---  38. 棚卸し — 権限の「形」を固定する
+--  38. カレンダーの購読 URL
+--
+--      この URL を知っている人は、ボードに参加していなくても予定を読める。
+--      発行できるのがオーナーだけであること、トークンが他の人からは見えないことを見る。
+-- =============================================================================
+
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき（オーナー）
+
+select matches(
+  (select public.rotate_calendar_token('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')),
+  '^[0-9a-f]{32}$',
+  'オーナーは購読 URL のトークンを発行できる');
+
+select isnt(
+  (select public.rotate_calendar_token('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')),
+  (select public.rotate_calendar_token('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')),
+  '作り直すたびに違うトークンになる');
+
+select is(
+  (select count(*)::int from public.activities
+    where room_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+      and action = 'calendar_link_rotated'),
+  3, '購読 URL の発行が 📣 更新に残る');
+
+select tests_act_as('22222222-2222-2222-2222-222222222222');   -- けいこ（編集できる参加者）
+
+select is(
+  tests_error($$select public.rotate_calendar_token('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')$$),
+  'オーナーだけが変更できます',
+  '編集できる人でも購読 URL は発行できない');
+
+select is(
+  tests_error($$select public.clear_calendar_token('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')$$),
+  'オーナーだけが変更できます',
+  '編集できる人は購読 URL を止められない');
+
+-- 参加者からはトークンそのものが見えない（room_secrets の SELECT はオーナー限定）
+select is(
+  (select count(*)::int from public.room_secrets
+    where room_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
+  0, '参加者は room_secrets を 1 行も読めない');
+
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき
+
+select lives_ok(
+  $$select public.clear_calendar_token('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')$$,
+  'オーナーは購読 URL を止められる');
+
+select is(
+  (select calendar_token from public.room_secrets
+    where room_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
+  null, '止めるとトークンは消える');
+
+
+-- =============================================================================
+--  39. 棚卸し — 権限の「形」を固定する
 --
 --      ここだけは中身ではなく形を見ている。ポリシーが増えた・減った、
 --      トリガーが片方の操作にしか付いていない、外から呼べる関数が増えた——を、
@@ -2246,6 +2311,7 @@ select set_eq(
   ('can_access_room'),
   ('can_edit_room'),
   ('claim_owner'),
+  ('clear_calendar_token'),
   ('delete_my_account'),
   ('get_room_preview'),
   ('is_room_owner'),
@@ -2257,6 +2323,7 @@ select set_eq(
   ('revoke_all_members'),
   ('room_display_name'),
   ('room_is_open'),
+  ('rotate_calendar_token'),
   ('rotate_owner_token'),
   ('rotate_room_slug'),
   ('set_join_pin'),
