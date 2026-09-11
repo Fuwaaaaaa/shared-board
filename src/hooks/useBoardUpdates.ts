@@ -32,6 +32,7 @@ const TARGET_LABELS: Record<Activity['target_type'], string> = {
   todos: 'やること',
   images: '画像',
   attachments: 'ファイル',
+  comments: 'コメント',
   access: '',
 }
 
@@ -60,6 +61,8 @@ const TARGET_TABS: Record<Activity['target_type'], TabKey | null> = {
   todos: 'todo',
   images: 'board',
   attachments: 'board',
+  // 消えた発言そのものへは飛べない（戻すまで画面に無い）
+  comments: null,
   access: null,
 }
 
@@ -69,6 +72,7 @@ const TARGET_CATEGORIES: Record<Activity['target_type'], UpdateCategory> = {
   todos: 'todo',
   images: 'board',
   attachments: 'board',
+  comments: 'comment',
   access: 'member',
 }
 

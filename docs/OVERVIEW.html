@@ -440,7 +440,9 @@
       <li>
         <b>削除はゴミ箱行き。</b> <code>deleted_at</code> を立てるだけで、30 日は戻せます。
         <code>useWithoutDeleted</code> が <code>rows</code> と <code>trash</code> に分けます。
-        ただし <code>comments</code> にはこの列がありません。
+        <code>comments</code> もこの形ですが、<b>戻せる人だけが違います</b>——
+        消す操作がモデレーションなので、消した本人（<code>deleted_by</code>）か
+        オーナーだけ。判定はサーバー側（<code>tg_comment_trash_guard</code>）です。
         <code>strokes</code> は列を持ちますが、<b>2 つだけ流儀が違います</b>——
         購読の時点でゴミ箱の行を外す（<code>useRealtimeTable</code> の
         <code>skipDeleted</code>。<code>points</code> が重いので全員に配らない）ため

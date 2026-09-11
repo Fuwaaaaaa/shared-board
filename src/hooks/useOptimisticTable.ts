@@ -359,7 +359,11 @@ export function useOptimisticTable<T extends Row>(
               (changes as Record<string, unknown>).text ??
                 (changes as Record<string, unknown>).title ??
                 (changes as Record<string, unknown>).body ??
-                (before as Record<string, unknown> | undefined)?.text,
+                (before as Record<string, unknown> | undefined)?.text ??
+                // ゴミ箱に入れるだけの変更は changes に文字が無い。元の行から拾わないと
+                // 送信箱に中身の無い行が並ぶ（コメントは text ではなく body を持つ）
+                (before as Record<string, unknown> | undefined)?.title ??
+                (before as Record<string, unknown> | undefined)?.body,
             ),
             seq: nextSeq(),
           }))

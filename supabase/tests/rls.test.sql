@@ -19,7 +19,7 @@ begin;
 
 create extension if not exists pgtap;
 
-select plan(339);
+select plan(353);
 
 
 -- =============================================================================
@@ -126,6 +126,13 @@ insert into public.strokes (id, room_id, points, author_id) values
   ('55550000-0000-0000-0000-000000000001', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', '[[1,2],[3,4]]'::jsonb, '11111111-1111-1111-1111-111111111111'),
   ('55550000-0000-0000-0000-000000000002', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '[[5,6],[7,8]]'::jsonb, '11111111-1111-1111-1111-111111111111');
 
+-- 終了したボードの発言。書いたのはけいこ本人にしておく——
+-- 他人の発言にすると「終了しているから」ではなく「他人だから」で止まってしまい、
+-- 何を確かめたテストなのか分からなくなる
+insert into public.comments (id, room_id, target_type, body, author_id, author_name) values
+  ('66660000-0000-0000-0000-000000000003', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', 'board',
+   '終了前に書いた発言', '22222222-2222-2222-2222-222222222222', 'けいこ');
+
 -- ここで終了させる
 update public.rooms set archived = true
  where id = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
@@ -186,6 +193,12 @@ select is(
   tests_rowcount($$insert into public.comments (room_id, target_type, body, author_id, author_name)
                    values ('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', 'board', 'まだ書ける？', '22222222-2222-2222-2222-222222222222', 'けいこ')$$),
   -1, '終了したボードにはコメントも書けない');
+
+-- コメントもゴミ箱を持つようになったぶん、入口が 1 つ増えている
+select is(
+  tests_rowcount($$update public.comments set deleted_at = now()
+                    where id = '66660000-0000-0000-0000-000000000003'$$),
+  0, '終了したボードでは、自分の発言もゴミ箱に入れられない');
 
 select is(
   tests_rowcount($$insert into public.note_votes (room_id, note_id, user_id, voter_name)
@@ -2516,7 +2529,7 @@ select is(
 
 
 -- =============================================================================
---  40. ゴミ箱（フレーム・線・ファイル・手描き）
+--  40. ゴミ箱（フレーム・線・ファイル・手描き・コメント）
 --
 --      いちばん確かめたいのは 4 つめ。添付をゴミ箱に入れただけでは
 --      Storage の実体の掃除が予約されないこと——ここが崩れると、
@@ -2730,6 +2743,123 @@ select is(
                          '11111111-1111-1111-1111-111111111111')$$),
   '手描き はボードあたり 2500 件までです',
   'ゴミ箱が空になれば、これまでどおり上限で断られる');
+
+-- ---- コメントのゴミ箱 ------------------------------------------------------
+--
+-- ここだけ、消す理由が事故ではなくモデレーションになる。だから「消せる人」と
+-- 「戻せる人」を他の種類と変えてある。崩れると、オーナーが消した発言を
+-- 編集できるだけの第三者がその場で戻せてしまい、モデレーションが帳消しになる。
+--
+-- 名簿の状態をここで作り直すのは、前の節までに みなみ が名簿から外れているため。
+-- 「閲覧のみの人」を確かめたいので、その人が居るボードを別に立てる。
+reset role;
+insert into public.rooms (id, slug, name, owner_id, owner_name) values
+  ('cafe0000-0000-0000-0000-000000000003', 'talkroom', 'コメントの実験用',
+   '11111111-1111-1111-1111-111111111111', 'ゆうき');
+insert into public.room_members (room_id, user_id, display_name, role, status, can_edit) values
+  ('cafe0000-0000-0000-0000-000000000003', '11111111-1111-1111-1111-111111111111', 'ゆうき', 'owner',  'approved', true),
+  ('cafe0000-0000-0000-0000-000000000003', '22222222-2222-2222-2222-222222222222', 'けいこ', 'member', 'approved', true),
+  ('cafe0000-0000-0000-0000-000000000003', '33333333-3333-3333-3333-333333333333', 'みなみ', 'member', 'approved', false);
+insert into public.comments (id, room_id, target_type, body, author_id, author_name) values
+  ('66660000-0000-0000-0000-000000000001', 'cafe0000-0000-0000-0000-000000000003', 'board',
+   'みなみの発言', '33333333-3333-3333-3333-333333333333', 'みなみ'),
+  ('66660000-0000-0000-0000-000000000002', 'cafe0000-0000-0000-0000-000000000003', 'board',
+   'けいこの発言', '22222222-2222-2222-2222-222222222222', 'けいこ');
+set local role authenticated;
+
+select tests_act_as('33333333-3333-3333-3333-333333333333');   -- みなみ（閲覧のみ）
+
+select is(
+  tests_rowcount($$update public.comments set deleted_at = now()
+                    where id = '66660000-0000-0000-0000-000000000001'$$),
+  1, '閲覧のみの人でも、自分の発言はゴミ箱に入れられる');
+
+select is(
+  tests_rowcount($$update public.comments set deleted_at = null
+                    where id = '66660000-0000-0000-0000-000000000001'$$),
+  1, '自分で消した発言は、自分で戻せる');
+
+select tests_act_as('22222222-2222-2222-2222-222222222222');   -- けいこ（編集できる）
+
+select is(
+  tests_rowcount($$update public.comments set deleted_at = now()
+                    where id = '66660000-0000-0000-0000-000000000001'$$),
+  0, '編集できるだけの人は、他の人の発言をゴミ箱に入れられない');
+
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき（オーナー）
+
+select is(
+  tests_rowcount($$update public.comments set deleted_at = now()
+                    where id = '66660000-0000-0000-0000-000000000001'$$),
+  1, 'ボードを作った人は、他の人の発言をゴミ箱に入れられる（モデレーション）');
+
+-- ポリシーはオーナーの UPDATE を通す。列の単位で線を引けるのはトリガーだけなので、
+-- ここが抜けると「消すために開けた道」が「他人の発言の改竄」にも使える
+select is(
+  tests_error($$update public.comments set body = '書き換えた'
+                 where id = '66660000-0000-0000-0000-000000000002'$$),
+  '他の人の発言は書き換えられません',
+  'オーナーでも、他の人の発言を書き換えることはできない');
+
+reset role;
+select is(
+  (select deleted_by from public.comments where id = '66660000-0000-0000-0000-000000000001'),
+  '11111111-1111-1111-1111-111111111111'::uuid,
+  '誰が消したかは、サーバー側で入る');
+set local role authenticated;
+
+select tests_act_as('22222222-2222-2222-2222-222222222222');   -- けいこ（編集できる）
+
+select is(
+  tests_rowcount($$update public.comments set deleted_at = null
+                    where id = '66660000-0000-0000-0000-000000000001'$$),
+  0, '編集できるだけの人は、消された発言を戻せない');
+
+select tests_act_as('33333333-3333-3333-3333-333333333333');   -- みなみ（書いた本人）
+
+select is(
+  tests_error($$update public.comments set deleted_at = null
+                 where id = '66660000-0000-0000-0000-000000000001'$$),
+  'この発言を戻せるのは、消した人かボードを作った人だけです',
+  '書いた本人でも、オーナーが消したものは戻せない');
+
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき（オーナー）
+
+select is(
+  tests_rowcount($$update public.comments set deleted_at = null
+                    where id = '66660000-0000-0000-0000-000000000001'$$),
+  1, '消した本人（ここではオーナー）は戻せる');
+
+reset role;
+select is(
+  (select deleted_by from public.comments where id = '66660000-0000-0000-0000-000000000001'),
+  null::uuid,
+  '戻すと「消した人」の印も消える');
+set local role authenticated;
+
+-- 「消した人」を自己申告できると、戻せる人の判定がそのまま破れる
+select tests_act_as('33333333-3333-3333-3333-333333333333');   -- みなみ
+
+select is(
+  tests_rowcount($$update public.comments
+                      set deleted_at = now(),
+                          deleted_by = '11111111-1111-1111-1111-111111111111'
+                    where id = '66660000-0000-0000-0000-000000000001'$$),
+  1, '自分の発言を消すこと自体は通る');
+
+reset role;
+select is(
+  (select deleted_by from public.comments where id = '66660000-0000-0000-0000-000000000001'),
+  '33333333-3333-3333-3333-333333333333'::uuid,
+  '渡した「消した人」は無視され、本当に消した人が入る');
+set local role authenticated;
+
+select is(
+  (select count(*)::int from pg_trigger t
+     join pg_class c on c.oid = t.tgrelid
+    where c.relname = 'comments' and t.tgname = 'comments_limit_rows'
+      and pg_get_triggerdef(t.oid) like '%soft%'),
+  1, 'コメントの件数上限も、ゴミ箱の行を数えない');
 
 
 -- =============================================================================
@@ -3007,10 +3137,16 @@ select set_eq(
   ('calendar_feeds', 'calendar_feeds_limit_text', 'BEFORE', 'INSERT,UPDATE'),
   ('client_errors', 'client_errors_limit_text', 'BEFORE', 'INSERT,UPDATE'),
   ('client_errors', 'client_errors_throttle', 'BEFORE', 'INSERT'),
+  -- 消した・戻したことだけを残す（書いたこと自体は comments の行として流れに出る）。
+  -- 本文は target_label に入れていない
+  ('comments', 'comments_activity', 'AFTER', 'DELETE,INSERT,UPDATE'),
   ('comments', 'comments_force_name', 'BEFORE', 'INSERT,UPDATE'),
   ('comments', 'comments_freeze', 'BEFORE', 'UPDATE'),
   ('comments', 'comments_limit_rows', 'BEFORE', 'INSERT'),
   ('comments', 'comments_limit_text', 'BEFORE', 'INSERT,UPDATE'),
+  -- ポリシーは列の単位で線を引けない。「オーナーは消せるが書き換えられない」
+  -- 「戻せるのは消した人かオーナーだけ」はここが見ている
+  ('comments', 'comments_trash_guard', 'BEFORE', 'UPDATE'),
   ('connectors', 'connectors_freeze', 'BEFORE', 'UPDATE'),
   ('connectors', 'connectors_limit_rows', 'BEFORE', 'INSERT'),
   ('connectors', 'connectors_limit_text', 'BEFORE', 'INSERT,UPDATE'),
@@ -3126,6 +3262,7 @@ select set_eq(
   ('rotate_room_slug'),
   ('set_join_pin'),
   ('storage_room_id'),
+  ('tg_comment_trash_guard'),
   ('tg_create_room_secret'),
   ('tg_enqueue_purge'),
   ('tg_enqueue_purge_room'),

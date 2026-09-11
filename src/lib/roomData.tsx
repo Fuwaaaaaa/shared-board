@@ -33,6 +33,12 @@ export interface Trash {
   frames: Frame[]
   connectors: Connector[]
   attachments: Attachment[]
+  comments: Comment[]
+  /*
+   * 手描き（strokes）はここに入らない。points が重いのでゴミ箱の行を
+   * そもそも購読していない（useRealtimeTable の skipDeleted）。
+   * 中身は TrashModal が開いたときに取りに行く。
+   */
 }
 
 interface RoomData {
@@ -149,7 +155,7 @@ export function RoomDataProvider({
   const allEvents = useRealtimeTable<CalendarEvent>('events', roomId)
   const overrides = useRealtimeTable<EventOverride>('event_overrides', roomId)
   const allTodos = useRealtimeTable<Todo>('todos', roomId)
-  const comments = useRealtimeTable<Comment>('comments', roomId)
+  const allComments = useRealtimeTable<Comment>('comments', roomId)
   const votes = useRealtimeTable<NoteVote>('note_votes', roomId)
   const polls = useRealtimeTable<Poll>('polls', roomId)
   const pollOptions = useRealtimeTable<PollOption>('poll_options', roomId)
@@ -177,6 +183,14 @@ export function RoomDataProvider({
   const [frames, trashedFrames] = useWithoutDeleted(allFrames)
   const [connectors, trashedConnectors] = useWithoutDeleted(allConnectors)
   const [attachments, trashedAttachments] = useWithoutDeleted(allAttachments)
+  /*
+   * 消した発言を rows から外すのはここ 1 か所。
+   *
+   * コメントを読んでいる場所は多い（チャット・付箋や予定のコメント欄・横断検索・
+   * 📣 更新・各タブの件数バッジ）が、どれも roomData を通っている。
+   * 1 つでも直に from('comments') を叩くと、そこだけ消した発言が生き返る。
+   */
+  const [comments, trashedComments] = useWithoutDeleted(allComments)
 
   const approvedMembers = useMemo(
     () =>
@@ -248,6 +262,7 @@ export function RoomDataProvider({
       frames: trashedFrames,
       connectors: trashedConnectors,
       attachments: trashedAttachments,
+      comments: trashedComments,
     }),
     [
       trashedNotes,
@@ -257,6 +272,7 @@ export function RoomDataProvider({
       trashedFrames,
       trashedConnectors,
       trashedAttachments,
+      trashedComments,
     ],
   )
 

@@ -44,3 +44,46 @@ test('フレームにコメントを付けると、検索に出る', async ({ pa
   await page.getByPlaceholder('キーワードを入力（付箋・予定・リマインド・コメント）').fill('来週')
   await expect(page.getByText('フレームへのコメント')).toBeVisible()
 })
+
+
+test('消したコメントは、消した本人だけがゴミ箱から戻せる', async ({ page }) => {
+  /*
+   * コメントだけ、消す理由が事故ではなくモデレーションになる。だから
+   * 戻せる人も「消した本人かボードを作った人だけ」に絞ってある。
+   *
+   * ここで見るのは、その入口と出口——消すと流れから消えること、
+   * ゴミ箱に出ること、戻すと検索にも戻ること。誰が戻せるかの線引きそのものは
+   * pgTAP（tg_comment_trash_guard）が両方向から見ている。
+   */
+  page.on('dialog', (dialog) => void dialog.accept())
+
+  await signIn(page, 'ひとり目')
+  await createBoard(page, stamp())
+
+  // ボードのチャットに 1 本書く
+  await page.getByTitle('チャット').click()
+  await page.getByPlaceholder('このボードのみんなに送信').fill('会場の鍵は当日うけとり')
+  await page.getByRole('button', { name: '送信' }).click()
+  await expect(page.getByText('会場の鍵は当日うけとり')).toBeVisible()
+  await waitForSaved(page)
+
+  // 消すとその場から消える
+  await page.getByRole('button', { name: '削除' }).click()
+  await expect(page.getByText('会場の鍵は当日うけとり')).toHaveCount(0)
+  await page.getByRole('button', { name: '閉じる' }).click()
+
+  // ゴミ箱に出る（消したのは自分なので見える）
+  await page.getByRole('button', { name: '更新' }).click()
+  await page.getByRole('button', { name: 'ゴミ箱' }).click()
+  await expect(page.getByRole('heading', { name: 'ゴミ箱' })).toBeVisible()
+  await expect(page.getByText('会場の鍵は当日うけとり')).toBeVisible()
+
+  await page.getByRole('button', { name: '戻す' }).first().click()
+  await expect(page.getByText('ゴミ箱は空です。')).toBeVisible()
+  await page.getByRole('button', { name: '閉じる' }).click()
+
+  // 戻ると、横断検索にもまた出る（読む側を 1 か所で塞いでいるかの確かめ）
+  await page.keyboard.press('Control+f')
+  await page.getByPlaceholder('キーワードを入力（付箋・予定・リマインド・コメント）').fill('鍵は当日')
+  await expect(page.getByText(/ひとり目 — チャット/)).toBeVisible()
+})

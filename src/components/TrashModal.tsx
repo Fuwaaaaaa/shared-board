@@ -3,6 +3,7 @@ import { format, parseISO } from 'date-fns'
 import { ja } from 'date-fns/locale'
 import Modal from './Modal'
 import { supabase } from '../lib/supabase'
+import { useIdentity } from '../lib/identity'
 import { useRoomData } from '../lib/roomData'
 import { connectorRestoreBlock, daysLeftInTrash, groupErased, TRASH_DAYS } from '../lib/trash'
 import type { Stroke } from '../lib/types'
@@ -16,6 +17,7 @@ type Kind =
   | 'connectors'
   | 'strokes'
   | 'attachments'
+  | 'comments'
 
 const SECTION_META: Record<Kind, { icon: string; label: string }> = {
   notes: { icon: '🖍️', label: '付箋' },
@@ -26,6 +28,7 @@ const SECTION_META: Record<Kind, { icon: string; label: string }> = {
   connectors: { icon: '➰', label: '線' },
   strokes: { icon: '🖊', label: '手描き' },
   attachments: { icon: '📎', label: 'ファイル' },
+  comments: { icon: '💬', label: 'コメント' },
 }
 
 /** PostgREST の in() に並べる id の数。URL 長の上限に当たらないように分ける */
@@ -64,6 +67,7 @@ export default function TrashModal({ onClose }: { onClose: () => void }) {
   const {
     trash,
     canEdit,
+    isOwner,
     roomId,
     notes,
     events,
@@ -73,7 +77,9 @@ export default function TrashModal({ onClose }: { onClose: () => void }) {
     connectors,
     strokes,
     attachments,
+    comments,
   } = useRoomData()
+  const { userId } = useIdentity()
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -258,6 +264,26 @@ export default function TrashModal({ onClose }: { onClose: () => void }) {
       kind: 'attachments',
       rows: build('attachments', attachments, trash.attachments, (a) => a.filename),
     },
+    {
+      /*
+       * 消された発言は、戻せる人にしか見せない。
+       *
+       * ここだけ消す理由がモデレーションなので、一覧に出すこと自体が
+       * 「消したはずの発言を読ませる窓」になる。出すのは自分が消したぶんと、
+       * ボードを作った人から見たときの全部だけ。
+       *
+       * 行そのものは参加者なら誰でも読める（そうしないと、消したことが
+       * Realtime で他の人の画面に届かず、消した発言が居座る）。
+       * だからこれは目隠しであって、権限の壁ではない。
+       */
+      kind: 'comments',
+      rows: build(
+        'comments',
+        comments,
+        trash.comments.filter((c) => isOwner || c.deleted_by === userId),
+        (c) => c.body.split('\n')[0]?.trim() || '（空の発言）',
+      ),
+    },
   ]
 
   const total = sections.reduce((sum, section) => sum + section.rows.length, 0)
@@ -268,8 +294,9 @@ export default function TrashModal({ onClose }: { onClose: () => void }) {
     <Modal title="ゴミ箱" onClose={onClose}>
       <p className="mb-4 text-xs text-slate-500">
         消したものは {TRASH_DAYS} 日ここに残ります。他の人が消したものも、ここから戻せます。
-        コメントはここに入りません（書いた本人か、作った人だけが消せます）。
         手描きだけは、描き足して上限に届くと {TRASH_DAYS} 日を待たずに古いものから消えます。
+        コメントは例外で、<b>自分が消したぶん</b>だけがここに出ます
+        （ボードを作った人には全部見えます）。
       </p>
 
       {error && (
@@ -307,7 +334,12 @@ export default function TrashModal({ onClose }: { onClose: () => void }) {
                           <span className="ml-1">（あと {daysLeftInTrash(row.deletedAt)} 日）</span>
                         </span>
                       )}
-                      {canEdit && (
+                      {/*
+                        コメントだけは「閲覧のみ」の人にも押させる。自分で書いて
+                        自分で消した発言を戻すのは、ボードの編集ではない
+                        （書けるのと同じ理屈。サーバー側も同じ線引きにしてある）。
+                      */}
+                      {(canEdit || kind === 'comments') && (
                         <>
                           <button
                             type="button"

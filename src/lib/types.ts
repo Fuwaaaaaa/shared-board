@@ -129,7 +129,9 @@ export interface Activity {
   actor_id: string | null
   actor_name: string
   action: ActivityAction
-  target_type: 'notes' | 'events' | 'todos' | 'images' | 'attachments' | 'access'
+  // comments は「消した・戻した」ときだけ入る（書いたことは comments の行として
+  // 📣 更新にもう出ている）。target_label に本文は入らない
+  target_type: 'notes' | 'events' | 'todos' | 'images' | 'attachments' | 'comments' | 'access'
   /** 付箋なら本文、アクセスまわりなら相手の名前や設定の内容 */
   target_label: string
   created_at: string
@@ -626,6 +628,16 @@ export interface Comment {
   author_id: string
   author_name: string
   created_at: string
+  deleted_at: string | null
+  /**
+   * 誰が消したか。戻せる人の判定に使う。
+   *
+   * ほかの種類は「編集できる人なら誰でも戻せる」が、コメントだけは
+   * 消した本人かボードを作った人だけ。オーナーがモデレーションで消した発言を、
+   * 編集できるだけの第三者が戻せてはいけないため。
+   * 書き込むのはサーバー側（tg_comment_trash_guard）で、画面からは名乗れない。
+   */
+  deleted_by: string | null
 }
 
 /**

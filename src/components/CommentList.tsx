@@ -28,7 +28,7 @@ export default function CommentList({
   emptyText = 'まだコメントはありません',
 }: Props) {
   const { userId, displayName } = useIdentity()
-  const { roomId, comments, approvedMembers } = useRoomData()
+  const { roomId, comments, approvedMembers, isOwner } = useRoomData()
   const [notice, setNotice] = useNotice()
   const commentOps = useOptimisticTable<Comment>('comments', comments, setNotice, {
     roomId,
@@ -85,6 +85,8 @@ export default function CommentList({
       author_id: userId,
       author_name: displayName,
       created_at: new Date().toISOString(),
+      deleted_at: null,
+      deleted_by: null,
     }
 
     setBody('')
@@ -103,10 +105,21 @@ export default function CommentList({
     })
   }
 
-  async function remove(id: string) {
-    const target = list.find((c) => c.id === id)
-    if (!target) return
-    await commentOps.remove([target], '削除')
+  /*
+   * 消した発言もゴミ箱へ入れる（deleted_at を書くだけ）。
+   *
+   * 他の種類と違って、これは事故ではなくモデレーション。だから戻せる人も
+   * 「消した本人かボードを作った人だけ」に絞ってある（サーバー側の
+   * tg_comment_trash_guard）。ここはその入口。
+   */
+  async function remove(comment: Comment) {
+    if (
+      comment.author_id !== userId &&
+      !window.confirm(`${comment.author_name || '名前なし'}さんの発言を消します。よろしいですか？`)
+    ) {
+      return
+    }
+    await commentOps.patch(comment.id, { deleted_at: new Date().toISOString() }, { what: '削除' })
   }
 
   return (
@@ -142,10 +155,11 @@ export default function CommentList({
                         ? format(at, 'HH:mm')
                         : format(at, 'M/d(E) HH:mm', { locale: ja })}
                     </span>
-                    {mine && (
+                    {(mine || isOwner) && (
                       <button
                         type="button"
-                        onClick={() => remove(comment.id)}
+                        title={mine ? undefined : 'この発言を消す（ボードを作った人だけ）'}
+                        onClick={() => void remove(comment)}
                         className="ml-auto shrink-0 text-xs text-slate-300 opacity-0 transition group-hover:opacity-100 hover:text-rose-600"
                       >
                         削除

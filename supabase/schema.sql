@@ -698,8 +698,6 @@ create index if not exists images_deleted_idx on public.images (room_id, deleted
 -- つまり誤操作 1 回で、他の人が置いた PDF が復旧不能で消えていた。
 --
 -- 入れないものと、その理由:
---   comments … 消せるのは本人かオーナーだけで、事故ではなくモデレーション。
---               読む側が 6 か所以上あり、1 つ漏らすと「消したはずの発言」が流れに戻る。
 --   polls    … 親だけ論理削除すると poll_options / poll_votes の上限が
 --               見えない行で埋まる。器ごと消す操作なので、確認の文面で守る。
 alter table public.frames      add column if not exists deleted_at timestamptz;
@@ -728,6 +726,32 @@ create index if not exists attachments_deleted_idx on public.attachments (room_i
 alter table public.strokes add column if not exists deleted_at timestamptz;
 
 create index if not exists strokes_deleted_idx on public.strokes (room_id, deleted_at);
+
+-- ゴミ箱の続き（コメント）。
+--
+-- ここだけ、消す理由が事故ではなくモデレーションになる。消せるのは書いた本人か
+-- オーナーだけで、他の種類のような「編集できる人なら誰でも」ではない。
+-- だから戻せる人も分ける必要がある——編集できる第三者がゴミ箱から戻せるなら、
+-- オーナーが消した発言をその場で復活させられる。誰が消したかを deleted_by に持ち、
+-- 戻せるのはその人かオーナーだけにする（tg_comment_trash_guard）。
+--
+-- 返信の入れ子は無い（target_type / target_id のフラットな表）ので、
+-- 消えた跡に「削除されたコメント」の札は置かない。隠しても会話に穴が空かないうえ、
+-- 札のほうが流れを埋める。代わりに、消した・戻したことは 📣 更新へ 1 行だけ残す
+-- （tg_log_activity。本文は残さない——残すと結局みんなに読まれる）。
+--
+-- 消しても残るものが 2 つある。どちらも承知のうえ。
+--   1. @メンションの通知に写った本文（notifications.body）。通知はコメントの id を
+--      指していない（飛び先は付箋や予定のほう）ので、巻き添えにする手がかりが無い。
+--      ハード削除だった頃から同じで、ここでは変えていない。
+--   2. 消した行そのものは、参加者なら誰でも SELECT できる。ここを絞ると、消したことが
+--      Realtime で他の人へ届かず（UPDATE は RLS を通る）、消した発言が相手の画面に
+--      居座る。すぐ消えることのほうを採った。画面の側では、戻せる人にしか
+--      ゴミ箱に出さない（TrashModal）。つまり目隠しであって、権限の壁ではない。
+alter table public.comments add column if not exists deleted_at timestamptz;
+alter table public.comments add column if not exists deleted_by uuid;
+
+create index if not exists comments_deleted_idx on public.comments (room_id, deleted_at);
 
 -- 通知の種類。増やすときはここと src/lib/types.ts の NOTIFICATION_KINDS を合わせる。
 --
@@ -1383,6 +1407,15 @@ begin
     if TG_OP = 'UPDATE' then
       v_keep := false;
     end if;
+
+  elsif TG_TABLE_NAME = 'comments' then
+    -- 本文は入れない。モデレーションで消した発言を履歴に写したら、
+    -- 消したことにならない。
+    v_label := '';
+    -- 書いたこと自体は、📣 更新に comments の行としてもう出ている。
+    -- ここで残したいのは消した・戻したことだけで、それは下の判定が拾う。
+    -- 完全に消す（DELETE）も残さない——ゴミ箱へ入れた時点でもう 1 行ある。
+    v_keep := false;
   end if;
 
   -- 論理削除は UPDATE として届く。ゴミ箱に入れた／戻したことは必ず残す。
@@ -1412,7 +1445,9 @@ declare t text;
 begin
   -- フレームと線は履歴に入れない。ボードの「家具」なので、置いた・消したが
   -- 流れを埋める。添付だけ入れるのは「誰が消したか」を後から確かめたくなるため。
-  foreach t in array array['notes', 'events', 'todos', 'images', 'attachments'] loop
+  -- 手描きも入れない（消しゴムひと撫でで何十行も積まれる）。
+  -- コメントは入れるが、残るのは消した・戻したときだけ（上の枝を見ること）。
+  foreach t in array array['notes', 'events', 'todos', 'images', 'attachments', 'comments'] loop
     execute format('drop trigger if exists %I on public.%I', t || '_activity', t);
     execute format(
       'create trigger %I after insert or update or delete on public.%I
@@ -1421,6 +1456,68 @@ begin
   end loop;
 end;
 $$;
+
+/*
+ * コメントをゴミ箱へ出し入れするときの門番。
+ *
+ * ポリシー（comments_update）は「本人かオーナー」までしか言えない。列の単位で
+ * 線を引けないので、そこから先はここで見る。見るのは 3 つ。
+ *
+ *   1. 本文などを書き換えられるのは、書いた本人だけ。オーナーは消せるが、
+ *      他人の発言を書き換えることはできない。ポリシーだけにすると、
+ *      モデレーションのために開けた UPDATE が「他人の発言の改竄」にも使える。
+ *
+ *   2. ゴミ箱へ入れられるのは、書いた本人かオーナーだけ。
+ *      ここは DELETE のポリシー（comments_delete）と同じ線引きに揃えてある。
+ *      揃っていないと、消す手段が 2 つあって片方だけ緩い状態になる。
+ *
+ *   3. 戻せるのは、消した本人かオーナーだけ。これがこの関数の主目的で、
+ *      他の種類（編集できる人なら誰でも戻せる）とわざと変えている。
+ *      オーナーが消した発言を、編集できる第三者がゴミ箱から戻せてはいけない。
+ *
+ * 誰が消したかは deleted_by に自分で書く。画面から渡させると、
+ * 他人の名前で消したことにできてしまう。
+ */
+create or replace function public.tg_comment_trash_guard()
+returns trigger language plpgsql security definer
+set search_path = '' as $$
+declare
+  v_is_author boolean := OLD.author_id = auth.uid();
+  v_is_owner  boolean := public.is_room_owner(NEW.room_id);
+begin
+  if not v_is_author
+     and (NEW.body, NEW.target_type, NEW.target_id)
+         is distinct from (OLD.body, OLD.target_type, OLD.target_id) then
+    raise exception '他の人の発言は書き換えられません'
+      using errcode = 'insufficient_privilege';
+  end if;
+
+  if NEW.deleted_at is not distinct from OLD.deleted_at then
+    return NEW;
+  end if;
+
+  if not v_is_author and not v_is_owner then
+    raise exception 'この発言を消せるのは、書いた本人かボードを作った人だけです'
+      using errcode = 'insufficient_privilege';
+  end if;
+
+  if NEW.deleted_at is null then
+    if OLD.deleted_by is distinct from auth.uid() and not v_is_owner then
+      raise exception 'この発言を戻せるのは、消した人かボードを作った人だけです'
+        using errcode = 'insufficient_privilege';
+    end if;
+    NEW.deleted_by := null;
+  else
+    NEW.deleted_by := auth.uid();
+  end if;
+
+  return NEW;
+end;
+$$;
+
+drop trigger if exists comments_trash_guard on public.comments;
+create trigger comments_trash_guard before update on public.comments
+  for each row execute function public.tg_comment_trash_guard();
 
 
 -- アクセスまわりの出来事も、同じ変更履歴に残す。
@@ -1829,7 +1926,7 @@ begin
       ('events',          3000, '予定',           'soft'),
       ('event_overrides', 5000, '予定の例外',     null),
       ('todos',           3000, 'やること',       'soft'),
-      ('comments',        5000, 'コメント',       null),
+      ('comments',        5000, 'コメント',       'soft'),
       ('connectors',      2000, '線',             'soft'),
       ('frames',           300, 'フレーム',       'soft'),
       ('polls',            100, '日程調整',       null),
@@ -2264,10 +2361,20 @@ create policy comments_insert on public.comments for insert to authenticated
 -- INSERT だけが見ていると、終了したボードで自分の発言だけは直せてしまい、
 -- 「終了したボードでは誰も書けない」が嘘になる。
 -- 取り消された人は comments_select を通れないので、ここには辿り着かない。
+--
+-- オーナーも通すのは、ゴミ箱への出し入れが UPDATE になったため
+-- （comments_delete と同じ線引き）。ただしポリシーは列の単位で線を引けないので、
+-- 「オーナーは消せるが書き換えられない」は tg_comment_trash_guard が見る。
 drop policy if exists comments_update on public.comments;
 create policy comments_update on public.comments for update to authenticated
-  using (author_id = auth.uid() and public.room_is_open(room_id))
-  with check (author_id = auth.uid() and public.room_is_open(room_id));
+  using (
+    (author_id = auth.uid() or public.is_room_owner(room_id))
+    and public.room_is_open(room_id)
+  )
+  with check (
+    (author_id = auth.uid() or public.is_room_owner(room_id))
+    and public.room_is_open(room_id)
+  );
 
 drop policy if exists comments_delete on public.comments;
 create policy comments_delete on public.comments for delete to authenticated
