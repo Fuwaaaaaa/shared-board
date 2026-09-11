@@ -108,6 +108,29 @@ describe('bucketOfDue', () => {
   it('7 日より先は出さない', () => {
     expect(bucketOfDue(new Date(boardDateTimeIso('2026-09-19', '09:00')), NOW)).toBeNull()
   })
+
+  it('月をまたいでも崩れない', () => {
+    // 月末の 23:59 に見ている。翌月へ入るぶんも「今週」で数える
+    const monthEnd = new Date(boardDateTimeIso('2026-09-30', '23:59'))
+    expect(bucketOfDue(new Date(boardDateTimeIso('2026-09-30', '23:58')), monthEnd)).toBe('overdue')
+    expect(bucketOfDue(new Date(boardDateTimeIso('2026-10-01', '09:00')), monthEnd)).toBe('week')
+    expect(bucketOfDue(new Date(boardDateTimeIso('2026-10-07', '23:00')), monthEnd)).toBe('week')
+    expect(bucketOfDue(new Date(boardDateTimeIso('2026-10-08', '09:00')), monthEnd)).toBeNull()
+  })
+
+  it('年をまたいでも崩れない', () => {
+    const yearEnd = new Date(boardDateTimeIso('2026-12-31', '23:00'))
+    expect(bucketOfDue(new Date(boardDateTimeIso('2026-12-31', '23:30')), yearEnd)).toBe('today')
+    expect(bucketOfDue(new Date(boardDateTimeIso('2027-01-01', '09:00')), yearEnd)).toBe('week')
+  })
+
+  it('日曜から月曜へまたいでも、区切りは曜日を見ていない', () => {
+    // 「今週」は月曜起点の週ではなく「今日から 7 日」。日曜の夜に見ても、
+    // 翌週の土曜まで同じように出る
+    const sunday = new Date(boardDateTimeIso('2026-09-13', '20:00'))
+    expect(bucketOfDue(new Date(boardDateTimeIso('2026-09-14', '09:00')), sunday)).toBe('week')
+    expect(bucketOfDue(new Date(boardDateTimeIso('2026-09-19', '09:00')), sunday)).toBe('week')
+  })
 })
 
 describe('bucketOfOccurrence', () => {
@@ -134,6 +157,20 @@ describe('bucketOfOccurrence', () => {
   it('終わりが無いものは、始まりで見る', () => {
     expect(bucketOfOccurrence(at('2026-09-11', '20:00'), null, NOW)).toBe('today')
     expect(bucketOfOccurrence(at('2026-09-10', '20:00'), null, NOW)).toBeNull()
+  })
+
+  it('今日の 0:00 ちょうどに終わる予定も「今日」に入れる', () => {
+    /*
+     * 半開区間にすれば「昨日の話」として落とせるが、そうしない。
+     * カレンダー（groupOccurrencesByDay）が閉区間で、9/10 22:00〜9/11 00:00 の
+     * 予定を 9/10 と 9/11 の両方に出しているため。ここだけ半開にすると、
+     * カレンダーには今日の欄に出ているのにホームは数えない、という食い違いになる。
+     *
+     * 数え方を変えるなら、両方まとめて変えること。
+     */
+    expect(bucketOfOccurrence(at('2026-09-10', '22:00'), at('2026-09-11', '00:00'), NOW)).toBe(
+      'today',
+    )
   })
 
   it('明日から 7 日後までは「今週」', () => {
@@ -221,6 +258,86 @@ describe('buildOverview', () => {
     expect(new Set(items.map((i) => i.targetId))).toEqual(new Set(['e1']))
     // key は回ごとに違う（同じだと画面が 1 行しか描かない）
     expect(new Set(items.map((i) => i.key)).size).toBe(items.length)
+  })
+
+  it('ずっと前から続いている定例も、今週のぶんが出る', () => {
+    /*
+     * 3 か月前に作った毎週の定例。元の行の start_at は窓のはるか手前にあるので、
+     * 「start_at が窓に入るもの」で候補を切ると 1 件も出なくなる。
+     * 取ってくる側（MyOverview）が繰り返しを窓で切らないことと、
+     * 展開の側が窓の頭まで飛ばして数えることの、両方が要る。
+     */
+    const items = buildOverview(
+      {
+        rooms: ROOMS,
+        todos: [],
+        events: [
+          makeEvent({
+            id: 'e1',
+            title: '週次ミーティング',
+            recurrence: 'weekly',
+            start_at: boardDateTimeIso('2026-06-12', '10:00'),
+            end_at: boardDateTimeIso('2026-06-12', '11:00'),
+          }),
+        ],
+        overrides: NO_OVERRIDES,
+      },
+      NOW,
+    )
+
+    // 6/12 は金曜。9/11（金）と 9/18（金）の 2 回が窓に入る
+    expect(items.map((i) => i.title)).toEqual(['週次ミーティング', '週次ミーティング'])
+    expect(items[0].bucket).toBe('today')
+    expect(items[1].bucket).toBe('week')
+  })
+
+  it('窓の外の回を「この回だけ」で今週へ動かしたら、出る', () => {
+    /*
+     * 10/2 の回を 9/13 に動かした。元の回は窓の外なので、素直に展開すると出ない。
+     * expandOccurrences は最後に「動かした先が範囲に入るもの」を拾い直すので、
+     * 取ってくる側が overrides を日付で絞っていなければここまで届く。
+     */
+    const items = buildOverview(
+      {
+        rooms: ROOMS,
+        todos: [],
+        events: [
+          makeEvent({
+            id: 'e1',
+            title: '月次の点検',
+            recurrence: 'weekly',
+            start_at: boardDateTimeIso('2026-10-02', '10:00'),
+            end_at: boardDateTimeIso('2026-10-02', '11:00'),
+          }),
+        ],
+        overrides: [
+          {
+            id: 'o1',
+            room_id: 'r1',
+            event_id: 'e1',
+            occurrence_date: '2026-10-02',
+            canceled: false,
+            title: null,
+            description: null,
+            start_at: boardDateTimeIso('2026-09-13', '14:00'),
+            end_at: boardDateTimeIso('2026-09-13', '15:00'),
+            all_day: null,
+            color: null,
+            remind_minutes: null,
+            tags: null,
+            author_id: 'u1',
+            created_at: '2026-09-01T00:00:00.000Z',
+          } as EventOverride,
+        ],
+      },
+      NOW,
+    )
+
+    expect(items).toHaveLength(1)
+    expect(items[0].title).toBe('月次の点検')
+    expect(items[0].bucket).toBe('week')
+    // 飛び先は元の行のまま
+    expect(items[0].targetId).toBe('e1')
   })
 
   it('「この回だけ」消した回は出ない', () => {

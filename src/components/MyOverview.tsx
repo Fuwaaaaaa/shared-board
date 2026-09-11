@@ -80,10 +80,21 @@ export default function MyOverview({ rooms, userId }: Props) {
           .from('events')
           .select('*')
           .is('deleted_at', null)
-          .lte('start_at', to)
-          // 繰り返しは start_at が過去にあるので、窓の手前で切れない。
-          // 終わりが窓に入るもの（またがっている旅行）も拾う
-          .or(`recurrence.neq.none,end_at.gte.${from},start_at.gte.${from}`)
+          /*
+           * 繰り返しは start_at で切らない。切ってよさそうに見えるが、2 方向とも危ない。
+           *
+           *   手前 … 3 か月前に始めた定例は start_at が窓のはるか手前にある。
+           *   先   … 3 週間後に始まる系列の回を「この回だけ」で今週へ前倒しすると、
+           *          元の行の start_at は窓より先のまま。
+           *
+           * どちらも展開の側（expandOccurrences）は手当てしているので、
+           * ここで先に落とさないことだけが要る。繰り返しの行そのものは多くない。
+           *
+           * 繰り返さない予定は窓で切る。終わりが窓に入るもの（またがっている旅行）も拾う。
+           */
+          .or(
+            `recurrence.neq.none,and(start_at.lte.${to},or(end_at.gte.${from},start_at.gte.${from}))`,
+          )
           .order('start_at')
           .limit(CAP),
         /*
