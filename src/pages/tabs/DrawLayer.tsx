@@ -260,6 +260,8 @@ function DrawLayer({
       <canvas ref={liveRef} className="pointer-events-none absolute inset-0 z-[2] h-full w-full" />
       {active && (
         <div
+          // ブラウザのテストがここを掴んで線を引く（置くための層の data-place-surface と同じ役目）
+          data-draw-surface
           className="absolute inset-0 z-30 touch-none"
           style={{ cursor: tool === 'eraser' ? 'cell' : 'crosshair' }}
           onPointerDown={handlePointerDown}

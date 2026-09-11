@@ -101,7 +101,7 @@ export default function BoardSettingsModal({
       // ゴミ箱に入っているものは持ち越さない。
       const [notes, strokes, events, todos, images] = await Promise.all([
         supabase.from('notes').select('*').eq('room_id', preview.id).is('deleted_at', null),
-        supabase.from('strokes').select('*').eq('room_id', preview.id),
+        supabase.from('strokes').select('*').eq('room_id', preview.id).is('deleted_at', null),
         supabase.from('events').select('*').eq('room_id', preview.id).is('deleted_at', null),
         supabase.from('todos').select('*').eq('room_id', preview.id).is('deleted_at', null),
         supabase.from('images').select('*').eq('room_id', preview.id).is('deleted_at', null),

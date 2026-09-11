@@ -1553,8 +1553,31 @@ export default function WhiteboardTab({
     return strokeOps.insert([asMine(stroke)], '線を保存')
   }
 
+  /**
+   * 行ごと消す。使うのは「描いたことを取り消す」ときだけ。
+   *
+   * 描いてすぐ Ctrl+Z を押したぶんまでゴミ箱に残ると、一覧が
+   * 「描かなかったことにしたもの」で埋まる。消しゴムとは別扱いにしている。
+   */
   function deleteStrokeRow(stroke: Stroke): Promise<boolean> {
     return strokeOps.remove([stroke], '線の削除を保存')
+  }
+
+  /**
+   * ゴミ箱へ入れる／戻す。消しゴムと全消しはこちら。
+   *
+   * 手描きだけ、live がゴミ箱の行をはじめから持たない（roomData の skipDeleted。
+   * points が重いので、消した線まで全員に配らない）。それでも画面から消えるのは
+   * useWithoutDeleted が deleted_at の入った行を rows から外すため。
+   * 戻すときは行が手元に無いこともあるが、patch は返ってきた行を入れ直すので届く。
+   */
+  async function trashStroke(stroke: Stroke, restore = false): Promise<boolean> {
+    const result = await strokeOps.patch(
+      stroke.id,
+      { deleted_at: restore ? null : new Date().toISOString() },
+      { what: restore ? '復元を保存' : '線の削除を保存' },
+    )
+    return result === 'ok'
   }
 
   async function commitStroke(kind: StrokeKind, points: Point[], color: string, width: number) {
@@ -1567,6 +1590,7 @@ export default function WhiteboardTab({
       width,
       author_id: userId,
       created_at: new Date().toISOString(),
+      deleted_at: null,
     }
     if (!(await insertStroke(stroke))) return
     undoStack.push({
@@ -1579,45 +1603,87 @@ export default function WhiteboardTab({
   async function eraseStroke(id: string) {
     const stroke = strokes.getRow(id)
     if (!stroke) return
-    if (!(await deleteStrokeRow(stroke))) return
+    if (!(await trashStroke(stroke))) return
     undoStack.push({
       label: '線を消す',
-      undo: () => must(insertStroke(stroke)),
-      redo: () => must(deleteStrokeRow(stroke)),
+      undo: () => must(trashStroke(stroke, true)),
+      redo: () => must(trashStroke(stroke)),
     })
   }
 
-  /**
-   * 線をまとめて消す。自分の線だけか、全員の線か。
-   *
-   * 消すのは id の列挙ではなく room_id（＋author_id）の条件削除にして、
-   * こちらがまだ受け取っていない線も一緒に消す。undo は消した行を入れ直す。
-   */
-  async function clearStrokes(scope: 'mine' | 'all') {
-    setShowClearStrokes(false)
-    const removed =
-      scope === 'mine' ? strokes.rows.filter((s) => s.author_id === userId) : strokes.rows.slice()
-    if (removed.length === 0) return
+  function strokesInScope(scope: 'mine' | 'all'): Stroke[] {
+    return scope === 'mine'
+      ? strokes.rows.filter((s) => s.author_id === userId)
+      : strokes.rows.slice()
+  }
 
+  /**
+   * 全消し本体。ゴミ箱へ入れた印として、同じ at を全部の行に書く。
+   *
+   * 消すのは id の列挙ではなく room_id（＋author_id）の条件更新にして、
+   * こちらがまだ受け取っていない線も一緒にゴミ箱へ入れる。
+   * すでにゴミ箱にある行は塗り替えない——塗ると、前に消した線が
+   * この全消しの取り消しでまとめて戻ってきてしまう。
+   */
+  async function clearStrokesAt(scope: 'mine' | 'all', at: string): Promise<boolean> {
+    const removed = strokesInScope(scope)
     const releases = removed.map((s) => strokes.holdLocal(s.id, 'delete'))
     for (const s of removed) strokes.removeLocal(s.id)
     try {
-      let query = supabase.from('strokes').delete().eq('room_id', roomId)
+      let query = supabase
+        .from('strokes')
+        .update({ deleted_at: at })
+        .eq('room_id', roomId)
+        .is('deleted_at', null)
       if (scope === 'mine') query = query.eq('author_id', userId)
       const { error } = await query
       if (error) throw error
+      return true
     } catch (e) {
       for (const s of removed) strokes.upsertLocal(s)
       setNotice(`線を消せませんでした: ${messageOf(e)}`)
-      return
+      return false
     } finally {
       for (const release of releases) release()
     }
+  }
+
+  /**
+   * 全消しの取り消し。
+   *
+   * id を並べずに「あのとき消した線」を指せるのは、1 回の全消しが同じ
+   * deleted_at を書いているため。2500 本ぶんの id を URL に並べると
+   * PostgREST の in() が長さで壊れるので、この指し方にしている。
+   */
+  async function restoreClearedStrokes(at: string): Promise<boolean> {
+    try {
+      const { data, error } = await supabase
+        .from('strokes')
+        .update({ deleted_at: null })
+        .eq('room_id', roomId)
+        .eq('deleted_at', at)
+        .select('*')
+      if (error) throw error
+      for (const row of (data ?? []) as Stroke[]) strokes.upsertLocal(row)
+      return true
+    } catch (e) {
+      setNotice(`線を戻せませんでした: ${messageOf(e)}`)
+      return false
+    }
+  }
+
+  /** 線をまとめて消す。自分の線だけか、全員の線か */
+  async function clearStrokes(scope: 'mine' | 'all') {
+    setShowClearStrokes(false)
+    if (strokesInScope(scope).length === 0) return
+
+    const at = new Date().toISOString()
+    if (!(await clearStrokesAt(scope, at))) return
 
     undoStack.push({
       label: scope === 'mine' ? '自分の線の全消去' : '線の全消去',
-      undo: () => must(strokeOps.insert(removed.map(asMine), '線を保存')),
-      redo: () => must(strokeOps.remove(removed, '線の削除を保存')),
+      undo: () => must(restoreClearedStrokes(at)),
+      redo: () => must(clearStrokesAt(scope, at)),
     })
   }
 
@@ -3344,7 +3410,8 @@ function ClearStrokesModal({
       }
     >
       <p className="mb-4 text-sm text-slate-600">
-        手描きの線と図形をまとめて消します。消したあとは「元に戻す」（Ctrl+Z）で戻せます。
+        手描きの線と図形をまとめて消します。消したあとは「元に戻す」（Ctrl+Z）か、
+        ゴミ箱から戻せます。
       </p>
       <div className="space-y-2">
         <button

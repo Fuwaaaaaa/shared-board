@@ -47,3 +47,70 @@ export function daysLeftInTrash(deletedAt: string, now: Date = new Date()): numb
   const left = Math.ceil((gone - now.getTime()) / (24 * 60 * 60 * 1000))
   return Math.max(0, left)
 }
+
+/** 同じ「ひと撫で」とみなす、消した時刻の間隔（ミリ秒） */
+export const ERASE_GAP_MS = 3000
+
+export interface ErasedGroup<T> {
+  /** 画面の key。グループの先頭行の id */
+  key: string
+  rows: T[]
+  /**
+   * グループの中でいちばん古い削除時刻。
+   * 残り日数はここで見る——先に消えるほうに合わせないと、
+   * 「あと 3 日」と出ているのに一部だけ先に消える。
+   */
+  deletedAt: string
+}
+
+interface Erasable {
+  id: string
+  author_id: string
+  deleted_at: string | null
+}
+
+/**
+ * 消しゴムで消した線を、ひと撫でごとにまとめる。
+ *
+ * 消しゴムは 1 本ずつ別の書き込みとして消すので、20 本まとめて消すと
+ * ゴミ箱の行も 20 行になる。そのままでは一覧が埋まって使いものにならない。
+ *
+ * まとめる手がかりは「誰が」と「いつ」だけ。1 回の操作に印をつける列を足す手も
+ * あったが、消した時刻はもう持っているので、列を増やさずに済むほうを選んだ。
+ * 同時に 2 人が消しても、author_id が違えば別のグループになる。
+ *
+ * 間隔は前の行から数える（グループの先頭からではない）。ゆっくり撫でても
+ * 1 つに収まってほしいため。
+ */
+export function groupErased<T extends Erasable>(
+  rows: T[],
+  gapMs: number = ERASE_GAP_MS,
+): ErasedGroup<T>[] {
+  const sorted = rows
+    .filter((row) => row.deleted_at)
+    .slice()
+    .sort((a, b) => (a.deleted_at ?? '').localeCompare(b.deleted_at ?? ''))
+
+  const buckets: T[][] = []
+  let lastAt = 0
+
+  for (const row of sorted) {
+    const at = new Date(row.deleted_at as string).getTime()
+    const previous = buckets[buckets.length - 1]
+    const sameHand =
+      previous !== undefined && previous[0].author_id === row.author_id && at - lastAt <= gapMs
+
+    if (sameHand) previous.push(row)
+    else buckets.push([row])
+    lastAt = at
+  }
+
+  // 新しく消したグループが上に来るように（sortTrashed と同じ並び）
+  return buckets
+    .map((bucket) => ({
+      key: bucket[0].id,
+      rows: bucket,
+      deletedAt: bucket[0].deleted_at as string,
+    }))
+    .reverse()
+}

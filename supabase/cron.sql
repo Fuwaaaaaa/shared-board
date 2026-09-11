@@ -217,6 +217,10 @@ select cron.schedule(
   delete from public.images where deleted_at < now() - interval '30 days';
   delete from public.frames      where deleted_at < now() - interval '30 days';
   delete from public.connectors  where deleted_at < now() - interval '30 days';
+  -- 手描きは 30 日を待たずに消えることがある。上限 2500 本はゴミ箱の行も
+  -- 含めた合計なので、描き足して天井に当たると古い行から席を譲る
+  -- （schema.sql の tg_limit_rows_per_room の 'yield'）。ここはその残りを掃く。
+  delete from public.strokes     where deleted_at < now() - interval '30 days';
   -- 添付の DELETE は tg_enqueue_purge が purge_queue に積み、
   -- 毎時の purge-storage が Storage の実体を消す。ここで初めて実体が消える
   -- （ゴミ箱に入っているあいだは、行がまだ path を参照しているので消えない）。

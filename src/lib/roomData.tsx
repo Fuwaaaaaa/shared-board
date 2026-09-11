@@ -138,7 +138,9 @@ export function RoomDataProvider({
   children: ReactNode
 }) {
   const allNotes = useRealtimeTable<Note>('notes', roomId)
-  const strokes = useRealtimeTable<Stroke>('strokes', roomId)
+  // 手描きだけ、ゴミ箱の行を live に載せない（points が重いので全員に配らない）。
+  // 中身は TrashModal が開いたときに取りに行く
+  const allStrokes = useRealtimeTable<Stroke>('strokes', roomId, { skipDeleted: true })
   const allImages = useRealtimeTable<BoardImage>('images', roomId)
   const allAttachments = useRealtimeTable<Attachment>('attachments', roomId)
   const allConnectors = useRealtimeTable<Connector>('connectors', roomId)
@@ -158,6 +160,17 @@ export function RoomDataProvider({
   const members = useRealtimeTable<RoomMember>('room_members', roomId)
 
   const [notes, trashedNotes] = useWithoutDeleted(allNotes)
+  /*
+   * 手描きは「捨てたぶん」を受け取らない。
+   *
+   * それでもここを通すのは、消した直後の 1 往復ぶんのため。楽観的更新は
+   * deleted_at を書き込むだけなので、ここで外さないと消した線が
+   * サーバーの返事（と Realtime のエコー）が届くまで画面に残る。
+   *
+   * 返ってくる trashed は「このタブで消したぶん」しか入っていないので、
+   * ゴミ箱の一覧には使えない（TrashModal が自分で取りに行く）。
+   */
+  const [strokes] = useWithoutDeleted(allStrokes)
   const [images, trashedImages] = useWithoutDeleted(allImages)
   const [events, trashedEvents] = useWithoutDeleted(allEvents)
   const [todos, trashedTodos] = useWithoutDeleted(allTodos)

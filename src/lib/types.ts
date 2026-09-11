@@ -149,6 +149,14 @@ export interface Stroke {
   width: number
   author_id: string
   created_at: string
+  /**
+   * ここだけ、ゴミ箱の約束が他と違う。
+   *
+   * 上限 2500 本は「生きている行 ＋ ゴミ箱の行」の合計なので、描き足して天井に
+   * 当たると古いものから消える（schema.sql の tg_limit_rows_per_room の 'yield'）。
+   * 30 日の保証ではなく、余裕があるあいだの猶予。
+   */
+  deleted_at: string | null
 }
 
 export interface BoardImage {

@@ -1,12 +1,21 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { format, parseISO } from 'date-fns'
 import { ja } from 'date-fns/locale'
 import Modal from './Modal'
 import { supabase } from '../lib/supabase'
 import { useRoomData } from '../lib/roomData'
-import { connectorRestoreBlock, daysLeftInTrash, TRASH_DAYS } from '../lib/trash'
+import { connectorRestoreBlock, daysLeftInTrash, groupErased, TRASH_DAYS } from '../lib/trash'
+import type { Stroke } from '../lib/types'
 
-type Kind = 'notes' | 'events' | 'todos' | 'images' | 'frames' | 'connectors' | 'attachments'
+type Kind =
+  | 'notes'
+  | 'events'
+  | 'todos'
+  | 'images'
+  | 'frames'
+  | 'connectors'
+  | 'strokes'
+  | 'attachments'
 
 const SECTION_META: Record<Kind, { icon: string; label: string }> = {
   notes: { icon: '🖍️', label: '付箋' },
@@ -15,7 +24,17 @@ const SECTION_META: Record<Kind, { icon: string; label: string }> = {
   images: { icon: '🖼', label: '画像' },
   frames: { icon: '🔲', label: 'フレーム' },
   connectors: { icon: '➰', label: '線' },
+  strokes: { icon: '🖊', label: '手描き' },
   attachments: { icon: '📎', label: 'ファイル' },
+}
+
+/** PostgREST の in() に並べる id の数。URL 長の上限に当たらないように分ける */
+const CHUNK = 200
+
+function chunked(ids: string[]): string[][] {
+  const out: string[][] = []
+  for (let index = 0; index < ids.length; index += CHUNK) out.push(ids.slice(index, index + CHUNK))
+  return out
 }
 
 interface TrashRow {
@@ -45,16 +64,44 @@ export default function TrashModal({ onClose }: { onClose: () => void }) {
   const {
     trash,
     canEdit,
+    roomId,
     notes,
     events,
     todos,
     images,
     frames,
     connectors,
+    strokes,
     attachments,
   } = useRoomData()
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  /*
+   * 手描きのゴミ箱だけ、開いたときに取りに行く。
+   *
+   * ほかの種類は roomData がもう手元に持っているが、手描きは points が重いので
+   * ゴミ箱の行を live に載せていない（roomData の skipDeleted）。
+   * ここで 1 回だけ取り、戻す・消すの結果はこの配列を直して映す。
+   */
+  const [trashedStrokes, setTrashedStrokes] = useState<Stroke[] | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    void (async () => {
+      const { data, error: failed } = await supabase
+        .from('strokes')
+        .select('*')
+        .eq('room_id', roomId)
+        .not('deleted_at', 'is', null)
+      if (!alive) return
+      if (failed) setError(`手描きのゴミ箱を読めませんでした: ${failed.message}`)
+      setTrashedStrokes((data ?? []) as Stroke[])
+    })()
+    return () => {
+      alive = false
+    }
+  }, [roomId])
 
   function build<T extends { id: string; deleted_at: string | null }>(
     kind: Kind,
@@ -107,6 +154,79 @@ export default function TrashModal({ onClose }: { onClose: () => void }) {
     }))
   }
 
+  /**
+   * 手描きは「ひと撫で」を 1 行にまとめて出す。
+   *
+   * 消しゴムは 1 本ずつ消すので、20 本消すとゴミ箱も 20 行になる。
+   * 戻す・消すはまとめた全部に効かせる（id は分けて送る。全消しのぶんは
+   * 2500 本になることがあり、URL に並べきれない）。
+   */
+  function buildStrokeGroups(): TrashRow[] {
+    return groupErased(trashedStrokes ?? []).map((group) => {
+      const ids = group.rows.map((row) => row.id)
+      const label = `手描き ${group.rows.length} 本`
+
+      return {
+        kind: 'strokes' as Kind,
+        id: group.key,
+        label,
+        deletedAt: group.deletedAt,
+        blocked: null,
+
+        restore: async () => {
+          setBusy(group.key)
+          setError(null)
+
+          const restored: Stroke[] = []
+          for (const part of chunked(ids)) {
+            const { data, error: failed } = await supabase
+              .from('strokes')
+              .update({ deleted_at: null })
+              .in('id', part)
+              .select('*')
+            if (failed) {
+              setError(`戻せませんでした: ${failed.message}`)
+              break
+            }
+            restored.push(...((data ?? []) as Stroke[]))
+          }
+
+          // 戻せたぶんだけ盤面へ。途中で失敗しても、戻った線は出す
+          for (const row of restored) strokes.upsertLocal(row)
+          const back = new Set(restored.map((row) => row.id))
+          setTrashedStrokes((current) => (current ?? []).filter((row) => !back.has(row.id)))
+          setBusy(null)
+        },
+
+        purge: async () => {
+          if (!window.confirm(`「${label}」を完全に消します。もう戻せません。よろしいですか？`)) {
+            return
+          }
+
+          setBusy(group.key)
+          setError(null)
+
+          const gone = new Set<string>()
+          for (const part of chunked(ids)) {
+            const { data, error: failed } = await supabase
+              .from('strokes')
+              .delete()
+              .in('id', part)
+              .select('id')
+            if (failed) {
+              setError(`消せませんでした: ${failed.message}`)
+              break
+            }
+            for (const row of (data ?? []) as { id: string }[]) gone.add(row.id)
+          }
+
+          setTrashedStrokes((current) => (current ?? []).filter((row) => !gone.has(row.id)))
+          setBusy(null)
+        },
+      }
+    })
+  }
+
   const liveNoteIds = new Set(notes.rows.map((n) => n.id))
   const trashedNoteIds = new Set(trash.notes.map((n) => n.id))
 
@@ -133,6 +253,7 @@ export default function TrashModal({ onClose }: { onClose: () => void }) {
         (c) => connectorRestoreBlock(c, liveNoteIds, trashedNoteIds),
       ),
     },
+    { kind: 'strokes', rows: buildStrokeGroups() },
     {
       kind: 'attachments',
       rows: build('attachments', attachments, trash.attachments, (a) => a.filename),
@@ -140,13 +261,15 @@ export default function TrashModal({ onClose }: { onClose: () => void }) {
   ]
 
   const total = sections.reduce((sum, section) => sum + section.rows.length, 0)
+  // 手描きを取りに行っている間は「空です」と言い切らない
+  const loadingStrokes = trashedStrokes === null
 
   return (
     <Modal title="ゴミ箱" onClose={onClose}>
       <p className="mb-4 text-xs text-slate-500">
         消したものは {TRASH_DAYS} 日ここに残ります。他の人が消したものも、ここから戻せます。
-        手描きとコメントはここに入りません（手描きは Ctrl+Z、コメントは書いた本人か
-        作った人だけが消せます）。
+        コメントはここに入りません（書いた本人か、作った人だけが消せます）。
+        手描きだけは、描き足して上限に届くと {TRASH_DAYS} 日を待たずに古いものから消えます。
       </p>
 
       {error && (
@@ -155,7 +278,7 @@ export default function TrashModal({ onClose }: { onClose: () => void }) {
 
       {total === 0 ? (
         <p className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-400">
-          ゴミ箱は空です。
+          {loadingStrokes ? '読み込んでいます…' : 'ゴミ箱は空です。'}
         </p>
       ) : (
         <div className="space-y-5">

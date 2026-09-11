@@ -42,6 +42,22 @@ function shallowEqualRow(a: object, b: object): boolean {
   return true
 }
 
+interface Options {
+  /** 購読を止める。roomId が null のときと同じく、行は空になる */
+  enabled?: boolean
+  /**
+   * ゴミ箱に入っている行を、はじめから取ってこない。
+   *
+   * ゴミ箱を持つ表はふつう全行を取り、画面側（roomData の useWithoutDeleted）で
+   * 振り分けている。そのほうが「戻す」がその場で効くし、取り直しも 1 回で済む。
+   *
+   * strokes だけこちらを使う。1 行が重い（points は 120000 文字まで）ので、
+   * 消した線まで全員の初回読み込みに乗せると、いちばん重い表がさらに重くなる。
+   * ゴミ箱の中身は TrashModal が開いたときに取りに行く。
+   */
+  skipDeleted?: boolean
+}
+
 /**
  * ルームに属する 1 テーブルを購読する汎用フック。
  *
@@ -56,7 +72,7 @@ function shallowEqualRow(a: object, b: object): boolean {
 export function useRealtimeTable<T extends Row>(
   table: string,
   roomId: string | null,
-  enabled = true,
+  { enabled = true, skipDeleted = false }: Options = {},
 ) {
   const [rows, setRowsState] = useState<T[]>([])
   const [loading, setLoading] = useState(true)
@@ -185,9 +201,20 @@ export function useRealtimeTable<T extends Row>(
         if (removedId) commit((current) => current.filter((r) => r.id !== removedId))
         return
       }
-      applyServerRow(payload.new as T)
+
+      const row = payload.new as T
+      // skipDeleted の表では、ゴミ箱に入った行は「消えた」ものとして扱う。
+      // 取り直しの select も拾わないので、ここで外さないと
+      // 消したはずの線がリロードするまで残る（他の人が消したときも同じ）。
+      if (skipDeleted && (row as { deleted_at?: string | null })?.deleted_at) {
+        const trashedId = (row as Partial<Row>)?.id
+        if (trashedId) commit((current) => current.filter((r) => r.id !== trashedId))
+        return
+      }
+
+      applyServerRow(row)
     },
-    [commit, applyServerRow],
+    [commit, applyServerRow, skipDeleted],
   )
 
   const applyRemoteRef = useRef(applyRemote)
@@ -207,10 +234,9 @@ export function useRealtimeTable<T extends Row>(
     const run = async () => {
       do {
         pendingRef.current = false
-        const { data, error: fetchError } = await supabase
-          .from(table)
-          .select('*')
-          .eq('room_id', roomId)
+        let query = supabase.from(table).select('*').eq('room_id', roomId)
+        if (skipDeleted) query = query.is('deleted_at', null)
+        const { data, error: fetchError } = await query
         if (generationRef.current !== generation) return
         if (fetchError) {
           setError(fetchError.message)
@@ -228,7 +254,7 @@ export function useRealtimeTable<T extends Row>(
     })
     inFlightRef.current = promise
     return promise
-  }, [table, roomId, enabled, commit, replaceFromServer])
+  }, [table, roomId, enabled, skipDeleted, commit, replaceFromServer])
 
   /** 直近 ms ミリ秒以内に取り直していれば何もしない（online と visibility が重なるとき用） */
   const refetchIfStale = useCallback(

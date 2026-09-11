@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { connectorRestoreBlock, daysLeftInTrash, sortTrashed, TRASH_DAYS } from '../trash'
+import {
+  connectorRestoreBlock,
+  daysLeftInTrash,
+  ERASE_GAP_MS,
+  groupErased,
+  sortTrashed,
+  TRASH_DAYS,
+} from '../trash'
 
 describe('connectorRestoreBlock', () => {
   /*
@@ -78,5 +85,89 @@ describe('daysLeftInTrash', () => {
   it('期限を過ぎたら 0（負にはしない）', () => {
     expect(daysLeftInTrash(deletedAt, new Date('2026-10-01T00:00:00.000Z'))).toBe(0)
     expect(daysLeftInTrash(deletedAt, new Date('2026-12-01T00:00:00.000Z'))).toBe(0)
+  })
+})
+
+describe('groupErased', () => {
+  /*
+   * 消しゴムは 1 本ずつ別の書き込みとして消すので、ゴミ箱に 1 行ずつ並ぶと
+   * 一覧が埋まる。ひと撫でを 1 行に見せるためのまとめ方。
+   */
+  const at = (seconds: number) => new Date(Date.UTC(2026, 8, 1, 0, 0, seconds)).toISOString()
+  const stroke = (id: string, author: string, seconds: number) => ({
+    id,
+    author_id: author,
+    deleted_at: at(seconds),
+  })
+
+  it('続けて消した線は 1 つにまとまる', () => {
+    const groups = groupErased([
+      stroke('a', 'ゆうき', 0),
+      stroke('b', 'ゆうき', 1),
+      stroke('c', 'ゆうき', 2),
+    ])
+    expect(groups).toHaveLength(1)
+    expect(groups[0].rows.map((r) => r.id)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('間が空いたら別のまとまりになる', () => {
+    const groups = groupErased([
+      stroke('a', 'ゆうき', 0),
+      stroke('b', 'ゆうき', 1),
+      stroke('c', 'ゆうき', 60),
+    ])
+    expect(groups.map((g) => g.rows.map((r) => r.id))).toEqual([['c'], ['a', 'b']])
+  })
+
+  it('間隔は前の行から数えるので、ゆっくり撫でても 1 つに収まる', () => {
+    // 先頭からは 3 秒を超えるが、隣どうしは 2 秒ずつ
+    const groups = groupErased([
+      stroke('a', 'ゆうき', 0),
+      stroke('b', 'ゆうき', 2),
+      stroke('c', 'ゆうき', 4),
+      stroke('d', 'ゆうき', 6),
+    ])
+    expect(groups).toHaveLength(1)
+  })
+
+  it('同時に 2 人が消しても、混ざらない', () => {
+    const groups = groupErased([
+      stroke('a', 'ゆうき', 0),
+      stroke('b', 'けいこ', 0),
+      stroke('c', 'ゆうき', 1),
+    ])
+    expect(groups).toHaveLength(3)
+    expect(groups.every((g) => g.rows.length === 1)).toBe(true)
+  })
+
+  it('新しく消したまとまりが上に来る', () => {
+    const groups = groupErased([stroke('old', 'ゆうき', 0), stroke('new', 'ゆうき', 60)])
+    expect(groups.map((g) => g.key)).toEqual(['new', 'old'])
+  })
+
+  it('残り日数は、先に消えるほう（いちばん古い行）に合わせる', () => {
+    const groups = groupErased([stroke('a', 'ゆうき', 0), stroke('b', 'ゆうき', 2)])
+    expect(groups[0].deletedAt).toBe(at(0))
+  })
+
+  it('ゴミ箱に入っていない行は混ざらない', () => {
+    const groups = groupErased([
+      { id: 'live', author_id: 'ゆうき', deleted_at: null },
+      stroke('a', 'ゆうき', 0),
+    ])
+    expect(groups).toHaveLength(1)
+    expect(groups[0].rows.map((r) => r.id)).toEqual(['a'])
+  })
+
+  it('境目ちょうどは同じまとまり', () => {
+    const groups = groupErased([
+      stroke('a', 'ゆうき', 0),
+      { id: 'b', author_id: 'ゆうき', deleted_at: new Date(Date.UTC(2026, 8, 1) + ERASE_GAP_MS).toISOString() },
+    ])
+    expect(groups).toHaveLength(1)
+  })
+
+  it('空でも落ちない', () => {
+    expect(groupErased([])).toEqual([])
   })
 })

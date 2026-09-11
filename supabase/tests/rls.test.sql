@@ -19,7 +19,7 @@ begin;
 
 create extension if not exists pgtap;
 
-select plan(329);
+select plan(339);
 
 
 -- =============================================================================
@@ -122,6 +122,10 @@ insert into public.notes (id, room_id, text, author_id, author_name) values
 insert into public.events (id, room_id, title, start_at, author_id, author_name) values
   ('22220000-0000-0000-0000-000000000001', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', '終了前に入れた予定', now(), '11111111-1111-1111-1111-111111111111', 'ゆうき');
 
+insert into public.strokes (id, room_id, points, author_id) values
+  ('55550000-0000-0000-0000-000000000001', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', '[[1,2],[3,4]]'::jsonb, '11111111-1111-1111-1111-111111111111'),
+  ('55550000-0000-0000-0000-000000000002', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '[[5,6],[7,8]]'::jsonb, '11111111-1111-1111-1111-111111111111');
+
 -- ここで終了させる
 update public.rooms set archived = true
  where id = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
@@ -170,6 +174,13 @@ select is(
   tests_rowcount($$insert into public.strokes (room_id, points, author_id)
                    values ('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', '[[1,2]]'::jsonb, '22222222-2222-2222-2222-222222222222')$$),
   -1, '終了したボードには手描きも足せない');
+
+-- 手描きがゴミ箱を持つようになったぶん、入口が 1 つ増えている。
+-- 「消す」を止めていても「ゴミ箱に入れる」が通れば、終了したボードは書き換わる
+select is(
+  tests_rowcount($$update public.strokes set deleted_at = now()
+                    where id = '55550000-0000-0000-0000-000000000001'$$),
+  0, '終了したボードの手描きはゴミ箱にも入れられない');
 
 select is(
   tests_rowcount($$insert into public.comments (room_id, target_type, body, author_id, author_name)
@@ -2505,11 +2516,14 @@ select is(
 
 
 -- =============================================================================
---  40. ゴミ箱（フレーム・線・ファイル）
+--  40. ゴミ箱（フレーム・線・ファイル・手描き）
 --
 --      いちばん確かめたいのは 4 つめ。添付をゴミ箱に入れただけでは
 --      Storage の実体の掃除が予約されないこと——ここが崩れると、
 --      戻せてもファイルが開けない「壊れた 📎」になる。
+--
+--      手描きは最後にある。ここだけ上限との噛み合わせがあるので、
+--      権限だけでなく「天井に当たったときに何が起きるか」まで見る。
 -- =============================================================================
 
 select tests_act_as('22222222-2222-2222-2222-222222222222');   -- けいこ（編集できる）
@@ -2600,9 +2614,13 @@ select is(
       and action = 'updated'),
   0, '動かしただけでは履歴に残らない（ドラッグのたびに増えない）');
 
--- ---- 件数上限はゴミ箱の行を数えない ----------------------------------------
--- 数えていると、たくさん捨てたボードが 30 日ものあいだ何も足せなくなる。
--- 保存した状態からの復元は、いったん全部ゴミ箱へ入れてから入れ直すので必ず踏む。
+-- ---- 件数上限とゴミ箱の噛み合わせ ------------------------------------------
+-- 付箋（'soft'）はゴミ箱の行を数えない。数えていると、たくさん捨てたボードが
+-- 30 日ものあいだ何も足せなくなる。保存した状態からの復元は、いったん全部
+-- ゴミ箱へ入れてから入れ直すので必ず踏む。
+--
+-- 手描き（'yield'）だけは数える。1 行が重いので「上限の外に 30 日ぶん」を
+-- 置けないため。そのかわり天井では古い行が席を譲る（下で確かめる）。
 select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき（オーナー）
 
 select is(
@@ -2616,8 +2634,8 @@ select is(
   (select count(*)::int from pg_trigger t
      join pg_class c on c.oid = t.tgrelid
     where c.relname = 'strokes' and t.tgname = 'strokes_limit_rows'
-      and pg_get_triggerdef(t.oid) like '%soft%'),
-  0, '手描きはゴミ箱を持たないので、その設定は付いていない');
+      and pg_get_triggerdef(t.oid) like '%yield%'),
+  1, '手描きの件数上限は、ゴミ箱の行も数えて席を譲る設定になっている');
 
 -- ---- 閲覧のみ・終了したボード ----------------------------------------------
 select tests_act_as('33333333-3333-3333-3333-333333333333');   -- みなみ（このボードの名簿から外れている）
@@ -2626,6 +2644,92 @@ select is(
   tests_rowcount($$update public.frames set deleted_at = now()
                     where id = '88880000-0000-0000-0000-000000000060'$$),
   0, '参加していない人はフレームをゴミ箱に入れられない');
+
+select is(
+  tests_rowcount($$update public.strokes set deleted_at = now()
+                    where id = '55550000-0000-0000-0000-000000000002'$$),
+  0, '参加していない人は手描きをゴミ箱に入れられない');
+
+-- ---- 手描きのゴミ箱 --------------------------------------------------------
+select tests_act_as('22222222-2222-2222-2222-222222222222');   -- けいこ（編集できる）
+
+select is(
+  tests_rowcount($$update public.strokes set deleted_at = now()
+                    where id = '55550000-0000-0000-0000-000000000002'$$),
+  1, '編集できる人は手描きをゴミ箱に入れられる');
+
+select is(
+  tests_rowcount($$update public.strokes set deleted_at = null
+                    where id = '55550000-0000-0000-0000-000000000002'$$),
+  1, '手描きもゴミ箱から戻せる');
+
+-- ---- 天井に当たったら、ゴミ箱が席を譲る ------------------------------------
+--
+-- 上限 2500 はゴミ箱の行も含めた合計。strokes は 1 行が重いので「上限の外に
+-- 30 日ぶん」を置くと最悪ケースが倍になり、かといってただ数えるだけだと
+-- 全部消したボードが 30 日ものあいだ 1 本も描けない。
+-- そこで、描けなくなるより古いゴミ箱の行が消えるほうを選んでいる。
+-- ここが崩れると、崩れ方によって「容量が倍」か「描けない」のどちらかになる。
+reset role;
+insert into public.rooms (id, slug, name, owner_id, owner_name) values
+  ('cafe0000-0000-0000-0000-000000000002', 'yieldbrd', '席譲りの実験用',
+   '11111111-1111-1111-1111-111111111111', 'ゆうき');
+
+-- 上限ちょうどまで埋めて、うち 2 本をゴミ箱へ（消した時刻をずらしておく）
+insert into public.strokes (room_id, points, author_id, created_at)
+select 'cafe0000-0000-0000-0000-000000000002', '[[1,2]]'::jsonb,
+       '11111111-1111-1111-1111-111111111111', now() - (g || ' seconds')::interval
+  from generate_series(1, 2500) g;
+
+update public.strokes set deleted_at = now() - interval '20 days'
+ where id = (select id from public.strokes
+              where room_id = 'cafe0000-0000-0000-0000-000000000002'
+              order by created_at limit 1);
+update public.strokes set deleted_at = now() - interval '1 day'
+ where id = (select id from public.strokes
+              where room_id = 'cafe0000-0000-0000-0000-000000000002' and deleted_at is null
+              order by created_at limit 1);
+set local role authenticated;
+
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき（オーナー）
+
+select is(
+  tests_rowcount($$insert into public.strokes (room_id, points, author_id)
+                   values ('cafe0000-0000-0000-0000-000000000002', '[[9,9]]'::jsonb,
+                           '11111111-1111-1111-1111-111111111111')$$),
+  1, '天井に当たっていても描き足せる（ゴミ箱が席を譲る）');
+
+reset role;
+select is(
+  (select count(*)::int from public.strokes
+    where room_id = 'cafe0000-0000-0000-0000-000000000002'),
+  2500, '譲ったぶんだけ減るので、合計は上限のまま（容量の最悪ケースが増えない）');
+
+select is(
+  (select count(*)::int from public.strokes
+    where room_id = 'cafe0000-0000-0000-0000-000000000002'
+      and deleted_at < now() - interval '15 days'),
+  0, '譲ったのは、いちばん早く消えるはずだった行');
+
+select is(
+  (select count(*)::int from public.strokes
+    where room_id = 'cafe0000-0000-0000-0000-000000000002'
+      and deleted_at is not null),
+  1, '新しいほうのゴミ箱の行は、まだ残っている');
+set local role authenticated;
+
+select is(
+  tests_rowcount($$insert into public.strokes (room_id, points, author_id)
+                   values ('cafe0000-0000-0000-0000-000000000002', '[[8,8]]'::jsonb,
+                           '11111111-1111-1111-1111-111111111111')$$),
+  1, '残りの 1 本も席を譲る');
+
+select is(
+  tests_error($$insert into public.strokes (room_id, points, author_id)
+                 values ('cafe0000-0000-0000-0000-000000000002', '[[7,7]]'::jsonb,
+                         '11111111-1111-1111-1111-111111111111')$$),
+  '手描き はボードあたり 2500 件までです',
+  'ゴミ箱が空になれば、これまでどおり上限で断られる');
 
 
 -- =============================================================================

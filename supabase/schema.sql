@@ -698,9 +698,6 @@ create index if not exists images_deleted_idx on public.images (room_id, deleted
 -- つまり誤操作 1 回で、他の人が置いた PDF が復旧不能で消えていた。
 --
 -- 入れないものと、その理由:
---   strokes  … 消しゴムは 1 撫でで何十行も作るので、一覧も 📣 更新も埋まる。
---               上限 2500 本 × points 120000 文字は無料枠から逆算した数字で、
---               30 日ぶん残すと最悪ケースが倍になる。全消しには Undo がある。
 --   comments … 消せるのは本人かオーナーだけで、事故ではなくモデレーション。
 --               読む側が 6 か所以上あり、1 つ漏らすと「消したはずの発言」が流れに戻る。
 --   polls    … 親だけ論理削除すると poll_options / poll_votes の上限が
@@ -712,6 +709,25 @@ alter table public.attachments add column if not exists deleted_at timestamptz;
 create index if not exists frames_deleted_idx      on public.frames      (room_id, deleted_at);
 create index if not exists connectors_deleted_idx  on public.connectors  (room_id, deleted_at);
 create index if not exists attachments_deleted_idx on public.attachments (room_id, deleted_at);
+
+-- ゴミ箱の続き（手描き）。
+--
+-- 消しゴムで消した線も戻せるようにする。他の人が消したものを戻す道が
+-- Ctrl+Z しか無いのは、手描きでも同じだった。
+--
+-- ただし手描きだけ、約束が 1 つ違う。strokes は 1 行が重い——上限 2500 本 ×
+-- points 120000 文字は無料枠から逆算した数字で、30 日ぶんを上限の「外」に置くと
+-- 最悪ケースが倍になる。かといって上限の「内」でただ数えると、全部消したボードが
+-- 30 日ものあいだ 1 本も描けなくなる。
+--
+-- そこで上限 2500 は「生きている行 ＋ ゴミ箱の行」の合計のままにして、描き足す
+-- ときに天井へ当たったら、ゴミ箱のいちばん古い行から物理削除して席を譲る
+-- （tg_limit_rows_per_room の 'yield'）。描く手は止まらず、容量の最悪ケースは
+-- 入れる前と同じ。そのかわり手描きのゴミ箱は「30 日の保証」ではなく
+-- 「余裕があるあいだの猶予」になる。画面と README にもそう書くこと。
+alter table public.strokes add column if not exists deleted_at timestamptz;
+
+create index if not exists strokes_deleted_idx on public.strokes (room_id, deleted_at);
 
 -- 通知の種類。増やすときはここと src/lib/types.ts の NOTIFICATION_KINDS を合わせる。
 --
@@ -1747,17 +1763,47 @@ returns trigger language plpgsql security definer
 set search_path = '' as $$
 declare
   v_max   integer;
+  v_mode  text;
   v_count bigint;
 begin
-  v_max := TG_ARGV[0]::integer;
-  -- 第 3 引数 'soft' は「ゴミ箱の行は数えない」。
-  -- 数えていると、たくさん捨てたボードが 30 日ものあいだ何も足せなくなる。
-  -- 保存した状態からの復元は、いったん全部ゴミ箱へ入れてから入れ直すので必ず踏む。
+  v_max  := TG_ARGV[0]::integer;
+  v_mode := case when TG_NARGS > 2 then TG_ARGV[2] else '' end;
+
+  /*
+   * 第 3 引数は「ゴミ箱の行をどう数えるか」。
+   *
+   *   'soft'   ゴミ箱の行は数えない。数えていると、たくさん捨てたボードが
+   *            30 日ものあいだ何も足せなくなる。保存した状態からの復元は、
+   *            いったん全部ゴミ箱へ入れてから入れ直すので必ず踏む。
+   *
+   *   'yield'  ゴミ箱の行も数える。そのかわり天井に当たったら、ゴミ箱の
+   *            いちばん古い行から席を譲る（物理削除する）。1 行が重くて
+   *            「上限の外に 30 日ぶん」を置けない表のための形で、いまは
+   *            strokes だけが使う。譲る相手が 1 行も無ければ、下の raise で
+   *            ふつうに断るところへ落ちる——つまり安全側に倒れる。
+   *
+   *   （無し）  ゴミ箱を持たない表。全部数える。
+   */
   execute format('select count(*) from public.%I where room_id = $1 %s',
                  TG_TABLE_NAME,
-                 case when TG_NARGS > 2 and TG_ARGV[2] = 'soft'
-                      then 'and deleted_at is null' else '' end)
+                 case when v_mode = 'soft' then 'and deleted_at is null' else '' end)
      into v_count using NEW.room_id;
+
+  if v_count >= v_max and v_mode = 'yield' then
+    -- 足りないぶんだけ、期限の近い（＝いちばん早く消えるはずだった）行から
+    execute format(
+      'delete from public.%I
+        where id in (select id from public.%I
+                      where room_id = $1 and deleted_at is not null
+                      order by deleted_at
+                      limit $2)',
+      TG_TABLE_NAME, TG_TABLE_NAME)
+      using NEW.room_id, (v_count - v_max + 1);
+
+    execute format('select count(*) from public.%I where room_id = $1', TG_TABLE_NAME)
+       into v_count using NEW.room_id;
+  end if;
+
   if v_count >= v_max then
     raise exception '% はボードあたり % 件までです', TG_ARGV[1], v_max
       using errcode = 'check_violation';
@@ -1775,7 +1821,9 @@ begin
       ('notes',           2000, '付箋',           'soft'),
       -- strokes.points の上限（120000 文字）と掛け合わせた最悪ケースが
       -- 無料枠を食い潰さない値にしている。手描き 2500 本は通常利用では届かない。
-      ('strokes',         2500, '手描き',         null),
+      -- ここだけ 'yield' なのは、この数がゴミ箱の行も含めた合計だから
+      -- （天井に当たったら、ゴミ箱の古い行が席を譲る。上の ALTER のところに理由）。
+      ('strokes',         2500, '手描き',         'yield'),
       ('images',           300, '画像',           'soft'),
       ('attachments',      200, '添付ファイル',   'soft'),
       ('events',          3000, '予定',           'soft'),
@@ -1792,11 +1840,12 @@ begin
       -- payload は 1 件 3MB まで許している（大きなボードを丸ごと控えるため下げられない）。
       -- そのぶん件数を絞って、1 ボードあたりの最悪ケースを抑える。
       ('snapshots',         12, '保存した状態',   null)
-    -- soft = 'soft' の表は、ゴミ箱に入っている行を数えない
-    ) as v(tbl, max_rows, label, soft)
+    -- 4 つめはゴミ箱の行の数え方。'soft' は数えない、'yield' は数えたうえで
+    -- 天井に当たったら古い行から席を譲る、null はゴミ箱を持たない表
+    ) as v(tbl, max_rows, label, count_mode)
   loop
     execute format('drop trigger if exists %I on public.%I', r.tbl || '_limit_rows', r.tbl);
-    if r.soft is null then
+    if r.count_mode is null then
       execute format(
         'create trigger %I before insert on public.%I
            for each row execute function public.tg_limit_rows_per_room(%L, %L)',
@@ -1805,7 +1854,7 @@ begin
       execute format(
         'create trigger %I before insert on public.%I
            for each row execute function public.tg_limit_rows_per_room(%L, %L, %L)',
-        r.tbl || '_limit_rows', r.tbl, r.max_rows, r.label, r.soft);
+        r.tbl || '_limit_rows', r.tbl, r.max_rows, r.label, r.count_mode);
     end if;
   end loop;
 end;
