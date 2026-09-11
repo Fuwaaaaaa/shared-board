@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { generateSlug, supabase } from '../lib/supabase'
 import { useIdentity } from '../lib/identity'
@@ -7,6 +7,7 @@ import { usePwa } from '../hooks/usePwa'
 import { BOARD_TEMPLATES } from '../lib/templates'
 import { ACCESS_MODES, checkPin, visibilityFor, type AccessMode } from '../lib/access'
 import AccountModal from '../components/AccountModal'
+import MyOverview from '../components/MyOverview'
 import type { Note, Room } from '../lib/types'
 import { messageOf } from '../lib/errorMessage'
 
@@ -36,6 +37,20 @@ export default function HomePage() {
 
   const active = rooms.filter((r) => !r.room.archived)
   const archived = rooms.filter((r) => r.room.archived)
+
+  /*
+   * 「自分の番」に出すボード。
+   *
+   * 承認待ち・見送られたボードは中身を読めないし、終了したボードは書けない。
+   * どちらも「いま自分が動かせるもの」ではないので、集計からは外す。
+   */
+  const overviewRooms = useMemo(
+    () =>
+      active
+        .filter((r) => r.status === 'approved')
+        .map((r) => ({ id: r.room.id, slug: r.room.slug, name: r.room.name })),
+    [active],
+  )
 
   /** お気に入りは参加者ごとの設定なので room_members 側に持つ */
   async function toggleFavorite(entry: JoinedRoom) {
@@ -245,6 +260,12 @@ export default function HomePage() {
       </header>
 
       <main className="mx-auto max-w-4xl px-6 py-8">
+        {/*
+          いちばん上に置く。「どのボードを開けばいいか」は、新しいボードを作るより
+          先に知りたいこと。何も無いときは MyOverview 自身が何も描かない
+        */}
+        {!loading && <MyOverview rooms={overviewRooms} userId={userId} />}
+
         <section className="mb-10 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <h1 className="mb-1 text-lg font-bold text-slate-800">新しいボードを作る</h1>
           <p className="mb-5 text-sm text-slate-500">

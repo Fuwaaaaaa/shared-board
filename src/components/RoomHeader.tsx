@@ -18,6 +18,15 @@ const TABS: { key: TabKey; label: string; icon: string }[] = [
   { key: 'dashboard', label: 'ダッシュボード', icon: '📊' },
 ]
 
+/**
+ * URL の ?tab= で受け取ってよい値。
+ *
+ * 外から来た文字列をそのままタブに入れないための門。ここを通さないと、
+ * リンクに書かれた任意の文字列で「どのタブでもない」状態を作れる。
+ * notifications.link_tab の CHECK 制約と同じ顔ぶれ。
+ */
+export const TAB_KEYS: TabKey[] = TABS.map((t) => t.key)
+
 interface Props {
   preview: RoomPreview
   tab: TabKey

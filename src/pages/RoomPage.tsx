@@ -11,7 +11,7 @@ import { supabase } from '../lib/supabase'
 import { notifyRoomChanged } from '../lib/roomChannel'
 import { useOutboxReady } from '../lib/outboxStore'
 import { useWriteQueue } from '../hooks/useWriteQueue'
-import RoomHeader, { type TabKey } from '../components/RoomHeader'
+import RoomHeader, { TAB_KEYS, type TabKey } from '../components/RoomHeader'
 import AccessRequestPanel from '../components/AccessRequestPanel'
 import Loading from '../components/Loading'
 import ErrorBoundary from '../components/ErrorBoundary'
@@ -212,6 +212,28 @@ function RoomShell({
     if (searchParams.get('created') !== '1') return
     setShowShare(true)
     searchParams.delete('created')
+    setSearchParams(searchParams, { replace: true })
+  }, [searchParams, setSearchParams])
+
+  /*
+   * ホームの「自分の番」から飛んできたとき（?tab=todo&focus=…）。
+   *
+   * 読み終わるのを待たない。行がまだ届いていなくても useFocusJump が
+   * 届いたところでもう一度合わせにいく（検索や通知から飛ぶときと同じ道）。
+   *
+   * 合図を URL から消すのは、created=1 と同じ理由。残したまま置くと、
+   * リロードやタブの切り替えのたびに同じところへ引き戻される。
+   */
+  useEffect(() => {
+    const wanted = searchParams.get('tab')
+    if (!wanted || !TAB_KEYS.includes(wanted as TabKey)) return
+
+    setTab(wanted as TabKey)
+    const id = searchParams.get('focus')
+    if (id) setFocus({ tab: wanted as TabKey, id, nonce: Date.now() })
+
+    searchParams.delete('tab')
+    searchParams.delete('focus')
     setSearchParams(searchParams, { replace: true })
   }, [searchParams, setSearchParams])
 

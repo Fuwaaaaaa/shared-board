@@ -24,3 +24,6 @@ supabase/.branches/
 test-results/
 playwright-report/
 blob-report/
+
+# Claude Code（個人ごとの許可設定。settings.json のほうは共有する）
+.claude/settings.local.json

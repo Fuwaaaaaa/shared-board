@@ -444,9 +444,24 @@ create index if not exists client_errors_idx    on public.client_errors (user_id
 create index if not exists images_path_idx      on public.images (storage_path);
 create index if not exists attachments_path_idx on public.attachments (storage_path);
 
--- 「自分の担当」の絞り込み。いまは画面側で絞っているので効いていないが、
--- サーバー側で絞る日が来たときにここが無いと全表走査になる。
-create index if not exists todos_assignee_idx   on public.todos (room_id, assignee_id);
+-- 「自分の担当」の絞り込み。
+--
+-- ホーム画面の「自分の番」が、ボードを跨いで 1 回で引く
+-- （room_id で絞らず assignee_id だけで引き、どのボードを読めるかは RLS が決める）。
+-- 先頭が room_id だと、その引き方には効かない。
+--
+-- 部分索引にしているのは、引くのがいつも「未完了で、ゴミ箱にも入っていないもの」
+-- だから。完了したぶんが積み上がっても索引は太らない。
+-- ルームの中の「自分の担当」は画面側で絞っているので、こちらは要らない
+-- （todos_room_idx (room_id, due_at) で足りている）。
+drop index if exists public.todos_assignee_idx;
+create index if not exists todos_assignee_due_idx on public.todos (assignee_id, due_at)
+  where deleted_at is null and done = false;
+
+-- 同じくホーム用。繰り返しの展開は画面側でするので、サーバーでは
+-- 「その窓に出てくる見込みのある行」までを絞る。
+create index if not exists events_start_idx on public.events (start_at)
+  where deleted_at is null;
 
 
 -- =============================================================================

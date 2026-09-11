@@ -325,7 +325,7 @@
 
 <code class="tree"><b>src/</b>
 ├─ <b>pages/</b>
-│  ├─ HomePage.tsx        ボードを作る・入る
+│  ├─ HomePage.tsx        自分の番・ボードを作る・入る
 │  ├─ RoomPage.tsx        タブの切り替え、検索、チャット、通知
 │  └─ <b>tabs/</b>
 │     ├─ WhiteboardTab.tsx   ホワイトボード本体（最大のファイル）
@@ -449,6 +449,15 @@
         <code>trash</code> には載らず、ゴミ箱の中身は <code>TrashModal</code> が
         開いたときに取りに行きます。もう 1 つは件数の上限がゴミ箱の行も数えること
         （<code>tg_limit_rows_per_room</code> の <code>'yield'</code>。天井では古い行が席を譲ります）。
+      </li>
+      <li>
+        <b>ボードを跨ぐ画面は、ボードごとに問い合わせない。</b>
+        ホームの「自分の番」（<code>MyOverview</code>）は、やること・予定・
+        「この回だけ」の 3 本だけを引きます。<code>room_id</code> では絞らず、
+        どのボードの行が返るかは RLS に任せます——参加ボードが 30 個あっても 3 本のままです。
+        繰り返しの展開は SQL でやらずに画面側でします
+        （規則の写しを 3 つめにしないため。いまは画面と Edge Function が
+        <code>_shared/recurrence.ts</code> を共有しています）。
       </li>
       <li>
         <b>暦は Asia/Tokyo 固定。</b> <code>Intl</code> を使わず UTC に +9 時間して計算します。
