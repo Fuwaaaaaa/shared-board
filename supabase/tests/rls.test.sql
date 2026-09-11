@@ -6,8 +6,8 @@
 --
 --  実行のしかた（どちらでも同じ結果になります）
 --
---    A) Supabase CLI
---         supabase test db
+--    A) Supabase CLI（版は package.json に固定してあるので npx で呼ぶ）
+--         npm run test:db      （= npx supabase test db）
 --
 --    B) psql（schema.sql を流した DB に対して）
 --         psql -U postgres -f supabase/tests/rls.test.sql
@@ -19,7 +19,7 @@ begin;
 
 create extension if not exists pgtap;
 
-select plan(304);
+select plan(329);
 
 
 -- =============================================================================
@@ -822,6 +822,90 @@ select is(
     where room_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
       and user_id = '33333333-3333-3333-3333-333333333333' limit 1),
   'けいこ', '差出人の名前は送った本人の表示名で上書きされる');
+
+
+-- =============================================================================
+--  13.5 同じ人あての通知は、毎分 20 件で頭打ち
+-- =============================================================================
+--
+-- 入れる条件が can_edit_room ではなく can_access_room なので、閲覧だけの人でも
+-- 参加者あてに書ける。しかも send-reminders が未読を拾って Web Push に変えるため、
+-- 止めないと相手の端末の通知を好きなだけ鳴らせてしまう。
+--
+-- 超えた分も例外にはしない。通知を出せなかったことで、通知を出そうとした操作
+-- （付箋を書く、コメントする）まで失敗させたくないため。
+-- 数えるのは差出人ではなく宛先——notifications は差出人の id を持っていないうえ、
+-- 困るのは受け取る側なので、そちらで止めるほうが確実。
+--
+-- 枠は重要さで 2 つに分かれている。high（mention など）が毎分 20 件、
+-- low（converted）が毎分 10 件。溢れたぶんは捨てずに「ほかに N 件」の 1 行へまとめる。
+
+select tests_act_as('22222222-2222-2222-2222-222222222222');   -- けいこ
+
+-- 13 節ですでに 1 件入っているので、上限まではあと 19 件
+do $$
+begin
+  for i in 1..19 loop
+    insert into public.notifications (room_id, user_id, kind, body)
+    values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+            '33333333-3333-3333-3333-333333333333', 'mention', '連投 ' || i);
+  end loop;
+end $$;
+
+select is(
+  tests_rowcount($$insert into public.notifications (room_id, user_id, kind, body)
+                   values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                           '33333333-3333-3333-3333-333333333333', 'mention', '21 件目')$$),
+  1, '毎分 20 件を超えた通知は、黙って捨てずに「まとめ」の行にする');
+
+select is(
+  tests_rowcount($$insert into public.notifications (room_id, user_id, kind, body)
+                   values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                           '33333333-3333-3333-3333-333333333333', 'mention', '22 件目')$$),
+  0, 'そのあとは、まとめに足すだけで行は増えない');
+
+-- ここが今回いちばん直したかったところ。
+-- 付箋をまとめて変換したときの converted で、@メンションの枠を食い潰さない。
+select is(
+  tests_rowcount($$insert into public.notifications (room_id, user_id, kind, body)
+                   values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                           '33333333-3333-3333-3333-333333333333', 'converted', '変換した')$$),
+  1, '重要さの違う通知は枠が別なので、押し出し合わない');
+
+select is(
+  tests_rowcount($$insert into public.notifications (room_id, user_id, kind, body)
+                   values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                           '11111111-1111-1111-1111-111111111111', 'mention', '別の人あて')$$),
+  1, '宛先ごとに数えるので、別の人あてはそのまま届く');
+
+select tests_act_as('33333333-3333-3333-3333-333333333333');   -- みなみ（宛先）
+
+select is(
+  (select count(*)::int from public.notifications
+    where room_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+      and user_id = '33333333-3333-3333-3333-333333333333'),
+  22, '20 件 + まとめ 1 行 + 別枠の変換 1 件');
+
+select is(
+  (select folded_count::int from public.notifications
+    where room_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+      and user_id = '33333333-3333-3333-3333-333333333333'
+      and kind = 'digest'),
+  2, 'まとめの行が、溢れた 2 件ぶんを数えている');
+
+select is(
+  (select actor_name from public.notifications
+    where room_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+      and user_id = '33333333-3333-3333-3333-333333333333'
+      and kind = 'digest'),
+  '', 'まとめの行は、誰の名前も名乗らない');
+
+select is(
+  (select read from public.notifications
+    where room_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+      and user_id = '33333333-3333-3333-3333-333333333333'
+      and kind = 'digest'),
+  false, 'まとめの行は未読で置かれる（バッジで気づける）');
 
 
 -- =============================================================================
@@ -2057,6 +2141,103 @@ select lives_ok(
              '11111111-1111-1111-1111-111111111111', 'ゆうき')$$,
   'やることも、毎週 火・木は保存できる');
 
+-- ---- コメントを付けられる先 -----------------------------------------------
+--
+-- 付箋・予定・やることに加えて、画像・ファイル・フレームにも付けられる。
+-- create table は「あれば作らない」ので、すでに動いている DB では CHECK を
+-- 付け直している。ここでは付け直したあとの顔ぶれそのものを見る。
+select lives_ok(
+  $$insert into public.comments (room_id, target_type, target_id, body, author_id, author_name)
+     values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'image',
+             '88880000-0000-0000-0000-000000000060', 'この写真いいね',
+             '11111111-1111-1111-1111-111111111111', 'ゆうき')$$,
+  '画像にコメントできる');
+
+select lives_ok(
+  $$insert into public.comments (room_id, target_type, target_id, body, author_id, author_name)
+     values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'file',
+             '88880000-0000-0000-0000-000000000061', '資料ありがとう',
+             '11111111-1111-1111-1111-111111111111', 'ゆうき')$$,
+  'ファイルにコメントできる');
+
+select lives_ok(
+  $$insert into public.comments (room_id, target_type, target_id, body, author_id, author_name)
+     values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'frame',
+             '88880000-0000-0000-0000-000000000062', 'ここは来週やる',
+             '11111111-1111-1111-1111-111111111111', 'ゆうき')$$,
+  'フレームにコメントできる');
+
+select throws_ok(
+  $$insert into public.comments (room_id, target_type, target_id, body, author_id, author_name)
+     values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'stroke',
+             '88880000-0000-0000-0000-000000000063', '手描きへのコメント',
+             '11111111-1111-1111-1111-111111111111', 'ゆうき')$$,
+  '23514',
+  null,
+  '知らない種類には付けられない');
+
+
+-- ---- 「n 回ごと」も同じく DB で形が決まっている ---------------------------
+--
+-- 上限 99 は _shared/recurrence.ts の MAX_INTERVAL と同じ数。
+select throws_ok(
+  $$update public.events set recurrence_interval = 0
+     where id = '88880000-0000-0000-0000-000000000040'$$,
+  '23514',
+  null,
+  '間隔に 0 は入れられない');
+
+select throws_ok(
+  $$update public.events set recurrence_interval = -1
+     where id = '88880000-0000-0000-0000-000000000040'$$,
+  '23514',
+  null,
+  '間隔に負の数は入れられない');
+
+select throws_ok(
+  $$update public.events set recurrence_interval = 100
+     where id = '88880000-0000-0000-0000-000000000040'$$,
+  '23514',
+  null,
+  '間隔は 99 までしか入れられない');
+
+select throws_ok(
+  $$update public.events
+       set recurrence = 'none', recurrence_days = '{}'::smallint[], recurrence_week = null,
+           recurrence_interval = 2
+     where id = '88880000-0000-0000-0000-000000000040'$$,
+  '23514',
+  null,
+  '繰り返さない予定に間隔は付けられない');
+
+-- 繰り返しを外したときに normalizeRule が返す 1 は通す。ここを弾くと
+-- 「繰り返さない」に戻す操作そのものが保存できなくなる
+select lives_ok(
+  $$update public.events
+       set recurrence = 'none', recurrence_days = '{}'::smallint[], recurrence_week = null,
+           recurrence_interval = 1
+     where id = '88880000-0000-0000-0000-000000000040'$$,
+  '繰り返さない予定の間隔 1 は通す');
+
+select lives_ok(
+  $$update public.events set recurrence = 'weekly', recurrence_interval = 2
+     where id = '88880000-0000-0000-0000-000000000040'$$,
+  '隔週は保存できる');
+
+select throws_ok(
+  $$insert into public.todos (room_id, title, recurrence, recurrence_interval, author_id, author_name)
+     values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '掃除', 'weekly', 0,
+             '11111111-1111-1111-1111-111111111111', 'ゆうき')$$,
+  '23514',
+  null,
+  'やることも、間隔に 0 は入れられない');
+
+select lives_ok(
+  $$insert into public.todos (room_id, title, recurrence, recurrence_interval, author_id, author_name)
+     values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '掃除', 'weekly', 2,
+             '11111111-1111-1111-1111-111111111111', 'ゆうき')$$,
+  'やることも、隔週は保存できる');
+
 
 -- =============================================================================
 --  38. カレンダーの購読 URL
@@ -2237,6 +2418,38 @@ select is(
   (select count(*)::int from public.event_attendance
     where event_id = '88880000-0000-0000-0000-000000000050'),
   0, '開始日を変えると、回に紐づく出欠が落ちる');
+
+-- 間隔を変えると回の並びが動くので、出欠は落ちる。
+-- 逆に「null の行に 1 を書いただけ」では落ちてはいけない——この列より前からある
+-- 行はすべて null で、画面は保存のたび 1 を書くので、そこで落とすと
+-- 開いて保存しただけの予定から出欠が消える。
+select is(
+  tests_rowcount($$insert into public.event_attendance
+                     (room_id, event_id, occurrence_date, user_id, answer)
+                   values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                           '88880000-0000-0000-0000-000000000050',
+                           '2026-09-02', '11111111-1111-1111-1111-111111111111', 'yes')$$),
+  1, '出欠を付け直す');
+
+select is(
+  tests_rowcount($$update public.events set recurrence_interval = 1
+                    where id = '88880000-0000-0000-0000-000000000050'$$),
+  1, '間隔が無い（null の）行に 1 を書く');
+
+select is(
+  (select count(*)::int from public.event_attendance
+    where event_id = '88880000-0000-0000-0000-000000000050'),
+  1, 'null の行に 1 を書いても、出欠は落ちない');
+
+select is(
+  tests_rowcount($$update public.events set recurrence_interval = 2
+                    where id = '88880000-0000-0000-0000-000000000050'$$),
+  1, '間隔を 2 に変える');
+
+select is(
+  (select count(*)::int from public.event_attendance
+    where event_id = '88880000-0000-0000-0000-000000000050'),
+  0, '間隔を変えると、回に紐づく出欠が落ちる');
 
 -- 繰り返しなしの予定は、日付を動かしても回が 1 つのままなので落とさない
 select lives_ok(
@@ -2739,6 +2952,7 @@ select set_eq(
   ('notifications', 'notifications_freeze_body', 'BEFORE', 'UPDATE'),
   ('notifications', 'notifications_guard', 'BEFORE', 'INSERT'),
   ('notifications', 'notifications_limit_text', 'BEFORE', 'INSERT,UPDATE'),
+  ('notifications', 'notifications_throttle', 'BEFORE', 'INSERT'),
   ('poll_options', 'poll_options_freeze', 'BEFORE', 'UPDATE'),
   ('poll_options', 'poll_options_limit_rows', 'BEFORE', 'INSERT'),
   ('poll_votes', 'poll_votes_force_name', 'BEFORE', 'INSERT,UPDATE'),
@@ -2825,6 +3039,7 @@ select set_eq(
   ('tg_log_room_access'),
   ('tg_reset_event_occurrences'),
   ('tg_throttle_client_errors'),
+  ('tg_throttle_notifications'),
   ('tg_touch_event_updated_at'),
   ('tg_touch_note_updated_at')
   $q$,

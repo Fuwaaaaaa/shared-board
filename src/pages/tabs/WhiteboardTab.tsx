@@ -32,6 +32,7 @@ import { useSignedUrls } from '../../hooks/useSignedUrls'
 import { useOptimisticTable, type PatchResult } from '../../hooks/useOptimisticTable'
 import { useStableHandlers } from '../../hooks/useStableHandlers'
 import { useMediaQuery } from '../../hooks/useMediaQuery'
+import { useFocusJump } from '../../hooks/useFocusJump'
 import { usePinchPan } from '../../hooks/usePinchPan'
 import { supabase } from '../../lib/supabase'
 import { useIdentity } from '../../lib/identity'
@@ -48,12 +49,15 @@ import { downloadBlob } from '../../lib/ics'
 import { BOARD_TEMPLATES, type BoardTemplate } from '../../lib/templates'
 import type { Peer } from '../../hooks/usePresence'
 import {
+  COMMENT_TARGET_LABELS,
+  commentSubjectId,
   NOTE_COLORS,
   PEN_COLORS,
   PEN_COLOR_LABELS,
   type Attachment,
   type BoardImage,
   type CalendarEvent,
+  type CommentSubject,
   type Connector,
   type Frame,
   type Note,
@@ -64,6 +68,7 @@ import {
   type Stroke,
   type StrokeKind,
 } from '../../lib/types'
+import { attachmentIcon, formatFileSize } from '../../lib/attachmentCard'
 import { messageOf } from '../../lib/errorMessage'
 
 /**
@@ -200,7 +205,7 @@ export default function WhiteboardTab({
   >(null)
   const [connectFrom, setConnectFrom] = useState<string | null>(null)
   const [marquee, setMarquee] = useState<Marquee | null>(null)
-  const [commentTarget, setCommentTarget] = useState<Note | null>(null)
+  const [commentTarget, setCommentTarget] = useState<CommentSubject | null>(null)
   const [converting, setConverting] = useState<{ notes: Note[]; target: ConvertTarget } | null>(null)
   const [showTemplates, setShowTemplates] = useState(false)
   const [showBulk, setShowBulk] = useState(false)
@@ -264,8 +269,15 @@ export default function WhiteboardTab({
   const frameOps = useOptimisticTable<Frame>('frames', frames, setNotice)
   const reactionOps = useOptimisticTable<NoteReaction>('note_reactions', reactions, setNotice)
   const voteOps = useOptimisticTable<NoteVote>('note_votes', votes, setNotice)
-  const todoOps = useOptimisticTable<Todo>('todos', todos, setNotice)
-  const eventOps = useOptimisticTable<CalendarEvent>('events', events, setNotice)
+  /*
+   * やること・予定は、ここからも書く（付箋からの変換）。ためる相手を渡し忘れると、
+   * 同じ表なのに「ToDo タブからは送れるが、ボードからは失敗する」食い違いになる。
+   */
+  const todoOps = useOptimisticTable<Todo>('todos', todos, setNotice, { roomId, userId })
+  const eventOps = useOptimisticTable<CalendarEvent>('events', events, setNotice, {
+    roomId,
+    userId,
+  })
 
   const imagePaths = useMemo(() => images.rows.map((i) => i.storage_path), [images.rows])
   const filePaths = useMemo(() => attachments.rows.map((a) => a.storage_path), [attachments.rows])
@@ -379,21 +391,38 @@ export default function WhiteboardTab({
     if (mode !== 'connect') setConnectFrom(null)
   }, [mode])
 
-  useEffect(() => {
-    if (!focusId) return
-    const note = notes.rows.find((n) => n.id === focusId)
+  /*
+   * 飛び先になりうるものを 1 つに並べる。
+   *
+   * コメントは付箋だけでなく画像・ファイル・フレームにも付くので、検索や通知からは
+   * それらの id でも飛んでくる。付箋しか探していないと、当たりは出るのに押しても
+   * 何も起きない——search.ts が liveTargets で避けようとしている、まさにその状態になる。
+   * 付箋以外は選択の対象にできないので、そこまで連れていくところまでを受け持つ。
+   */
+  const focusTargets = useMemo(
+    () => [
+      ...notes.rows.map((n) => ({ id: n.id, x: n.x, y: n.y, note: true })),
+      ...images.rows.map((i) => ({ id: i.id, x: i.x, y: i.y, note: false })),
+      ...attachments.rows.map((a) => ({ id: a.id, x: a.x, y: a.y, note: false })),
+      ...frames.rows.map((f) => ({ id: f.id, x: f.x, y: f.y, note: false })),
+    ],
+    [notes.rows, images.rows, attachments.rows, frames.rows],
+  )
+
+  // 検索・更新タブから飛んできたものを、画面の真ん中へ入れる
+  useFocusJump(focusId, focusNonce, focusTargets, (target) => {
     const container = scrollRef.current
-    if (!note || !container) return
+    // 一覧ビューには置き場所が無い。届いてからもう一度試す
+    if (!container) return false
 
     setMode('select')
-    setSelectedIds([note.id])
+    setSelectedIds(target.note ? [target.id] : [])
     container.scrollTo({
-      left: Math.max(0, note.x * zoom - container.clientWidth / 2),
-      top: Math.max(0, note.y * zoom - container.clientHeight / 2),
+      left: Math.max(0, target.x * zoom - container.clientWidth / 2),
+      top: Math.max(0, target.y * zoom - container.clientHeight / 2),
       behavior: 'smooth',
     })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusId, focusNonce, notes.rows])
+  })
 
   /*
    * 右クリックのメニューは、あることを知らないと一生見つからない。
@@ -600,6 +629,24 @@ export default function WhiteboardTab({
     for (const release of frameHoldsRef.current) release()
     frameHoldsRef.current = []
   }
+
+  /*
+   * タブを離れるときは、保留を必ず外す。
+   *
+   * 保留を持っているのは 1 つ上の useRealtimeTable で、タブの切り替えでは
+   * 初期化されない。外し忘れると、そのボードを開いているあいだずっと
+   * その付箋の x/y だけが他の人の更新も取り直しも受け付けなくなる。
+   * しかも動かした位置は送っていないので、誰の画面でも古いまま止まる。
+   *
+   * 正常に終わる道（finishMove / cancelPointerOperations）では外しているが、
+   * ドラッグの途中でタブを変えられると、そのどれも通らない。
+   */
+  useEffect(() => {
+    return () => {
+      releaseDragHolds()
+      releaseFrameHolds()
+    }
+  }, [])
 
   // ---- 付箋 ---------------------------------------------------------------
 
@@ -1948,8 +1995,10 @@ export default function WhiteboardTab({
   /**
    * ボードの絵を作る。rows を渡すと、その付箋だけを外接矩形で切り出す。
    *
-   * 切り出すときに手描きや画像を混ぜないのは、選択の対象が付箋だからで、
-   * 「選んだものが出てくる」という見え方を崩さないため。
+   * 切り出すときに手描き・画像・フレーム・ファイルを混ぜないのは、選択の対象が
+   * 付箋だからで、「選んだものが出てくる」という見え方を崩さないため。
+   * 線だけは例外で、両端とも選んだ付箋なら描く——線は付箋にぶら下がっていて
+   * 単独では選べないので、付箋を選んだ時点で一緒に選んだことになる。
    */
   function renderPng(rows?: Note[]): Promise<Blob> {
     const box = rows?.length
@@ -1961,6 +2010,8 @@ export default function WhiteboardTab({
         })
       : null
 
+    const pickedIds = box ? new Set(rows!.map((note) => note.id)) : null
+
     return renderBoardToBlob({
       width: box ? box.w : BOARD_W,
       height: box ? box.h : BOARD_H,
@@ -1968,6 +2019,13 @@ export default function WhiteboardTab({
       notes: box ? rows! : notes.rows,
       strokes: box ? [] : strokes.rows,
       images: box ? [] : images.rows,
+      frames: box ? [] : frames.rows,
+      connectors: pickedIds
+        ? connectors.rows.filter(
+            (c) => pickedIds.has(c.from_note_id) && pickedIds.has(c.to_note_id),
+          )
+        : connectors.rows,
+      attachments: box ? [] : attachments.rows,
       imageUrls,
       background: theme === 'dark' ? '#f8fafc' : '#ffffff',
     })
@@ -2278,7 +2336,7 @@ export default function WhiteboardTab({
     noteLocalChange: (note: Note) => notes.upsertLocal(note),
     commitNote: (id: string, patch: Partial<Note>) => commitNote(id, patch),
     deleteNote: (note: Note) => void deleteNote(note),
-    openComments: (note: Note) => setCommentTarget(note),
+    openComments: (note: Note) => setCommentTarget({ kind: 'note', note }),
     toggleVote: (note: Note) => void toggleVote(note),
     editingChange: (noteId: string | null) => onEditingChange(noteId),
     convert: (note: Note, target: 'todo' | 'event') => setConverting({ notes: [note], target }),
@@ -2354,7 +2412,7 @@ export default function WhiteboardTab({
       const color = getClipboardStyle()
       if (color) void applyStyleToNotes(rows, color)
     },
-    openComments: (note) => setCommentTarget(note),
+    openComments: (subject) => setCommentTarget(subject),
     convert: (rows, target) => setConverting({ notes: rows.slice(), target }),
     align: (kind) => void align(kind),
     changeZ: (rows, where) => void changeZ(rows, where),
@@ -3023,26 +3081,73 @@ export default function WhiteboardTab({
       )}
 
       {commentTarget && (
-        <Modal title="付箋" onClose={() => setCommentTarget(null)}>
-          <p className="mb-4 rounded-lg bg-slate-50 p-3 text-sm whitespace-pre-wrap text-slate-700">
-            {commentTarget.text || '（空の付箋）'}
-          </p>
+        <Modal
+          title={COMMENT_TARGET_LABELS[commentTarget.kind]}
+          onClose={() => setCommentTarget(null)}
+        >
+          {/* 何に付けているのかが分かるように、対象そのものを上に出す */}
+          {commentTarget.kind === 'note' && (
+            <p className="mb-4 rounded-lg bg-slate-50 p-3 text-sm whitespace-pre-wrap text-slate-700">
+              {commentTarget.note.text || '（空の付箋）'}
+            </p>
+          )}
 
-          <div className="mb-4">
-            <span className="mb-1.5 block text-sm font-medium text-slate-700">タグ</span>
-            <TagInput
-              tags={commentTarget.tags ?? []}
-              suggestions={allTags}
-              disabled={!canEdit}
-              onChange={(tags) => {
-                setCommentTarget({ ...commentTarget, tags })
-                commitNote(commentTarget.id, { tags }, 'タグの変更')
-              }}
-            />
-          </div>
+          {commentTarget.kind === 'image' && (
+            <div className="mb-4 rounded-lg bg-slate-50 p-3">
+              {imageUrls[commentTarget.image.storage_path] ? (
+                <img
+                  src={imageUrls[commentTarget.image.storage_path]}
+                  alt=""
+                  className="mx-auto max-h-40 rounded"
+                />
+              ) : (
+                <p className="text-center text-sm text-slate-400">読み込み中…</p>
+              )}
+            </div>
+          )}
+
+          {commentTarget.kind === 'file' && (
+            <p className="mb-4 flex items-center gap-2 rounded-lg bg-slate-50 p-3 text-sm text-slate-700">
+              <span className="text-xl leading-none">
+                {attachmentIcon(commentTarget.attachment.mime, commentTarget.attachment.filename)}
+              </span>
+              <span className="min-w-0 flex-1 break-all">
+                {commentTarget.attachment.filename}
+              </span>
+              <span className="shrink-0 text-xs text-slate-400">
+                {formatFileSize(commentTarget.attachment.size)}
+              </span>
+            </p>
+          )}
+
+          {commentTarget.kind === 'frame' && (
+            <p className="mb-4 rounded-lg bg-slate-50 p-3 text-sm text-slate-700">
+              {commentTarget.frame.title || '（名前のないフレーム）'}
+            </p>
+          )}
+
+          {/* タグを持てるのは付箋だけ（ほかの 3 つに tags の列が無い） */}
+          {commentTarget.kind === 'note' && (
+            <div className="mb-4">
+              <span className="mb-1.5 block text-sm font-medium text-slate-700">タグ</span>
+              <TagInput
+                tags={commentTarget.note.tags ?? []}
+                suggestions={allTags}
+                disabled={!canEdit}
+                onChange={(tags) => {
+                  const note = { ...commentTarget.note, tags }
+                  setCommentTarget({ kind: 'note', note })
+                  commitNote(note.id, { tags }, 'タグの変更')
+                }}
+              />
+            </div>
+          )}
 
           <div className="border-t border-slate-100 pt-4">
-            <CommentList targetType="note" targetId={commentTarget.id} />
+            <CommentList
+              targetType={commentTarget.kind}
+              targetId={commentSubjectId(commentTarget)}
+            />
           </div>
         </Modal>
       )}

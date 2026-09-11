@@ -31,12 +31,45 @@ export default defineConfig(({ mode }) => ({
       },
     },
   },
+  /*
+   * テストを 2 つに分ける。分け方は「拡張子」。
+   *
+   *   *.test.ts   純粋関数（繰り返し・祝日・ics・CSV など）  → node
+   *   *.test.tsx  React コンポーネント                        → jsdom
+   *
+   * 判断のあるところを src/lib/ の純粋関数へ押し出す方針は変えていない。
+   * jsdom を足したのは、押し出せない部分（ドラッグの確定、フォーカスの戻し先など）
+   * が実際にあるため。node のテストは今までどおりブラウザ環境なしで速く回る。
+   *
+   * もとは vitest.workspace.ts に置いていたが、その形は vitest 3 で非推奨・
+   * 4 で廃止されたので、ここの projects へ移した。extends: true で
+   * この設定（plugins と下の env）をそのまま継ぐ。
+   */
   test: {
-    // どのファイルをどの環境で走らせるかは vitest.workspace.ts が決める。
-    // ここに include を置くと、継承した先で連結されて二重に走る
-    //
     // ボードの暦は Asia/Tokyo 固定なので、テストも日本時間で走らせる。
     // TZ 依存を確かめるテストは vi.stubEnv('TZ', ...) で切り替える
     env: { TZ: 'Asia/Tokyo' },
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: 'lib',
+          include: ['src/**/__tests__/**/*.test.ts'],
+          environment: 'node',
+          // env は projects へ降りてこないので、どちらにも書く
+          env: { TZ: 'Asia/Tokyo' },
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'ui',
+          include: ['src/**/__tests__/**/*.test.tsx'],
+          environment: 'jsdom',
+          setupFiles: ['./src/test/setup.ts'],
+          env: { TZ: 'Asia/Tokyo' },
+        },
+      },
+    ],
   },
 }))

@@ -14,7 +14,8 @@ test.skip(
   'ローカルの Supabase につながらないので飛ばします（supabase start）',
 )
 
-test('タブを切り替えると、それぞれの中身が出る', async ({ page }) => {
+/* @smoke … React.lazy の分割読み込みはブラウザによって転びうるので、3 つとも見る */
+test('@smoke タブを切り替えると、それぞれの中身が出る', async ({ page }) => {
   // 読み込みに失敗しても画面が白くなるだけのことがあるので、エラーも拾う
   const errors: string[] = []
   page.on('pageerror', (e) => errors.push(String(e)))

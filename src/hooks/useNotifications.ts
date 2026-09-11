@@ -62,22 +62,49 @@ export function useAppNotifications(roomId: string) {
 
   const unread = useMemo(() => rows.filter((n) => !n.read).length, [rows])
 
+  /*
+   * 以下 3 つは、先に画面を進めてから送る。失敗したら戻す。
+   * 戻さないと、既読にしたつもりのものが次に開いたときに未読へ戻り、
+   * 消したはずのものが生き返る——どちらも理由が出ないので、
+   * 「通知がおかしい」という形でしか気づけない。
+   */
   const markAllRead = useCallback(async () => {
-    const ids = rows.filter((n) => !n.read).map((n) => n.id)
-    if (ids.length === 0) return
+    const unreadRows = rows.filter((n) => !n.read)
+    if (unreadRows.length === 0) return
+
+    const ids = unreadRows.map((n) => n.id)
     setRows((current) => current.map((n) => ({ ...n, read: true })))
-    await supabase.from('notifications').update({ read: true }).in('id', ids)
+
+    const { error } = await supabase.from('notifications').update({ read: true }).in('id', ids)
+    if (error) {
+      const stillUnread = new Set(ids)
+      setRows((current) => current.map((n) => (stillUnread.has(n.id) ? { ...n, read: false } : n)))
+    }
   }, [rows])
 
   const markRead = useCallback(async (id: string) => {
     setRows((current) => current.map((n) => (n.id === id ? { ...n, read: true } : n)))
-    await supabase.from('notifications').update({ read: true }).eq('id', id)
+
+    const { error } = await supabase.from('notifications').update({ read: true }).eq('id', id)
+    if (error) setRows((current) => current.map((n) => (n.id === id ? { ...n, read: false } : n)))
   }, [])
 
-  const remove = useCallback(async (id: string) => {
-    setRows((current) => current.filter((n) => n.id !== id))
-    await supabase.from('notifications').delete().eq('id', id)
-  }, [])
+  const remove = useCallback(
+    async (id: string) => {
+      // 更新関数の中で拾わない（StrictMode で二度走ると、二度目は見つからない）
+      const removed = rows.find((n) => n.id === id)
+      setRows((current) => current.filter((n) => n.id !== id))
+
+      const { error } = await supabase.from('notifications').delete().eq('id', id)
+      // 消せていなければ元の並びへ戻す（新しい順）
+      if (error && removed) {
+        setRows((current) =>
+          [...current, removed].sort((a, b) => b.created_at.localeCompare(a.created_at)),
+        )
+      }
+    },
+    [rows],
+  )
 
   return { rows, unread, markAllRead, markRead, remove }
 }

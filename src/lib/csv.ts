@@ -159,10 +159,11 @@ export function looksMojibake(text: string): boolean {
 }
 
 /*
- * 繰り返しの曜日指定を CSV に載せる。
+ * 繰り返しの曜日指定と「n 回ごと」を CSV に載せる。
  *
  * 載せないと、書き出して取り込み直しただけで「毎週 火・木」が
- * 「毎週（開始日の曜日）」に化ける。予定が黙って変わるのがいちばん困る。
+ * 「毎週（開始日の曜日）」に、「隔週」が「毎週」に化ける。
+ * 予定が黙って変わるのがいちばん困る。
  */
 
 const CSV_WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土']
@@ -197,6 +198,24 @@ export function parseWeekdays(value: string | undefined): number[] {
     if (idx >= 0) days.push(idx)
   }
   return days
+}
+
+/**
+ * 「2」「2週」「隔週」を「n 回ごと」の n にする。
+ *
+ * 読めない値・範囲外は 1（毎回）に倒す。列そのものが無い古い CSV も
+ * undefined で届いて 1 になるので、これまでの書き出しをそのまま取り込める。
+ * 上限の切り落としは normalizeRule に任せる。
+ */
+export function parseInterval(value: string | undefined): number {
+  const text = (value ?? '').trim()
+  if (!text) return 1
+  if (/^隔/.test(text)) return 2
+
+  const match = /^(\d+)/.exec(text)
+  if (!match) return 1
+  const n = Number(match[1])
+  return Number.isInteger(n) && n >= 1 ? n : 1
 }
 
 /** 「第2」「2」「最終」「-1」を第 n 週の番号にする。読めなければ null */

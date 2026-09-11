@@ -30,6 +30,7 @@ export interface IcsEventLike {
   recurrence: Recurrence
   recurrence_days?: number[] | null
   recurrence_week?: number | null
+  recurrence_interval?: number | null
   recurrence_until: string | null
   tags: string[]
   /** 締切は見出しに 〆 を付けて、集まる予定と見分けられるようにする */
@@ -62,11 +63,19 @@ const ICS_DAYS = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA']
  * BYDAY=TU;BYSETPOS=2 と同じ意味だが、こちらのほうが取り込み先の対応が広い
  * （Google と Apple はこの形で書き出す）。読むときは両方を受け付ける。
  *
- * WKST は書き出す側では実質的に効かない（interval が常に 1 なので）が、
- * 展開を日曜起点で行っていることを取り込み先にも伝えるため明示する。
+ * INTERVAL は 1 のときは書かない（RFC 5545 の既定が 1）。これまでに書き出した
+ * ものと 1 文字も変わらないようにするため。
+ *
+ * WKST が意味を持つのは FREQ=WEEKLY かつ INTERVAL>1 かつ BYDAY があるときだけ、
+ * と RFC 5545 が定めていて、下の push はちょうどその枝に置いてある。
+ * 展開側（_shared/recurrence.ts の stepDates）が週の先頭を日曜に固定しているので、
+ * ここも SU で合わせる。片方だけ変えると、自分の画面と取り込み先で違う日に出る。
  */
 function rruleFor(event: IcsEventLike, rule: RecurrenceRule): string {
   const parts = [`FREQ=${FREQ[event.recurrence as Exclude<Recurrence, 'none'>]}`]
+
+  const interval = rule.interval ?? 1
+  if (interval > 1) parts.push(`INTERVAL=${interval}`)
 
   if (hasByDay(rule)) {
     if (rule.recurrence === 'weekly') {
@@ -181,7 +190,7 @@ function pushEventBody(
  */
 const RDATE_HORIZON_YEARS = 3
 
-/** RDATE の行数の上限（毎月なら 3 年で最大 36 件なので、実質は届かない） */
+/** RDATE の行数の上限（毎月なら 3 年で最大 36 件、間隔が広がればさらに減る） */
 const MAX_RDATES = 60
 
 /**
@@ -197,7 +206,12 @@ const MAX_RDATES = 60
 export function clampedRecurrenceDates(
   event: Pick<
     IcsEventLike,
-    'start_at' | 'recurrence' | 'recurrence_until' | 'recurrence_days' | 'recurrence_week'
+    | 'start_at'
+    | 'recurrence'
+    | 'recurrence_until'
+    | 'recurrence_days'
+    | 'recurrence_week'
+    | 'recurrence_interval'
   >,
   now: Date = new Date(),
 ): Date[] {
@@ -227,10 +241,16 @@ export function clampedRecurrenceDates(
   const oldest = fromBoardParts({ ...toBoardParts(now), y: toBoardParts(now).y - 1 })
   const windowStart = start.getTime() > oldest.getTime() ? start : oldest
 
+  /*
+   * 間隔を必ず渡すこと。渡さないと RRULE が出さない月の回まで RDATE に並び、
+   * 取り込み先で回が増える（EXDATE で消える種類の間違いではないので気づきにくい）。
+   */
+  const interval = ruleOf(event).interval ?? 1
+
   const dates: Date[] = []
   // n = 0 は DTSTART そのものなので、丸めは起きない
   for (let n = 1; dates.length < MAX_RDATES; n++) {
-    const cursor = nthOccurrence(start, rec, n)
+    const cursor = nthOccurrence(start, rec, n, interval)
     if (cursor > horizon) break
     if (limit && cursor >= limit) break
     if (cursor < windowStart) continue

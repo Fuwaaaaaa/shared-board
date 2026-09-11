@@ -8,6 +8,7 @@
 
 import { useSyncExternalStore } from 'react'
 import {
+  afterSend,
   collapse,
   keyOf,
   tooLargeToQueue,
@@ -61,14 +62,26 @@ export async function loadOutbox(): Promise<void> {
   if (ready) return
   await openQueue()
   entries = await readAll()
-  seq = entries.reduce((max, entry) => Math.max(max, entry.seq), 0)
+  syncSeq()
   ready = true
   emit()
+}
+
+/**
+ * ためた順の通し番号を、いま持っている中身に合わせる。
+ *
+ * 他のタブが先に進めていることがあるので、読み直したときも見る。見ないでいると、
+ * こちらが後から書いたものに小さい番号が付き、orderForFlush が「先に書いたもの」
+ * として先に送ってしまう。減らさないのは、送り終えて消えた番号を配り直さないため。
+ */
+function syncSeq(): void {
+  seq = entries.reduce((max, entry) => Math.max(max, entry.seq), seq)
 }
 
 /** 他のタブが書き換えたときに読み直す */
 export async function reloadOutbox(): Promise<void> {
   entries = await readAll()
+  syncSeq()
   emit()
 }
 
@@ -140,6 +153,24 @@ export async function dropEntry(key: string): Promise<void> {
   emit()
 }
 
+/**
+ * 送れたので片付ける。
+ *
+ * 送っているあいだに同じ行へ書き足されていたら、消さずに送り直す側へ回す
+ * （判断は writeQueue.afterSend）。key だけで消すと、その書き足しごと消える。
+ */
+export async function settleSent(key: string, sentRev: number): Promise<void> {
+  const current = entries.find((entry) => entry.key === key)
+  if (!current) return
+
+  const next = afterSend(current, sentRev)
+  if (next === 'drop') {
+    await dropEntry(key)
+    return
+  }
+  await updateEntry(key, next)
+}
+
 /** 状態だけを書き換える（送信中・失敗・次に試す時刻） */
 export async function updateEntry(key: string, patch: Partial<QueueEntry>): Promise<void> {
   const current = entries.find((entry) => entry.key === key)
@@ -171,13 +202,27 @@ export interface OutboxCounts {
   failed: number
   /** IndexedDB が使えているか。使えていなければ、そのことを画面に出す */
   persistent: boolean
+  /** 別のボードにためたままのもの。数えるボードを絞ったときだけ 0 より大きくなる */
+  elsewhere: number
 }
 
-export function useOutbox(): OutboxCounts {
+/**
+ * 送信箱の件数。
+ *
+ * roomId を渡すと、そのボードのぶんだけ数える。送信箱は端末にひとつで
+ * 全ボード分が同じ場所に入るので、絞らないと「別のボードの未送信」が
+ * 今のボードのヘッダーに出てしまい、探しても見つからない件数になる。
+ *
+ * 絞ったぶんは elsewhere に残す。黙って隠すと、別のボードにためたものが
+ * あることに永久に気づけなくなる。
+ */
+export function useOutbox(roomId?: string): OutboxCounts {
   const rows = useOutboxEntries()
+  const mine = roomId ? rows.filter((entry) => entry.roomId === roomId) : rows
   return {
-    pending: rows.filter((entry) => entry.state !== 'failed').length,
-    failed: rows.filter((entry) => entry.state === 'failed').length,
+    pending: mine.filter((entry) => entry.state !== 'failed').length,
+    failed: mine.filter((entry) => entry.state === 'failed').length,
     persistent: isPersistent(),
+    elsewhere: rows.length - mine.length,
   }
 }

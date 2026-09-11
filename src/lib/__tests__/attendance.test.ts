@@ -33,6 +33,7 @@ function makeEvent(patch: Partial<CalendarEvent> = {}): CalendarEvent {
     recurrence: 'weekly',
     recurrence_days: [],
     recurrence_week: null,
+    recurrence_interval: null,
     recurrence_until: null,
     remind_minutes: null,
     tags: [],
@@ -209,6 +210,7 @@ describe('occurrenceGridMoved', () => {
     recurrenceUntil: '',
     days: [2, 4],
     week: null,
+    interval: 1,
     ...patch,
   })
 
@@ -247,6 +249,21 @@ describe('occurrenceGridMoved', () => {
     expect(occurrenceGridMoved(grid({ days: [2, 5] }), event)).toBe(true)
   })
 
+  it('間隔を変えると動く', () => {
+    expect(occurrenceGridMoved(grid({ interval: 2 }), event)).toBe(true)
+  })
+
+  /*
+   * この機能より前からある行は recurrence_interval が null で届く。
+   * 画面は必ず 1 を書くので、開いて保存し直しただけで「動いた」と
+   * 判定されると、出欠と「この回だけ」が消える。null と 1 は同じ意味。
+   */
+  it('列が無い（null の）行に 1 を書いても動かない', () => {
+    expect(
+      occurrenceGridMoved(grid({ interval: 1 }), { ...event, recurrence_interval: null }),
+    ).toBe(false)
+  })
+
   it('第 n 週を変えると動く', () => {
     const monthly = makeEvent({
       recurrence: 'monthly',
@@ -259,6 +276,7 @@ describe('occurrenceGridMoved', () => {
       recurrenceUntil: '',
       days: [2],
       week: 2,
+      interval: 1,
     }
     expect(occurrenceGridMoved(base, monthly)).toBe(false)
     expect(occurrenceGridMoved({ ...base, week: 3 }, monthly)).toBe(true)
@@ -269,7 +287,14 @@ describe('occurrenceGridMoved', () => {
     const single = makeEvent({ recurrence: 'none' })
     expect(
       occurrenceGridMoved(
-        { date: '2026-09-20', recurrence: 'none', recurrenceUntil: '', days: [], week: null },
+        {
+          date: '2026-09-20',
+          recurrence: 'none',
+          recurrenceUntil: '',
+          days: [],
+          week: null,
+          interval: 1,
+        },
         single,
       ),
     ).toBe(false)
@@ -279,7 +304,14 @@ describe('occurrenceGridMoved', () => {
     const single = makeEvent({ recurrence: 'none' })
     expect(
       occurrenceGridMoved(
-        { date: toBoardDate(single.start_at), recurrence: 'weekly', recurrenceUntil: '', days: [], week: null },
+        {
+          date: toBoardDate(single.start_at),
+          recurrence: 'weekly',
+          recurrenceUntil: '',
+          days: [],
+          week: null,
+          interval: 1,
+        },
         single,
       ),
     ).toBe(true)

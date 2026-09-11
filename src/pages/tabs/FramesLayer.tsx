@@ -1,13 +1,9 @@
 import { memo, useMemo, useRef, useState } from 'react'
-import type { Frame } from '../../lib/types'
+import { FRAME_COLORS, type Frame } from '../../lib/types'
 
-export const FRAME_COLORS: Record<string, { border: string; bg: string; label: string }> = {
-  slate: { border: '#94a3b8', bg: 'rgba(148,163,184,0.08)', label: '#475569' },
-  blue: { border: '#7fb0f0', bg: 'rgba(127,176,240,0.10)', label: '#1e40af' },
-  green: { border: '#7cd6a0', bg: 'rgba(124,214,160,0.10)', label: '#166534' },
-  pink: { border: '#f0a6cd', bg: 'rgba(240,166,205,0.10)', label: '#9f1239' },
-  amber: { border: '#f5c542', bg: 'rgba(245,197,66,0.10)', label: '#92400e' },
-}
+// 色は lib/types.ts に置いてある（PNG の書き出しも同じものを使うため）。
+// これまでここから取っていた呼び出し元のために、名前はそのまま通す
+export { FRAME_COLORS }
 
 const FRAME_COLOR_LABELS: Record<string, string> = {
   slate: 'グレー',

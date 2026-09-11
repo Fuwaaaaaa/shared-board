@@ -110,6 +110,8 @@ export interface OccurrenceGrid {
   recurrenceUntil: string
   days: number[]
   week: number | null
+  /** 「n 回ごと」。1 なら毎回 */
+  interval: number
 }
 
 /**
@@ -126,7 +128,12 @@ export function occurrenceGridMoved(
   next: OccurrenceGrid,
   event: Pick<
     CalendarEvent,
-    'start_at' | 'recurrence' | 'recurrence_until' | 'recurrence_days' | 'recurrence_week'
+    | 'start_at'
+    | 'recurrence'
+    | 'recurrence_until'
+    | 'recurrence_days'
+    | 'recurrence_week'
+    | 'recurrence_interval'
   >,
 ): boolean {
   // 繰り返しなしのまま日付だけ動いたときは、回が 1 つのままなので崩れない
@@ -138,6 +145,14 @@ export function occurrenceGridMoved(
   if (next.recurrence !== event.recurrence) return true
   if ((next.recurrenceUntil || null) !== (event.recurrence_until ?? null)) return true
   if (next.week !== before.week) return true
+  /*
+   * 間隔は必ず「1 に読み替えてから」比べる。
+   *
+   * この機能より前からある行は null で届き、画面から保存し直すと 1 が入る。
+   * 素の値で比べると、開いて保存しただけの古い予定が「並びが動いた」と
+   * 判定され、出欠と「この回だけ」が消える。ruleOf が ?? 1 を通している。
+   */
+  if ((next.interval || 1) !== (before.interval ?? 1)) return true
 
   // 減らした・入れ替えたときだけ
   return before.days.some((day) => !next.days.includes(day))

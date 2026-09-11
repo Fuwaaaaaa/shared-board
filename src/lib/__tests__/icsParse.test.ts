@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
   expandFeedEvents,
+  hasUnsupportedRecurrence,
   parseByDay,
   parseIcs,
   parseNumberList,
   parseWkst,
+  unreadableRrule,
 } from '../icsParse'
 
 const feed = { id: 'f1', name: '外部', color: 'slate' }
@@ -638,6 +640,7 @@ describe('書き出したものを読み戻すと、同じ回になる', () => {
       recurrence: 'weekly' as const,
       recurrence_days: [2, 4],
       recurrence_week: null,
+      recurrence_interval: null,
       recurrence_until: null,
       remind_minutes: null,
       color: 'blue',
@@ -663,6 +666,56 @@ describe('書き出したものを読み戻すと、同じ回になる', () => {
     expect(theirs).toEqual(mine)
   })
 
+  /*
+   * 隔週は、書く側の WKST=SU と読む側の週の起点が食い違うと落ちる。
+   * RFC 5545 が WKST を significant と定めるのはまさにこの組み合わせ
+   * （FREQ=WEEKLY かつ INTERVAL>1 かつ BYDAY あり）で、
+   * _shared/recurrence.ts の stepDates が日曜起点であることの対になる。
+   */
+  it('隔週 火・木（週の起点が書く側と読む側で一致している）', async () => {
+    const { buildIcs } = await import('../ics')
+    const { expandOccurrences } = await import('../recurrence')
+    const { boardDateTimeIso } = await import('../dates')
+
+    // 木曜始まり。初週が木だけになるので、起点がずれていれば必ず差が出る
+    const event = {
+      id: 'e3',
+      title: '練習',
+      description: '',
+      start_at: boardDateTimeIso('2026-09-03', '19:00'),
+      end_at: null,
+      all_day: false,
+      recurrence: 'weekly' as const,
+      recurrence_days: [2, 4],
+      recurrence_week: null,
+      recurrence_interval: 2,
+      recurrence_until: null,
+      remind_minutes: null,
+      color: 'blue',
+      room_id: 'r1',
+      kind: 'event' as const,
+      source_note_id: null,
+      source_synced_at: null,
+      deleted_at: null,
+      author_id: 'u1',
+      author_name: 'A',
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+      tags: [],
+    }
+
+    const from = new Date('2026-09-01T00:00:00+09:00')
+    const to = new Date('2026-12-31T23:59:59+09:00')
+
+    const mine = expandOccurrences([event], from, to, []).map((o) => o.start.toISOString())
+    const theirs = expandFeedEvents(buildIcs('ボード', [event]), feed, from, to).map((e) =>
+      e.start.toISOString(),
+    )
+    expect(theirs).toEqual(mine)
+    // 取り込み側が INTERVAL を無視していれば、毎週ぶん出て件数が合わない
+    expect(mine.length).toBeGreaterThan(0)
+  })
+
   it('毎月 第 2 火曜', async () => {
     const { buildIcs } = await import('../ics')
     const { expandOccurrences } = await import('../recurrence')
@@ -678,6 +731,7 @@ describe('書き出したものを読み戻すと、同じ回になる', () => {
       recurrence: 'monthly' as const,
       recurrence_days: [2],
       recurrence_week: 2,
+      recurrence_interval: null,
       recurrence_until: null,
       remind_minutes: null,
       color: 'blue',
@@ -701,5 +755,263 @@ describe('書き出したものを読み戻すと、同じ回になる', () => {
       e.start.toISOString(),
     )
     expect(theirs).toEqual(mine)
+  })
+})
+
+/*
+ * Intl が知らない TZID を、VTIMEZONE に書かれた切り替えの規則から読む。
+ *
+ * 以前は STANDARD の TZOFFSETTO 1 つで一年中通していたので、
+ * 夏時間のある地域では半年ぶん 1 時間ずれていた。
+ * 下の VTIMEZONE は Outlook が実際に書き出す形（DTSTART の年が 1601）で、
+ * 中身は中央ヨーロッパ（冬 +01:00 / 夏 +02:00）と同じ。
+ */
+describe('VTIMEZONE の夏時間', () => {
+  const VTZ = `
+BEGIN:VTIMEZONE
+TZID:Customized Time Zone
+BEGIN:STANDARD
+DTSTART:16011028T030000
+TZOFFSETFROM:+0200
+TZOFFSETTO:+0100
+RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU
+END:STANDARD
+BEGIN:DAYLIGHT
+DTSTART:16010325T020000
+TZOFFSETFROM:+0100
+TZOFFSETTO:+0200
+RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU
+END:DAYLIGHT
+END:VTIMEZONE`.trim()
+
+  const eventAt = (stamp: string) =>
+    ics(`
+${VTZ}
+BEGIN:VEVENT
+UID:dst
+SUMMARY:打ち合わせ
+DTSTART;TZID=Customized Time Zone:${stamp}
+END:VEVENT`)
+
+  it('夏は +02:00、冬は +01:00 で読む', () => {
+    // 7/15 は夏時間のあいだ。12:00 は 10:00Z
+    expect(parseIcs(eventAt('20260715T120000'))[0].start.toISOString()).toBe(
+      '2026-07-15T10:00:00.000Z',
+    )
+    // 12/15 は標準時。12:00 は 11:00Z
+    expect(parseIcs(eventAt('20261215T120000'))[0].start.toISOString()).toBe(
+      '2026-12-15T11:00:00.000Z',
+    )
+  })
+
+  it('切り替えの当日を跨いでも、境目で切り替わる', () => {
+    // 2026 年 3 月の最後の日曜は 3/29。02:00 に +01:00 -> +02:00
+    expect(parseIcs(eventAt('20260329T010000'))[0].start.toISOString()).toBe(
+      '2026-03-29T00:00:00.000Z',
+    )
+    expect(parseIcs(eventAt('20260329T040000'))[0].start.toISOString()).toBe(
+      '2026-03-29T02:00:00.000Z',
+    )
+
+    // 2026 年 10 月の最後の日曜は 10/25。03:00 に +02:00 -> +01:00
+    expect(parseIcs(eventAt('20261025T010000'))[0].start.toISOString()).toBe(
+      '2026-10-24T23:00:00.000Z',
+    )
+    expect(parseIcs(eventAt('20261025T060000'))[0].start.toISOString()).toBe(
+      '2026-10-25T05:00:00.000Z',
+    )
+  })
+
+  it('年が変わっても、その年の最後の日曜で切り替わる', () => {
+    // 2027 年 3 月の最後の日曜は 3/28
+    expect(parseIcs(eventAt('20270327T120000'))[0].start.toISOString()).toBe(
+      '2027-03-27T11:00:00.000Z',
+    )
+    expect(parseIcs(eventAt('20270329T120000'))[0].start.toISOString()).toBe(
+      '2027-03-29T10:00:00.000Z',
+    )
+  })
+
+  /*
+   * ここが一番効く。毎週の会議は「向こうの 10:00」であって
+   * 「いつも同じ UTC 時刻」ではない。切り替えを跨ぐと UTC のほうが 1 時間動く。
+   */
+  it('毎週の会議は、切り替えを跨いでも向こうの 10:00 のまま', () => {
+    const text = ics(`
+${VTZ}
+BEGIN:VEVENT
+UID:weekly
+SUMMARY:定例
+DTSTART;TZID=Customized Time Zone:20261021T100000
+RRULE:FREQ=WEEKLY;COUNT=3
+END:VEVENT`)
+
+    const list = expandFeedEvents(
+      text,
+      feed,
+      new Date('2026-10-01T00:00:00Z'),
+      new Date('2026-11-30T00:00:00Z'),
+    )
+
+    expect(list.map((e) => e.start.toISOString())).toEqual([
+      // 10/21 は夏時間のあいだ（+02:00）
+      '2026-10-21T08:00:00.000Z',
+      // 10/25 に切り替わったので、ここからは +01:00
+      '2026-10-28T09:00:00.000Z',
+      '2026-11-04T09:00:00.000Z',
+    ])
+  })
+
+  it('切り替えの規則が無ければ、これまでどおり固定のずれで通す', () => {
+    const text = ics(`
+BEGIN:VTIMEZONE
+TZID:Flat Zone
+BEGIN:STANDARD
+DTSTART:16010101T000000
+TZOFFSETFROM:+0545
+TZOFFSETTO:+0545
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:flat
+SUMMARY:一年中同じ
+DTSTART;TZID=Flat Zone:20260715T120000
+END:VEVENT`)
+    // +05:45 なので、夏でも冬でも 06:15Z
+    expect(parseIcs(text)[0].start.toISOString()).toBe('2026-07-15T06:15:00.000Z')
+  })
+
+  /* Intl が名前を引けるなら、相手の VTIMEZONE より本物の tz データを採る */
+  it('Intl が知っている名前なら、VTIMEZONE より tz データを優先する', () => {
+    const text = ics(`
+BEGIN:VTIMEZONE
+TZID:Asia/Tokyo
+BEGIN:STANDARD
+DTSTART:16010101T000000
+TZOFFSETFROM:+0000
+TZOFFSETTO:+0000
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:jst
+SUMMARY:東京
+DTSTART;TZID=Asia/Tokyo:20260715T120000
+END:VEVENT`)
+    // VTIMEZONE は +00:00 と嘘を書いているが、Asia/Tokyo は Intl が引ける
+    expect(parseIcs(text)[0].start.toISOString()).toBe('2026-07-15T03:00:00.000Z')
+  })
+})
+
+/*
+ * まだ読めない RRULE の指定を、無視して展開しない。
+ *
+ * BYYEARDAY / BYWEEKNO / BYHOUR などは「いつ起きるか」を大きく変える。
+ * 無視して DTSTART の日付で繰り返すと、出ないより悪い
+ * 「もっともらしい間違った予定」になり、見ている人には間違いだと分からない。
+ * だから展開そのものをやめて、DTSTART の 1 回だけを出し、画面で断る。
+ */
+describe('読めない繰り返しは展開しない', () => {
+  const from = new Date('2026-01-01T00:00:00Z')
+  const to = new Date('2029-12-31T23:59:59Z')
+
+  const withRule = (rrule: string) =>
+    ics(`
+BEGIN:VEVENT
+UID:r
+SUMMARY:読めない繰り返し
+DTSTART:20260410T100000Z
+RRULE:${rrule}
+END:VEVENT`)
+
+  it('読めない指定を並べる', () => {
+    expect(unreadableRrule('FREQ=YEARLY;BYYEARDAY=100')).toEqual(['BYYEARDAY'])
+    expect(unreadableRrule('FREQ=YEARLY;BYWEEKNO=20')).toEqual(['BYWEEKNO'])
+    expect(unreadableRrule('FREQ=DAILY;BYHOUR=9,17')).toEqual(['BYHOUR'])
+    expect(unreadableRrule('FREQ=DAILY;BYMINUTE=0,30')).toEqual(['BYMINUTE'])
+    expect(unreadableRrule('FREQ=DAILY;BYSECOND=0')).toEqual(['BYSECOND'])
+
+    // 読めない FREQ も同じ扱い（規則が読めていないことに変わりはない）
+    expect(unreadableRrule('FREQ=FORTNIGHTLY')).toEqual(['FREQ'])
+    expect(unreadableRrule('INTERVAL=2')).toEqual(['FREQ'])
+
+    // 読めるものは空
+    expect(unreadableRrule('FREQ=WEEKLY;BYDAY=TU,TH')).toEqual([])
+    expect(unreadableRrule('FREQ=YEARLY;BYMONTH=12;BYMONTHDAY=25')).toEqual([])
+    expect(unreadableRrule('FREQ=MONTHLY;BYDAY=-1FR;BYSETPOS=1;WKST=SU')).toEqual([])
+
+    // 値が空の指定は「書いていない」と同じに扱う
+    expect(unreadableRrule('FREQ=DAILY;BYHOUR=')).toEqual([])
+  })
+
+  it('BYYEARDAY は、DTSTART の 1 回だけにする', () => {
+    const list = expandFeedEvents(withRule('FREQ=YEARLY;BYYEARDAY=100'), feed, from, to)
+
+    // 毎年 DTSTART の日（4/10）に並べてしまうと、100 日目とは無関係の日に
+    // 正しそうな顔で出る。1 回だけに留める
+    expect(list.map((e) => e.start.toISOString())).toEqual(['2026-04-10T10:00:00.000Z'])
+    expect(list[0].recurrenceUnsupported).toBe(true)
+  })
+
+  it('BYWEEKNO / BYHOUR も同じ', () => {
+    for (const rule of ['FREQ=YEARLY;BYWEEKNO=20', 'FREQ=DAILY;BYHOUR=9,17']) {
+      const list = expandFeedEvents(withRule(rule), feed, from, to)
+      expect(list).toHaveLength(1)
+      expect(list[0].recurrenceUnsupported).toBe(true)
+    }
+  })
+
+  it('読めない FREQ も 1 回だけにする', () => {
+    const list = expandFeedEvents(withRule('FREQ=FORTNIGHTLY;INTERVAL=1'), feed, from, to)
+    expect(list).toHaveLength(1)
+    expect(list[0].recurrenceUnsupported).toBe(true)
+  })
+
+  it('読める繰り返しには印を付けない', () => {
+    const list = expandFeedEvents(
+      withRule('FREQ=YEARLY;BYMONTH=4;BYMONTHDAY=10;COUNT=3'),
+      feed,
+      from,
+      to,
+    )
+    expect(list.map((e) => e.start.toISOString())).toEqual([
+      '2026-04-10T10:00:00.000Z',
+      '2027-04-10T10:00:00.000Z',
+      '2028-04-10T10:00:00.000Z',
+    ])
+    expect(list.every((e) => !e.recurrenceUnsupported)).toBe(true)
+    expect(hasUnsupportedRecurrence(list)).toBe(false)
+  })
+
+  it('購読先の中に 1 つでもあれば、画面で断れるようにする', () => {
+    const text = ics(`
+BEGIN:VEVENT
+UID:ok
+SUMMARY:読める
+DTSTART:20260410T100000Z
+RRULE:FREQ=DAILY;COUNT=2
+END:VEVENT
+BEGIN:VEVENT
+UID:ng
+SUMMARY:読めない
+DTSTART:20260412T100000Z
+RRULE:FREQ=YEARLY;BYYEARDAY=100
+END:VEVENT`)
+    const list = expandFeedEvents(text, feed, from, to)
+
+    expect(list.filter((e) => e.recurrenceUnsupported)).toHaveLength(1)
+    expect(hasUnsupportedRecurrence(list)).toBe(true)
+    // 読めるほうは、これまでどおり展開される
+    expect(list.filter((e) => e.uid.includes(':ok:'))).toHaveLength(2)
+  })
+
+  /* 範囲の外なら、そもそも 1 回も出さない（単発の予定と同じ扱い） */
+  it('DTSTART が範囲の外なら何も出さない', () => {
+    const list = expandFeedEvents(
+      withRule('FREQ=YEARLY;BYYEARDAY=100'),
+      feed,
+      new Date('2027-01-01T00:00:00Z'),
+      new Date('2027-12-31T00:00:00Z'),
+    )
+    expect(list).toEqual([])
   })
 })

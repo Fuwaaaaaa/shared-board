@@ -100,6 +100,7 @@
     margin: 0 0 6px; scroll-margin-top: 16px;
   }
   h3 { font-size: 17px; margin: 32px 0 6px; }
+  h4 { font-size: 15px; margin: 24px 0 6px; }
   .sub { color: var(--muted); font-size: 14px; margin: 0 0 24px; }
   p { margin: 0 0 16px; color: var(--ink-2); }
   p b, li b, td b { color: var(--ink); font-weight: 700; }
@@ -257,7 +258,7 @@
         <tbody>
           <tr><td>TypeScript</td><td>画面の全て（<code>src/</code>）</td><td>約 24,700 行。<code>strict</code> に加えて <code>noUnusedLocals</code> / <code>noUnusedParameters</code> を有効</td></tr>
           <tr><td>SQL (PostgreSQL)</td><td><code>supabase/schema.sql</code></td><td>2,666 行。テーブル・RLS・トリガー・関数を 1 ファイルに集約。冪等</td></tr>
-          <tr><td>TypeScript (Deno)</td><td><code>supabase/functions/</code></td><td>Edge Function 3 本。ブラウザからできない仕事だけを持つ</td></tr>
+          <tr><td>TypeScript (Deno)</td><td><code>supabase/functions/</code></td><td>Edge Function 4 本。ブラウザからできない仕事だけを持つ</td></tr>
           <tr><td>CSS</td><td>Tailwind ユーティリティ中心</td><td>自前のクラスは <code>src/index.css</code> に 2 つだけ</td></tr>
           <tr><td>HTML</td><td><code>index.html</code> と <code>docs/</code></td><td>アプリ本体は 1 枚の SPA</td></tr>
         </tbody>
@@ -288,12 +289,13 @@
           <tr><th>道具</th><th>役割</th></tr>
         </thead>
         <tbody>
-          <tr><td>Vite 5</td><td>開発サーバーとビルド</td></tr>
-          <tr><td>Vitest 2</td><td>テスト。拡張子で環境が変わる（<code>vitest.workspace.ts</code>）。<code>*.test.ts</code> は node、<code>*.test.tsx</code> は jsdom</td></tr>
+          <tr><td>Node.js 22 以上</td><td>開発と CI で使う実行環境（<code>.nvmrc</code> / <code>package.json</code> の <code>engines</code>）。Node 20 は 2026-04-30 で保守が終わり、<code>@supabase/supabase-js</code> 自身も <code>&gt;=22</code> を求める</td></tr>
+          <tr><td>Vite 6</td><td>開発サーバーとビルド</td></tr>
+          <tr><td>Vitest 4</td><td>テスト。拡張子で環境が変わる（<code>vite.config.ts</code> の <code>test.projects</code>）。<code>*.test.ts</code> は node、<code>*.test.tsx</code> は jsdom</td></tr>
           <tr><td>Playwright</td><td>ブラウザで実際に触るテスト（<code>e2e/</code>）。ローカルの Supabase が要る</td></tr>
           <tr><td>ESLint 9</td><td><code>eslint.config.js</code>（フラット設定）。<code>npm run lint</code></td></tr>
           <tr><td>Tailwind CSS 4</td><td><code>@tailwindcss/vite</code> 経由。<b><code>tailwind.config.js</code> は無い</b></td></tr>
-          <tr><td>TypeScript 5.6</td><td><code>tsc --noEmit</code> を <code>npm run build</code> に含める</td></tr>
+          <tr><td>TypeScript 5.9</td><td><code>tsc --noEmit</code> を <code>npm run build</code> に含める</td></tr>
         </tbody>
       </table>
     </div>
@@ -337,7 +339,7 @@
 │     ├─ UpdatesTab.tsx      更新の時系列
 │     └─ DashboardTab.tsx    集計
 ├─ <b>components/</b>       モーダルとパネル（Modal を土台にする）
-├─ <b>hooks/</b>            Realtime・楽観的更新・在席・通知・Undo など
+├─ <b>hooks/</b>            Realtime・楽観的更新・在席・通知・Undo・飛び先の合わせ方など
 ├─ <b>lib/</b>              純粋なロジック。<b>ここがテストの主な対象</b>
 └─ <b>test/</b>             jsdom の下ごしらえ（ポインタ捕捉など、jsdom に無いもの）
 
@@ -356,7 +358,7 @@
 │  ├─ purge-storage      Storage の実体削除（SQL からは消せないため）
 │  └─ _shared/           dates / recurrence / cronAuth（画面と共有）
 ├─ <b>tests/</b>
-│  └─ rls.test.sql       権限が効いているかの確認（pgTAP・304 件）
+│  └─ rls.test.sql       権限が効いているかの確認（pgTAP・324 件）
 └─ <b>stubs/</b>
    └─ _stub_storage.sql  使い捨ての DB で schema.sql を流すための足場
 
@@ -371,7 +373,10 @@
     <p>
       画面から切り離せる判断は <code>src/lib/</code> に集めてあります。
       ブラウザを立ち上げずに速く回せるので、ここが今もテストの主戦場です
-      （<b>27 本のテストで 544 件</b>）。DOM が要るものは <code>*.test.tsx</code> として
+      （<code>src/lib/</code> の分だけで <b>28 本のテストで 624 件</b>。
+      これは総数ではありません —— jsdom の 77 件、Edge Function の 67 件、
+      pgTAP の 329 件、Playwright の 33 件を足して<b>全部で 1,130 件</b>です）。
+      DOM が要るものは <code>*.test.tsx</code> として
       jsdom で書けますが、判断はできるだけこちらへ押し出してください。
     </p>
     <div class="table-scroll">
@@ -389,15 +394,18 @@
           <tr><td>shortcuts.ts</td><td>ショートカットの唯一の定義元</td></tr>
           <tr><td>boardMenu.ts</td><td>右クリックメニューの項目</td></tr>
           <tr><td>menuPlacement.ts</td><td>メニューの表示位置</td></tr>
-          <tr><td>boardGeometry.ts</td><td>フレームの当たり判定・外接矩形</td></tr>
+          <tr><td>boardGeometry.ts</td><td>フレームの当たり判定・外接矩形・線の両端の座標</td></tr>
+          <tr><td>attachmentCard.ts</td><td>ファイルのカードの絵文字と大きさの言い方</td></tr>
           <tr><td>boardClipboard.ts</td><td>付箋のコピーと貼り付け</td></tr>
-          <tr><td>boardExport.ts</td><td>PNG 書き出し（データから再描画）</td></tr>
+          <tr><td>boardExport.ts</td><td>PNG 書き出し（データから再描画。重なり順は画面のレイヤーとそろえる）</td></tr>
           <tr><td>noteFont.ts</td><td>付箋の文字サイズ</td></tr>
+          <tr><td>focusTrap.ts</td><td>モーダルの中でフォーカスを回すための、要素の拾い方</td></tr>
+          <tr><td>outboxText.ts</td><td>送信箱の中身を持ち出せる文字にする（落ちた画面からも使う）</td></tr>
           <tr><td>access.ts</td><td>入り方の判定と、合言葉の長さの決まり（サーバーと同じ数）</td></tr>
           <tr><td>attendance.ts</td><td>予定の出欠と、回の並びが動いたかの判定（サーバーのトリガーと同じ条件）</td></tr>
           <tr><td>trash.ts</td><td>ゴミ箱の残り日数と、線を戻せるかの判定</td></tr>
           <tr><td>snapshot.ts</td><td>控えの大きさ（サーバーと同じ上限）と、宙ぶらりんになったコメントの判定</td></tr>
-          <tr><td>writeQueue.ts</td><td>オフラインの送信箱。行ごとに畳む決まりと、失敗の見分け</td></tr>
+          <tr><td>writeQueue.ts</td><td>オフラインの送信箱。行ごとに畳む決まりと、失敗の見分け。「届かなかった」と「届いたうえで断られた」を分けて数え、送っている最中の書き足しを見分ける（<code>rev</code>）</td></tr>
           <tr><td>roomChannel.ts</td><td>設定が変わったことを、開いている人に知らせる合図（中身は載せない）</td></tr>
           <tr><td>errorMessage.ts</td><td>例外を人に見せる 1 行にする</td></tr>
         </tbody>
@@ -471,6 +479,53 @@
       作り直されます。送信箱から保留を張り直す仕組みが無いと、まだ送れていない行は
       リロードした瞬間に「サーバーが知らない行」として消えます——画面上は何ごともなく
       消えるので、目で見ても気づけません（<code>e2e/offline.spec.ts</code> が見ています）。
+    </p>
+
+    <h4>数え方を 2 つに分ける</h4>
+    <p>
+      送る側は <code>navigator.onLine</code> を見ていません。つながっているつもりで
+      死んでいる回線（キャプティブポータル、不安定なモバイル）が普通にあるので、
+      フラグではなく「送れなかったこと」そのものを見ます。
+    </p>
+    <p>
+      そのぶん、<b>届かなかった回数を「試した回数」に数えてはいけません</b>。
+      数えてしまうと、ただ圏外にいるだけで打ち切りの上限（<code>MAX_ATTEMPTS</code>）に達し、
+      <code>1+2+5+15+60+300+300</code> 秒 ≒ <b>11 分</b>で送信箱が全件
+      「何度か試しましたが送れませんでした」に落ちます。
+      「つながったら送る」という約束が、そこで果たせなくなります。
+      いまは <code>transportAttempts</code> を別に持ち、様子見の間隔だけを伸ばします
+      （判断は <code>nextRetryState</code>）。回線が戻ったときは、その待ち時間を捨てて
+      すぐ送ります——待つ理由は「届かない相手を叩き続けない」ためで、
+      圏外を抜けた瞬間まで持ち越す意味がないからです。
+    </p>
+
+    <h4>送っている最中の書き足しを守る</h4>
+    <p>
+      送るのは <code>flush</code> が始めた時点の<b>写し</b>です。往復のあいだに同じ行へ
+      書き足されたぶんは、その写しに入っていません。key だけを見て消すと、
+      その書き足しごと消えます。そこで、ためるたびに増える <code>rev</code> を比べ、
+      動いていたら捨てずに送り直す側へ回します（<code>afterSend</code>）。
+    </p>
+    <p>
+      ただし「作成」のまま送り直すと、こんどは主キーの重複になり
+      「前回の送信が実は通っていた」として捨てられ、やはり書き足しが消えます。
+      行はもうサーバーにあるので、<b>更新に変えて</b>送ります。
+    </p>
+
+    <h4>ためる相手と、見せる範囲</h4>
+    <p>
+      ためられるのは <code>notes</code> / <code>events</code> / <code>todos</code> /
+      <code>comments</code> の 4 表です。1 件ずつの書き換え（<code>patch</code>）だけでなく、
+      <b>まとめての変更（<code>patchMany</code>）も同じ経路に載ります</b>——
+      載せないでいると「本文の書き換えはためられるのに、ゴミ箱へ入れるのはその場で失敗する」
+      という食い違いが、同じ画面の中で起きます。
+    </p>
+    <p>
+      送信箱は端末にひとつで、<b>全ボード分が同じ場所に入ります</b>。
+      画面に出すときはいま開いているボードで絞ります。絞らないと、別のボードの未送信が
+      ヘッダーの件数に混ざり、探しても見つからない数になります。
+      隠したままにもしません——別のボードにためた件数は送信箱の中に出し、
+      まとめてテキストに落とす道も残してあります。
     </p>
 
     <h3>共同編集のしくみ</h3>
@@ -764,11 +819,13 @@
         変えるときは両方そろえてください。
       </li>
       <li>
-        <b>繰り返しの規則も 2 か所にあります。</b>
+        <b>繰り返しの規則は 3 か所にあります。</b>
         <code>supabase/functions/_shared/recurrence.ts</code> の
-        <code>normalizeRule</code> と、<code>supabase/schema.sql</code> の
-        <code>events_recurrence_days_check</code>。合言葉の長さと同じ理由で、
-        画面側にも同じ決まりを持たせています。変えるときは両方そろえてください。
+        <code>normalizeRule</code>（間隔の上限 <code>MAX_INTERVAL</code> を含む）と、
+        <code>supabase/schema.sql</code> の
+        <code>events_recurrence_days_check</code> ・
+        <code>events_recurrence_interval_check</code>。合言葉の長さと同じ理由で、
+        画面側にも同じ決まりを持たせています。変えるときは全部そろえてください。
       </li>
       <li>
         <b>ドラッグの確定は、コンポーネントのテストで守っています。</b>
@@ -789,16 +846,68 @@
               <code>FREQ</code> / <code>INTERVAL</code> / <code>COUNT</code> / <code>UNTIL</code> /
               <code>RDATE</code> / <code>EXDATE</code> に加えて、
               <code>BYDAY</code>（<code>2TU</code> のような序数つきを含む）・
-              <code>BYSETPOS</code>・<code>WKST</code> まで読みます。
-              <code>BYMONTHDAY</code> / <code>BYMONTH</code> / <code>BYWEEKNO</code> /
-              <code>BYHOUR</code> はまだ読みません
+              <code>BYSETPOS</code>・<code>WKST</code>・
+              <code>BYMONTH</code>・<code>BYMONTHDAY</code>（<code>-1</code> は月末）まで読みます。
+              これで祝日カレンダーの
+              <code>FREQ=YEARLY;BYMONTH=12;BYMONTHDAY=25</code> や、
+              「毎月 1 日と 15 日」「毎月の月末」「11 月の第 4 木曜」が正しい日に出ます。
+              <br>
+              まだ読まないのは <code>BYWEEKNO</code> / <code>BYYEARDAY</code> /
+              <code>BYHOUR</code> / <code>BYMINUTE</code> / <code>BYSECOND</code> です。
+              これらは<b>無かったことにはしません</b>。見つけたら繰り返しの展開そのものをやめ、
+              <code>DTSTART</code> の 1 回だけを出して、購読先の一行と予定の ⚠ で断ります。
+              <br>
+              無視して <code>DTSTART</code> の日付で繰り返すと、出ないより悪い
+              「もっともらしい間違った予定」になるからです。
+              <code>FREQ=YEARLY;BYYEARDAY=100</code> を「毎年 <code>DTSTART</code> の日」と読むと、
+              100 日目とは何の関係もない日に、正しそうな顔をした予定が毎年並びます。
+              見ている人には間違いだと分かりません。
+              カレンダーとしては<b>間違った日に出すより、出さずに断るほうがまし</b>です。
+              読めない <code>FREQ</code> も同じ扱いにしています。
+              どれも一般に配られている <code>.ics</code> ではほとんど見ないので、
+              実物に当たってから足す方針です。
+              <br>
+              同じ名前でも <code>FREQ</code> によって「回を増やす」ときと「絞り込む」ときがあり
+              （<code>BYMONTH</code> は <code>YEARLY</code> でだけ増やす）、
+              そこを取り違えると回数が合わなくなります。
+              書き出す側も <code>INTERVAL</code>（「n 回ごと」）を出すようになりました
+            </td>
+          </tr>
+          <tr>
+            <td>お知らせの流量</td>
+            <td>
+              同じ人あてに、重要さで分けた<b>2 つの枠</b>があります
+              （<code>tg_throttle_notifications</code>）。@メンション・担当の指名・参加申請・
+              参加の可否は<b>毎分 20 件</b>、付箋からの変換は<b>毎分 10 件</b>です。
+              枠が分かれているので、付箋をまとめて変換したときの通知が
+              @メンションを押し出すことはありません。
+              超えた分は例外にはしません——お知らせを出せなかったことで、
+              出そうとした操作（付箋を書く、コメントする）まで失敗させないためです。
+              ただし<b>捨てもしません</b>。「ほかに N 件」という 1 行にまとめ、
+              件数を <code>folded_count</code> に足していきます（行は 1 分に 1 つしか増えません）。
+              数えるのは差出人ではなく<b>宛先</b>。<code>notifications</code> は差出人の id を
+              持っておらず、困るのは受け取る側だからです。
+              入れる条件が <code>can_edit_room</code> ではなく <code>can_access_room</code> なので、
+              閲覧だけの人でも参加者あてに書けます。<code>send-reminders</code> が未読を
+              Web Push に変えるため、止めないと端末の通知を好きなだけ鳴らせてしまいます
             </td>
           </tr>
           <tr>
             <td>知らない <code>TZID</code></td>
             <td>
-              <code>VTIMEZONE</code> の <code>TZOFFSETTO</code> に退避しますが、
-              そのゾーンの夏時間の切り替えまでは追いません（年間を通して同じずれで読みます）
+              名前が <code>Intl</code> で引けるなら、本物の tz データで読みます（夏時間も込み）。
+              引けない名前（Outlook の "Customized Time Zone" など）は、
+              <code>VTIMEZONE</code> に書かれた<b>切り替えの規則そのもの</b>
+              （<code>FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU</code> の形）を展開して、
+              「いつ何分ずれるか」の一覧にしてから読みます。
+              <br>
+              以前は <code>STANDARD</code> の <code>TZOFFSETTO</code> を 1 つ拾って
+              一年中そのずれで通していたので、夏時間のある地域では半年ぶん 1 時間ずれていました。
+              貼った人からは「夏のあいだだけ 1 時間早く出る」という形で見え、理由が分かりません。
+              <br>
+              規則が読めなかったときだけ、これまでどおり固定のずれに落ちます。
+              起こす範囲は 1970〜2100 年で、その外側は端のずれで通します
+              （<code>src/lib/icsParse.ts</code> の <code>parseVTimezones</code>）
             </td>
           </tr>
           <tr>
@@ -847,10 +956,14 @@
           <tr>
             <td>CI が見ていないもの</td>
             <td>
-              push すると lint・型・単体・pgTAP・Playwright は自動で回りますが、
-              <b>Edge Function は 1 つも走っていません</b>
-              （<code>supabase start</code> だけでは配られないため）。
-              ブラウザも Chromium だけです。デプロイも自動化していません
+              push すると lint・型・単体・Edge Function（Deno）・pgTAP・Playwright が
+              自動で回ります。Edge Function は <code>fetch</code> を差し替えて
+              <code>handler</code> を直に呼ぶので、<code>supabase start</code> は要りません
+              （<code>supabase/functions/tests/</code>）。ブラウザは Chromium が全部、
+              Firefox と WebKit は <code>@smoke</code> を付けた 2 件だけです。
+              残っているのは<b>デプロイの自動化</b>と、
+              <b>スマホの画面幅で崩れないかを見るテスト</b>です
+              （WebKit は engine の違いだけを見ていて、画面は Desktop の幅のままです）
             </td>
           </tr>
         </tbody>

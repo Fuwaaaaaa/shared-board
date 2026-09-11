@@ -39,6 +39,7 @@ function makeEvent(patch: Partial<CalendarEvent> = {}): CalendarEvent {
     recurrence: 'monthly',
     recurrence_days: [],
     recurrence_week: null,
+    recurrence_interval: null,
     recurrence_until: null,
     remind_minutes: 15,
     tags: [],
@@ -373,11 +374,13 @@ describe('normalizeRule', () => {
       recurrence: 'daily',
       days: [],
       week: null,
+      interval: 1,
     })
     expect(normalizeRule({ recurrence: 'yearly', days: [1], week: null })).toEqual({
       recurrence: 'yearly',
       days: [],
       week: null,
+      interval: 1,
     })
   })
 
@@ -402,6 +405,7 @@ describe('normalizeRule', () => {
       recurrence: 'monthly',
       days: [2],
       week: 2,
+      interval: 1,
     })
   })
 
@@ -410,12 +414,14 @@ describe('normalizeRule', () => {
       recurrence: 'monthly',
       days: [],
       week: null,
+      interval: 1,
     })
     // 毎月で曜日だけを選んでも「第何週か」が決まらない
     expect(normalizeRule({ recurrence: 'monthly', days: [2], week: null })).toEqual({
       recurrence: 'monthly',
       days: [],
       week: null,
+      interval: 1,
     })
   })
 
@@ -432,6 +438,7 @@ describe('normalizeRule', () => {
       recurrence: 'weekly',
       days: [],
       week: null,
+      interval: 1,
     })
     expect(hasByDay(ruleOf({ recurrence: 'weekly' }))).toBe(false)
   })
@@ -682,7 +689,211 @@ describe('曜日指定を入れても、これまでの予定の展開は 1 日�
   })
 })
 
+describe('n 回ごと（interval）', () => {
+  // 2026-01-06 は火曜
+  const biweekly = makeEvent({
+    start_at: boardDateTimeIso('2026-01-06', '19:00'),
+    end_at: null,
+    recurrence: 'weekly',
+    recurrence_days: [2, 4],
+    recurrence_interval: 2,
+  })
+
+  /*
+   * interval の渡し忘れを捕まえる要のテスト。
+   *
+   * firstIndexAtOrAfter に interval を渡さないと、at は「週の本数」になる。
+   * 一方 stepDates は 1 区切りで interval 週ぶん進むので、at から数え始めた
+   * 区切りは範囲のはるか先を指し、stepAnchor が即 break して 0 件になる。
+   * 例外もログも出ず、予定が画面から黙って消える。
+   * 範囲を 1 年半先に取っているのは、その差が開くところを見るため。
+   */
+  it('範囲が遠くても消えない', () => {
+    expect(
+      days(biweekly, new Date('2027-06-01T00:00:00+09:00'), new Date('2027-06-30T23:59:59+09:00')),
+    ).toEqual(['2027-06-08', '2027-06-10', '2027-06-22', '2027-06-24'])
+  })
+
+  it('隔週の火・木は 14 日おきに出る', () => {
+    expect(
+      days(biweekly, new Date('2026-01-06T00:00:00+09:00'), new Date('2026-02-10T23:59:59+09:00')),
+    ).toEqual(['2026-01-06', '2026-01-08', '2026-01-20', '2026-01-22', '2026-02-03', '2026-02-05'])
+  })
+
+  /*
+   * 週の先頭が日曜であることの、唯一の観測できる証拠。
+   * base 相対（開始日の週を第 0 週として開始曜日から数える）に変えると落ちる。
+   * _shared/ics.ts の rruleFor が書き出す WKST=SU と、ここが対になっている。
+   */
+  it('木曜から始めた隔週 火・木は、初週が木だけになる', () => {
+    const thursday = makeEvent({
+      start_at: boardDateTimeIso('2026-09-03', '19:00'),
+      end_at: null,
+      recurrence: 'weekly',
+      recurrence_days: [2, 4],
+      recurrence_interval: 2,
+    })
+    expect(
+      days(thursday, new Date('2026-09-01T00:00:00+09:00'), new Date('2026-10-05T23:59:59+09:00')),
+    ).toEqual(['2026-09-03', '2026-09-15', '2026-09-17', '2026-09-29', '2026-10-01'])
+  })
+
+  it('stepDates の区切りが interval ぶん進む', () => {
+    const rule = normalizeRule({ recurrence: 'weekly', days: [2, 4], week: null, interval: 2 })
+    const base = new Date(boardDateTimeIso('2026-09-03', '19:00'))
+    expect(stepDates(base, rule, 0).map(toBoardDate)).toEqual(['2026-09-03'])
+    expect(stepDates(base, rule, 1).map(toBoardDate)).toEqual(['2026-09-15', '2026-09-17'])
+  })
+
+  it('3 か月ごとは月末へ丸めたまま数える', () => {
+    const quarterly = makeEvent({ recurrence: 'monthly', recurrence_interval: 3 })
+    expect(days(quarterly, jan1, dec31)).toEqual([
+      '2026-01-31',
+      '2026-04-30',
+      '2026-07-31',
+      '2026-10-31',
+    ])
+  })
+
+  it('3 日ごと', () => {
+    const every3 = makeEvent({
+      start_at: boardDateTimeIso('2026-09-01', '19:00'),
+      end_at: null,
+      recurrence: 'daily',
+      recurrence_interval: 3,
+    })
+    expect(
+      days(every3, new Date('2026-09-01T00:00:00+09:00'), new Date('2026-09-10T23:59:59+09:00')),
+    ).toEqual(['2026-09-01', '2026-09-04', '2026-09-07', '2026-09-10'])
+  })
+
+  it('2 年ごと', () => {
+    const every2y = makeEvent({
+      start_at: boardDateTimeIso('2026-03-01', '19:00'),
+      end_at: null,
+      recurrence: 'yearly',
+      recurrence_interval: 2,
+    })
+    expect(
+      days(every2y, new Date('2026-01-01T00:00:00+09:00'), new Date('2030-12-31T23:59:59+09:00')),
+    ).toEqual(['2026-03-01', '2028-03-01', '2030-03-01'])
+  })
+
+  it('2 か月ごとの第 2 火曜', () => {
+    const nth = makeEvent({
+      start_at: boardDateTimeIso('2026-09-08', '19:00'),
+      end_at: null,
+      recurrence: 'monthly',
+      recurrence_days: [2],
+      recurrence_week: 2,
+      recurrence_interval: 2,
+    })
+    expect(
+      days(nth, new Date('2026-09-01T00:00:00+09:00'), new Date('2026-12-31T23:59:59+09:00')),
+    ).toEqual(['2026-09-08', '2026-11-10'])
+  })
+
+  it('normalizeRule は 1 未満・非整数・上限超えを 1 に落とす', () => {
+    const of = (interval: number) =>
+      normalizeRule({ recurrence: 'weekly', days: [], week: null, interval }).interval
+    expect(of(0)).toBe(1)
+    expect(of(-1)).toBe(1)
+    expect(of(1.5)).toBe(1)
+    expect(of(Number.NaN)).toBe(1)
+    expect(of(100)).toBe(1)
+    expect(of(99)).toBe(99)
+    expect(of(2)).toBe(2)
+  })
+
+  it('繰り返さない予定の間隔は 1', () => {
+    expect(normalizeRule({ recurrence: 'none', days: [], week: null, interval: 3 }).interval).toBe(1)
+  })
+
+  it('ruleOf は、列が無い（古い）行でも 1 になる', () => {
+    expect(ruleOf({ recurrence: 'weekly' }).interval).toBe(1)
+    expect(ruleOf({ recurrence: 'weekly', recurrence_interval: null }).interval).toBe(1)
+    expect(ruleOf({ recurrence: 'weekly', recurrence_interval: 2 }).interval).toBe(2)
+  })
+
+  it('繰り返しやることの次回は interval ぶん進む', () => {
+    const due = boardDateTimeIso('2026-09-01', '09:00')
+    const rule = { recurrence: 'weekly' as const, days: [], week: null, interval: 2 }
+    // 期限より前に完了しても、次回は 2 週間後
+    expect(toBoardDate(nextDueDate(due, rule)!)).toBe('2026-09-15')
+  })
+})
+
+describe('曜日指定を入れても、n 回ごとを入れても、これまでの予定の展開は 1 日も変わらない', () => {
+  /*
+   * 列が無い（古い）行・null・1 の 3 通りが、どれも同じ並びになること。
+   * DB の既存行は null、画面から保存し直した行は 1 になるので、
+   * この 2 つがずれると「開いて保存しただけ」で予定が動いてしまう。
+   */
+  const cases: { name: string; patch: Partial<CalendarEvent> }[] = [
+    { name: '列が無い', patch: { recurrence_interval: undefined } },
+    { name: 'null', patch: { recurrence_interval: null } },
+    { name: '1', patch: { recurrence_interval: 1 } },
+  ]
+
+  for (const { name, patch } of cases) {
+    it(`毎週 火・木（${name}）`, () => {
+      const event = makeEvent({
+        start_at: boardDateTimeIso('2026-09-01', '19:00'),
+        end_at: null,
+        recurrence: 'weekly',
+        recurrence_days: [2, 4],
+        ...patch,
+      })
+      expect(
+        days(event, new Date('2026-09-01T00:00:00+09:00'), new Date('2026-09-20T23:59:59+09:00')),
+      ).toEqual([
+        '2026-09-01',
+        '2026-09-03',
+        '2026-09-08',
+        '2026-09-10',
+        '2026-09-15',
+        '2026-09-17',
+      ])
+    })
+
+    it(`毎月 31 日（${name}）`, () => {
+      expect(days(makeEvent(patch), jan1, dec31)).toEqual([
+        '2026-01-31',
+        '2026-02-28',
+        '2026-03-31',
+        '2026-04-30',
+        '2026-05-31',
+        '2026-06-30',
+        '2026-07-31',
+        '2026-08-31',
+        '2026-09-30',
+        '2026-10-31',
+        '2026-11-30',
+        '2026-12-31',
+      ])
+    })
+  }
+})
+
 describe('firstMatchingStart', () => {
+  /*
+   * 寄せるときだけは間隔を見ない。
+   *
+   * 土曜に「隔週 火」を選んだとき、開始日の週の火曜は開始より前なので落ち、
+   * 間隔を見たまま次の区切りへ進むと 10 日後の火曜になる。押した人が待って
+   * いるのは 3 日後の火曜。寄せは「規則に合う最初の日を探す」だけの操作で、
+   * 位相は寄せ先を新しい第 0 週と読み替えれば自己整合する。
+   */
+  it('土曜の予定に「隔週 火」を選ぶと、10 日後ではなく次の火曜へ寄る', () => {
+    const snapped = firstMatchingStart(boardDateTimeIso('2026-09-05', '19:00'), {
+      recurrence: 'weekly',
+      days: [2],
+      week: null,
+      interval: 2,
+    })
+    expect(toBoardDate(new Date(snapped))).toBe('2026-09-08')
+  })
+
   it('金曜の予定に「毎週 火」を選ぶと、次の火曜へ寄る', () => {
     // 2026-09-04 は金曜
     const friday = boardDateTimeIso('2026-09-04', '19:00')
@@ -742,6 +953,37 @@ describe('recurrenceLabel', () => {
     expect(recurrenceLabel({ recurrence: 'weekly', days: [], week: null })).toBe('毎週')
     expect(recurrenceLabel({ recurrence: 'daily', days: [], week: null })).toBe('毎日')
     expect(recurrenceLabel({ recurrence: 'none', days: [], week: null })).toBe('繰り返さない')
+  })
+
+  it('n 回ごとを言葉にする', () => {
+    expect(recurrenceLabel({ recurrence: 'weekly', days: [2, 4], week: null, interval: 2 })).toBe(
+      '隔週 火・木',
+    )
+    expect(recurrenceLabel({ recurrence: 'weekly', days: [2, 4], week: null, interval: 3 })).toBe(
+      '3週ごと 火・木',
+    )
+    expect(recurrenceLabel({ recurrence: 'monthly', days: [], week: null, interval: 3 })).toBe(
+      '3か月ごと',
+    )
+    expect(recurrenceLabel({ recurrence: 'monthly', days: [2], week: 2, interval: 2 })).toBe(
+      '2か月ごと 第2火曜',
+    )
+    expect(recurrenceLabel({ recurrence: 'daily', days: [], week: null, interval: 3 })).toBe(
+      '3日ごと',
+    )
+    expect(recurrenceLabel({ recurrence: 'yearly', days: [], week: null, interval: 2 })).toBe(
+      '2年ごと',
+    )
+  })
+
+  it('間隔が 1 なら、これまでと 1 文字も変わらない', () => {
+    expect(recurrenceLabel({ recurrence: 'weekly', days: [2, 4], week: null, interval: 1 })).toBe(
+      '毎週 火・木',
+    )
+    expect(recurrenceLabel({ recurrence: 'monthly', days: [2], week: 2, interval: 1 })).toBe(
+      '毎月 第2火曜',
+    )
+    expect(recurrenceLabel({ recurrence: 'daily', days: [], week: null, interval: 1 })).toBe('毎日')
   })
 })
 
@@ -822,6 +1064,7 @@ describe('send-reminders が取ってくる列', () => {
     'recurrence',
     'recurrence_days',
     'recurrence_week',
+    'recurrence_interval',
     'recurrence_until',
     'remind_minutes',
     'tags',
@@ -829,7 +1072,7 @@ describe('send-reminders が取ってくる列', () => {
 
   it('EventLike の列がすべて並んでいる', () => {
     const source = readFileSync(
-      new URL('../../../supabase/functions/send-reminders/index.ts', import.meta.url),
+      new URL('../../../supabase/functions/send-reminders/handler.ts', import.meta.url),
       'utf8',
     )
     const match = /const EVENT_COLUMNS\s*=\s*\n?\s*'([^']+)'/.exec(source)

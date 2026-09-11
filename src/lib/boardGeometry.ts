@@ -46,3 +46,37 @@ export function boundingBox(
   const y = Math.max(0, minY - top)
   return { x, y, w: maxX + right - x, h: maxY + bottom - y }
 }
+
+/**
+ * 付箋どうしをつなぐ線の、両端の座標。
+ *
+ * 線は自分の座標を持たず、両端の付箋の位置から毎回計算する。
+ * 画面（ConnectorsLayer）と PNG の書き出し（boardExport）の両方が呼ぶので、
+ * ここに 1 つだけ置く。ずれると「画面と書き出しで線の向きが違う」ことになる。
+ */
+export function anchorPoints(from: Rect, to: Rect): [number, number, number, number] {
+  const fromCenter = { x: from.x + from.w / 2, y: from.y + from.h / 2 }
+  const toCenter = { x: to.x + to.w / 2, y: to.y + to.h / 2 }
+
+  const start = edgePoint(fromCenter, toCenter, from.w / 2, from.h / 2)
+  const end = edgePoint(toCenter, fromCenter, to.w / 2, to.h / 2)
+  return [start.x, start.y, end.x, end.y]
+}
+
+function edgePoint(
+  center: { x: number; y: number },
+  toward: { x: number; y: number },
+  halfW: number,
+  halfH: number,
+) {
+  const dx = toward.x - center.x
+  const dy = toward.y - center.y
+  if (dx === 0 && dy === 0) return center
+
+  // 矩形の縁に当たるまでの倍率を、縦横それぞれで求めて小さい方を採る
+  const scaleX = dx === 0 ? Infinity : halfW / Math.abs(dx)
+  const scaleY = dy === 0 ? Infinity : halfH / Math.abs(dy)
+  const scale = Math.min(scaleX, scaleY)
+
+  return { x: center.x + dx * scale, y: center.y + dy * scale }
+}

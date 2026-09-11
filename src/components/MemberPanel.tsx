@@ -2,7 +2,9 @@ import { useState } from 'react'
 import Modal from './Modal'
 import { supabase } from '../lib/supabase'
 import { notifyUser } from '../hooks/useNotifications'
+import { useNotice } from '../hooks/useNotice'
 import { useIdentity } from '../lib/identity'
+import { messageOf } from '../lib/errorMessage'
 import { buildNameLabels } from '../lib/names'
 import type { RoomMember, RoomPreview } from '../lib/types'
 
@@ -23,6 +25,12 @@ export default function MemberPanel({ members, preview, onClose }: Props) {
   const isOwner = preview.is_owner
   const { userId } = useIdentity()
   const [busyId, setBusyId] = useState<string | null>(null)
+  /*
+   * ここは楽観的に進めない（一覧は Realtime の行がそのまま出る）ので、
+   * 失敗しても画面は正しいままになる。代わりに、押したのに何も起きない
+   * ように見えるので、理由をその場に出す。
+   */
+  const [notice, setNotice] = useNotice()
 
   // 同じ名前の人がいるときだけ「（この端末）」「（2）」を足す
   const labels = buildNameLabels(members, userId)
@@ -42,6 +50,8 @@ export default function MemberPanel({ members, preview, onClose }: Props) {
       .from('room_members')
       .update({ status, can_edit: canEdit, decided_at: new Date().toISOString() })
       .eq('id', member.id)
+
+    if (error) setNotice(`変えられませんでした: ${messageOf(error)}`)
 
     // 結果を本人に知らせる。画面が切り替わるだけでは気づけないことがある。
     if (!error) {
@@ -76,12 +86,21 @@ export default function MemberPanel({ members, preview, onClose }: Props) {
   /** 編集できる／閲覧のみ を切り替える */
   async function setCanEdit(member: RoomMember, canEdit: boolean) {
     setBusyId(member.id)
-    await supabase.from('room_members').update({ can_edit: canEdit }).eq('id', member.id)
+    const { error } = await supabase
+      .from('room_members')
+      .update({ can_edit: canEdit })
+      .eq('id', member.id)
+    if (error) setNotice(`権限を変えられませんでした: ${messageOf(error)}`)
     setBusyId(null)
   }
 
   return (
     <Modal title="参加者" onClose={onClose}>
+      {notice && (
+        <p role="status" className="mb-4 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          {notice}
+        </p>
+      )}
       {isOwner && (
         <section className="mb-6">
           <h3 className="mb-2 text-xs font-bold tracking-wide text-slate-500">

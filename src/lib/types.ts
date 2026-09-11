@@ -193,6 +193,41 @@ export const MONTH_WEEK_LABELS: Record<string, string> = Object.fromEntries(
   MONTH_WEEK_OPTIONS.map((option) => [String(option.value), option.label]),
 )
 
+/**
+ * 「n 回ごと」の単位。「3 か月ごと」の「か月」にあたる。
+ *
+ * 周期（RECURRENCE_LABELS）とは別の軸にしてある。RECURRENCE_LABELS に
+ * 「隔週」を足すと、あちらは Object.entries で回して value をそのまま
+ * Recurrence として扱っているので、DB の CHECK まで話が波及する。
+ */
+export const RECURRENCE_INTERVAL_UNITS: Record<Recurrence, string> = {
+  none: '',
+  daily: '日',
+  weekly: '週',
+  monthly: 'か月',
+  yearly: '年',
+}
+
+/**
+ * 間隔の選び方。数値入力にしないのは、空文字・0・全角のような
+ * 「入っていておかしい値」を構造的に作れなくするため（この画面の
+ * ほかの選び方——第何週か・事前通知——もすべて選択肢にしてある）。
+ */
+export function intervalOptionsFor(recurrence: Recurrence): number[] {
+  switch (recurrence) {
+    case 'daily':
+      return [1, 2, 3, 4, 5, 6, 7, 10, 14]
+    case 'weekly':
+      return [1, 2, 3, 4]
+    case 'monthly':
+      return [1, 2, 3, 4, 6]
+    case 'yearly':
+      return [1, 2, 3, 4, 5]
+    default:
+      return [1]
+  }
+}
+
 /** 事前通知の選択肢（分）。null は通知なし */
 export const REMIND_OPTIONS: { value: number | null; label: string }[] = [
   { value: null, label: '通知なし' },
@@ -232,6 +267,8 @@ export interface CalendarEvent {
   recurrence_days: number[]
   /** 毎月の第 n 週（1〜5、-1 は最終）。null なら開始日と同じ日付で繰り返す */
   recurrence_week: number | null
+  /** 「n 回ごと」（1〜MAX_INTERVAL）。null は 1（毎回）と同じ */
+  recurrence_interval: number | null
   recurrence_until: string | null
   remind_minutes: number | null
   tags: string[]
@@ -309,6 +346,8 @@ export interface Todo {
   recurrence_days: number[]
   /** 毎月の第 n 週（1〜5、-1 は最終）。null なら期限と同じ日付で繰り返す */
   recurrence_week: number | null
+  /** 「n 回ごと」（1〜MAX_INTERVAL）。null は 1（毎回）と同じ */
+  recurrence_interval: number | null
   subtasks: Subtask[]
   tags: string[]
   status: TodoStatus
@@ -478,6 +517,11 @@ export type NotificationKind =
   | 'converted'
   | 'join_request'
   | 'join_decided'
+  /**
+   * 「ほかに N 件」。人が作るものではなく、通知が続いて流量の上限を超えたときに
+   * DB 側（tg_throttle_notifications）が作る 1 行。件数は folded_count にある。
+   */
+  | 'digest'
 
 export const NOTIFICATION_ICONS: Record<NotificationKind, string> = {
   mention: '💬',
@@ -485,6 +529,7 @@ export const NOTIFICATION_ICONS: Record<NotificationKind, string> = {
   converted: '🖍️',
   join_request: '🙋',
   join_decided: '👋',
+  digest: '📥',
 }
 
 export interface AppNotification {
@@ -498,6 +543,8 @@ export interface AppNotification {
   link_id: string | null
   read: boolean
   created_at: string
+  /** まとめ行が抱えている件数。0 なら、まとめではないふつうの通知 */
+  folded_count: number
 }
 
 /** リマインドのカンバン列 */
@@ -509,7 +556,58 @@ export const TODO_STATUS_LABELS: Record<TodoStatus, string> = {
   done: '完了',
 }
 
-export type CommentTarget = 'board' | 'note' | 'event' | 'todo'
+/**
+ * コメントを付けられる先。
+ *
+ * 'board' はボード全体のチャットで、target_id を持たない。
+ * それ以外はボード上のものに紐づく（DB の comments_target_type_check と同じ顔ぶれ）。
+ */
+export type CommentTarget = 'board' | 'note' | 'event' | 'todo' | 'image' | 'file' | 'frame'
+
+/**
+ * コメントの一覧や検索で「何へのコメントか」を言うときの名前。
+ *
+ * todo だけ「リマインド」なのは、検索の当たりが KIND_LABELS（search.ts）と
+ * 並んで出るため。そちらはタブの名前で呼んでいる。
+ * 更新タブは 1 件ずつの出来事を並べるので「やること」と呼ぶ
+ * （useBoardUpdates の COMMENT_TARGETS）。呼び分けは意図したもので、
+ * ひとつの表に寄せていないのもそのため。
+ */
+export const COMMENT_TARGET_LABELS: Record<CommentTarget, string> = {
+  board: 'チャット',
+  note: '付箋',
+  event: '予定',
+  todo: 'リマインド',
+  image: '画像',
+  file: 'ファイル',
+  frame: 'フレーム',
+}
+
+/**
+ * コメントを開く相手。
+ *
+ * 付箋・画像・ファイル・フレームで持っている列が違う（画像とファイルは
+ * 本文を持たず、タグを持てるのは付箋だけ）ので、判別できる形で渡す。
+ */
+export type CommentSubject =
+  | { kind: 'note'; note: Note }
+  | { kind: 'image'; image: BoardImage }
+  | { kind: 'file'; attachment: Attachment }
+  | { kind: 'frame'; frame: Frame }
+
+/** CommentSubject の種類は、そのまま comments.target_type になる */
+export function commentSubjectId(subject: CommentSubject): string {
+  switch (subject.kind) {
+    case 'note':
+      return subject.note.id
+    case 'image':
+      return subject.image.id
+    case 'file':
+      return subject.attachment.id
+    case 'frame':
+      return subject.frame.id
+  }
+}
 
 export interface Comment {
   id: string
@@ -539,6 +637,29 @@ export interface NoteColor {
   darkBorder: string
   darkText: string
 }
+
+/**
+ * フレームの色。
+ *
+ * FramesLayer（画面）と boardExport（PNG の書き出し）の両方が使うので、
+ * 付箋の色と同じくここに置く。画面側は再輸出して受ける。
+ */
+export const FRAME_COLORS: Record<string, { border: string; bg: string; label: string }> = {
+  slate: { border: '#94a3b8', bg: 'rgba(148,163,184,0.08)', label: '#475569' },
+  blue: { border: '#7fb0f0', bg: 'rgba(127,176,240,0.10)', label: '#1e40af' },
+  green: { border: '#7cd6a0', bg: 'rgba(124,214,160,0.10)', label: '#166534' },
+  pink: { border: '#f0a6cd', bg: 'rgba(240,166,205,0.10)', label: '#9f1239' },
+  amber: { border: '#f5c542', bg: 'rgba(245,197,66,0.10)', label: '#92400e' },
+}
+
+/**
+ * ボードに置いたファイルのカードの大きさ。
+ *
+ * attachments は w/h の列を持たない（大きさを変えられない）ので、
+ * 画面も書き出しもこの固定値で描く。
+ */
+export const ATTACHMENT_CARD_W = 200
+export const ATTACHMENT_CARD_H = 84
 
 export const NOTE_COLORS: Record<string, NoteColor> = {
   yellow: {

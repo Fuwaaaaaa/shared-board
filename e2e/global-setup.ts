@@ -36,7 +36,7 @@ export default async function globalSetup() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e)
-    giveUp(`Supabase (${url}) につながりません: ${reason} supabase start を実行してください。`)
+    giveUp(`Supabase (${url}) につながりません: ${reason} npm run db:start を実行してください。`)
     return
   }
 

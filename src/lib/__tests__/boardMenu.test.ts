@@ -429,4 +429,46 @@ describe('buildBoardMenu — 画像・フレーム・線・ファイル', () => 
     )
     expect(find(nodes, 'open-attachment')?.disabled).toBe(true)
   })
+
+  /*
+   * コメントは画像・ファイル・フレームにも付けられる。
+   * 線だけは対象外——付箋にぶら下がっていて、単独では選べないため。
+   */
+  it('画像・ファイル・フレームからコメントを開ける', () => {
+    for (const kind of ['image', 'attachment', 'frame'] as const) {
+      const id = kind === 'attachment' ? 'file-1' : `${kind}-1`
+      const list = ids(buildBoardMenu(state({ target: { kind, id } }), actions()))
+      expect(list, kind).toContain('comments')
+    }
+
+    const connector = ids(
+      buildBoardMenu(state({ target: { kind: 'connector', id: 'connector-1' } }), actions()),
+    )
+    expect(connector).not.toContain('comments')
+  })
+
+  it('閲覧のみの人もコメントは開ける（編集ではないため）', () => {
+    for (const kind of ['image', 'attachment', 'frame'] as const) {
+      const id = kind === 'attachment' ? 'file-1' : `${kind}-1`
+      const list = ids(buildBoardMenu(state({ target: { kind, id }, canEdit: false }), actions()))
+      expect(list, kind).toContain('comments')
+    }
+  })
+
+  it('コメントは対象の種類を持って開かれる', () => {
+    const opened: string[] = []
+    const a = { ...actions(), openComments: (s: { kind: string }) => opened.push(s.kind) }
+
+    for (const [kind, id] of [
+      ['image', 'image-1'],
+      ['attachment', 'file-1'],
+      ['frame', 'frame-1'],
+      ['note', 'note-1'],
+    ] as const) {
+      const node = find(buildBoardMenu(state({ target: { kind, id } }), a), 'comments')
+      node?.run?.()
+    }
+    // ファイルの target は 'attachment' だが、コメントの側では 'file'
+    expect(opened).toEqual(['image', 'file', 'frame', 'note'])
+  })
 })

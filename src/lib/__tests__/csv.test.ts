@@ -5,6 +5,7 @@ import {
   looksMojibake,
   parseCsv,
   parseCsvObjects,
+  parseInterval,
   parseWeekOrdinal,
   parseWeekdays,
   parseFlexibleDate,
@@ -225,5 +226,26 @@ describe('繰り返しの曜日を CSV に載せる', () => {
     expect(parseWeekOrdinal('ほげ')).toBeNull()
     expect(parseWeekOrdinal('')).toBeNull()
     expect(parseWeekOrdinal(undefined)).toBeNull()
+  })
+})
+
+describe('parseInterval', () => {
+  it('数と「n週」を読む', () => {
+    expect(parseInterval('2')).toBe(2)
+    expect(parseInterval('2週')).toBe(2)
+    expect(parseInterval('3か月')).toBe(3)
+    expect(parseInterval('隔週')).toBe(2)
+  })
+
+  /*
+   * 列そのものが無い古い CSV は undefined で届く。1（毎回）に倒すので、
+   * これまでに書き出したものをそのまま取り込み直せる。
+   */
+  it('空・読めない値・0 以下は 1', () => {
+    expect(parseInterval('')).toBe(1)
+    expect(parseInterval(undefined)).toBe(1)
+    expect(parseInterval('ほげ')).toBe(1)
+    expect(parseInterval('0')).toBe(1)
+    expect(parseInterval('-2')).toBe(1)
   })
 })

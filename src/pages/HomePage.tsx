@@ -40,10 +40,18 @@ export default function HomePage() {
   /** お気に入りは参加者ごとの設定なので room_members 側に持つ */
   async function toggleFavorite(entry: JoinedRoom) {
     const next = !entry.favorite
-    setRooms((current) =>
-      current.map((r) => (r.memberId === entry.memberId ? { ...r, favorite: next } : r)),
-    )
-    await supabase.from('room_members').update({ favorite: next }).eq('id', entry.memberId)
+    const setFavorite = (value: boolean) =>
+      setRooms((current) =>
+        current.map((r) => (r.memberId === entry.memberId ? { ...r, favorite: value } : r)),
+      )
+
+    setFavorite(next)
+    const { error } = await supabase
+      .from('room_members')
+      .update({ favorite: next })
+      .eq('id', entry.memberId)
+    // 失敗したら戻す。戻さないと、次に開いたときに黙って元へ戻っている
+    if (error) setFavorite(entry.favorite)
   }
 
   /**
@@ -62,12 +70,17 @@ export default function HomePage() {
       if (!ok) return
     }
 
-    setRooms((current) =>
-      current.map((r) =>
-        r.memberId === entry.memberId ? { ...r, room: { ...r.room, archived: next } } : r,
-      ),
-    )
-    await supabase.from('rooms').update({ archived: next }).eq('id', entry.room.id)
+    const setArchived = (value: boolean) =>
+      setRooms((current) =>
+        current.map((r) =>
+          r.memberId === entry.memberId ? { ...r, room: { ...r.room, archived: value } } : r,
+        ),
+      )
+
+    setArchived(next)
+    const { error } = await supabase.from('rooms').update({ archived: next }).eq('id', entry.room.id)
+    // 失敗したら戻す。終了できていないのに終了して見えるのがいちばん困る
+    if (error) setArchived(entry.room.archived)
   }
 
   useEffect(() => {

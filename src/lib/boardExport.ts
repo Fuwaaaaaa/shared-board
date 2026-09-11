@@ -1,4 +1,18 @@
-import { NOTE_COLORS, type BoardImage, type Note, type Point, type Stroke } from './types'
+import {
+  ATTACHMENT_CARD_H,
+  ATTACHMENT_CARD_W,
+  FRAME_COLORS,
+  NOTE_COLORS,
+  type Attachment,
+  type BoardImage,
+  type Connector,
+  type Frame,
+  type Note,
+  type Point,
+  type Stroke,
+} from './types'
+import { anchorPoints } from './boardGeometry'
+import { attachmentIcon, formatFileSize } from './attachmentCard'
 import { noteFontSize } from './noteFont'
 
 interface ExportInput {
@@ -12,6 +26,10 @@ interface ExportInput {
   notes: Note[]
   strokes: Stroke[]
   images: BoardImage[]
+  frames: Frame[]
+  /** 線は座標を持たないので、両端の付箋を引くために notes と一緒に渡す */
+  connectors: Connector[]
+  attachments: Attachment[]
   /** 画像の署名付き URL（storage_path をキーにしたもの） */
   imageUrls: Record<string, string>
   background: string
@@ -39,7 +57,18 @@ export async function renderBoardToBlob(input: ExportInput): Promise<Blob> {
   // 各描画関数が切り出しを意識しなくて済む
   if (input.origin) ctx.translate(-input.origin.x, -input.origin.y)
 
-  // 1. 画像（一番下）
+  /*
+   * 描く順は画面のレイヤーの重なり（z-index）とそろえる。
+   * フレーム(0) → 画像(1) → 手描き(2) → 線(3) → ファイル(8) → 付箋(10)。
+   * ずれると「見たまま」にならない。
+   */
+
+  // 1. フレーム（一番下）
+  for (const frame of [...input.frames].sort((a, b) => a.z - b.z)) {
+    paintFrame(ctx, frame)
+  }
+
+  // 2. 画像
   for (const image of [...input.images].sort((a, b) => a.z - b.z)) {
     const url = input.imageUrls[image.storage_path]
     if (!url) continue
@@ -53,12 +82,25 @@ export async function renderBoardToBlob(input: ExportInput): Promise<Blob> {
     }
   }
 
-  // 2. 手描き・図形
+  // 3. 手描き・図形
   for (const stroke of input.strokes) {
     paintStroke(ctx, stroke)
   }
 
-  // 3. 付箋・テキストボックス（一番上）
+  // 4. 線（両端の付箋の位置から引く）
+  const noteById = new Map(input.notes.map((note) => [note.id, note]))
+  for (const connector of input.connectors) {
+    const from = noteById.get(connector.from_note_id)
+    const to = noteById.get(connector.to_note_id)
+    if (from && to) paintConnector(ctx, connector, from, to)
+  }
+
+  // 5. ファイルのカード
+  for (const attachment of [...input.attachments].sort((a, b) => a.z - b.z)) {
+    paintAttachment(ctx, attachment)
+  }
+
+  // 6. 付箋・テキストボックス（一番上）
   for (const note of [...input.notes].sort((a, b) => a.z - b.z)) {
     paintNote(ctx, note)
   }
@@ -159,6 +201,125 @@ function paintShape(
   }
 }
 
+/**
+ * フレーム。画面と同じく、枠は破線・中は薄い塗り・タイトルは枠の上に載せる。
+ * 選択中かどうかは書き出しに関係ないので、常に破線で描く。
+ */
+function paintFrame(ctx: CanvasRenderingContext2D, frame: Frame) {
+  const palette = FRAME_COLORS[frame.color] ?? FRAME_COLORS.slate
+
+  ctx.save()
+  ctx.fillStyle = palette.bg
+  ctx.fillRect(frame.x, frame.y, frame.w, frame.h)
+
+  ctx.strokeStyle = palette.border
+  ctx.lineWidth = 2
+  ctx.setLineDash([6, 4])
+  ctx.strokeRect(frame.x, frame.y, frame.w, frame.h)
+  ctx.setLineDash([])
+
+  if (frame.title) {
+    // タイトルバーは枠の上（画面の -top-7）に出す。ボードの外へは出さない
+    const barH = 20
+    const top = Math.max(0, frame.y - barH - 2)
+    ctx.font = 'bold 12px sans-serif'
+    const textW = ctx.measureText(frame.title).width
+    const barW = Math.min(frame.w, textW + 16)
+
+    ctx.fillStyle = palette.border
+    roundRect(ctx, frame.x, top, barW, barH, 4)
+    ctx.fill()
+
+    ctx.fillStyle = '#ffffff'
+    ctx.textBaseline = 'middle'
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(frame.x, top, barW, barH)
+    ctx.clip()
+    ctx.fillText(frame.title, frame.x + 8, top + barH / 2)
+    ctx.restore()
+  }
+
+  ctx.restore()
+}
+
+/**
+ * 付箋どうしをつなぐ線。両端の座標は画面と同じ anchorPoints で求める。
+ * 矢印の頭は手描きの図形と同じ paintShape に任せる。
+ */
+function paintConnector(
+  ctx: CanvasRenderingContext2D,
+  connector: Connector,
+  from: Note,
+  to: Note,
+) {
+  const [x1, y1, x2, y2] = anchorPoints(from, to)
+
+  ctx.save()
+  ctx.strokeStyle = connector.color
+  ctx.fillStyle = connector.color
+  ctx.lineWidth = 2.5
+  ctx.lineCap = 'round'
+  paintShape(ctx, connector.style, [x1, y1], [x2, y2], 2.5)
+
+  if (connector.label) {
+    const midX = (x1 + x2) / 2
+    const midY = (y1 + y2) / 2
+    ctx.font = '11px sans-serif'
+    ctx.textBaseline = 'middle'
+    const textW = ctx.measureText(connector.label).width
+
+    ctx.fillStyle = '#ffffff'
+    roundRect(ctx, midX - textW / 2 - 6, midY - 12, textW + 12, 24, 4)
+    ctx.fill()
+    ctx.strokeStyle = connector.color
+    ctx.lineWidth = 1
+    ctx.stroke()
+
+    ctx.fillStyle = '#0f172a'
+    ctx.textAlign = 'center'
+    ctx.fillText(connector.label, midX, midY)
+    ctx.textAlign = 'start'
+  }
+
+  ctx.restore()
+}
+
+/**
+ * ボードに置いたファイルのカード。
+ *
+ * 中身（PDF の 1 ページ目など）は描かない。画面でもカードとしてしか
+ * 見えていないので、同じ見た目になれば「見たまま」になる。
+ */
+function paintAttachment(ctx: CanvasRenderingContext2D, attachment: Attachment) {
+  const w = ATTACHMENT_CARD_W
+  const h = ATTACHMENT_CARD_H
+
+  ctx.save()
+  ctx.fillStyle = '#ffffff'
+  ctx.strokeStyle = '#cbd5e1'
+  ctx.lineWidth = 1
+  roundRect(ctx, attachment.x, attachment.y, w, h, 8)
+  ctx.fill()
+  ctx.stroke()
+
+  ctx.textBaseline = 'top'
+  ctx.font = '20px sans-serif'
+  ctx.fillStyle = '#0f172a'
+  ctx.fillText(attachmentIcon(attachment.mime, attachment.filename), attachment.x + 8, attachment.y + 8)
+
+  ctx.font = '12px sans-serif'
+  ctx.fillStyle = '#1e293b'
+  // アイコンのぶんだけ右に寄せ、下段（大きさ）に被らないところで折り返す
+  wrapText(ctx, attachment.filename, attachment.x + 36, attachment.y + 8, w - 44, 15, 3)
+
+  ctx.font = '10px sans-serif'
+  ctx.fillStyle = '#94a3b8'
+  ctx.fillText(formatFileSize(attachment.size), attachment.x + 8, attachment.y + h - 16)
+
+  ctx.restore()
+}
+
 function paintNote(ctx: CanvasRenderingContext2D, note: Note) {
   const palette = NOTE_COLORS[note.color] ?? NOTE_COLORS.yellow
   const isText = note.kind === 'text'
@@ -213,7 +374,10 @@ function roundRect(
   ctx.closePath()
 }
 
-/** 日本語は単語区切りが無いので 1 文字ずつ幅を測って折り返す */
+/**
+ * 日本語は単語区切りが無いので 1 文字ずつ幅を測って折り返す。
+ * maxLines を渡すと、そこで打ち切って末尾を … にする（ファイル名の欄で使う）。
+ */
 function wrapText(
   ctx: CanvasRenderingContext2D,
   text: string,
@@ -221,28 +385,36 @@ function wrapText(
   y: number,
   maxWidth: number,
   lineHeight: number,
+  maxLines = Infinity,
 ) {
   if (!text) return
 
   let line = ''
   let offsetY = y
+  let printed = 0
+
+  const flush = (value: string) => {
+    ctx.fillText(value, x, offsetY)
+    printed++
+    offsetY += lineHeight
+  }
 
   for (const char of text) {
+    if (printed >= maxLines) return
     if (char === '\n') {
-      ctx.fillText(line, x, offsetY)
+      flush(line)
       line = ''
-      offsetY += lineHeight
       continue
     }
     const candidate = line + char
     if (ctx.measureText(candidate).width > maxWidth && line) {
-      ctx.fillText(line, x, offsetY)
+      // 最後の 1 行に入りきらないぶんは … にまとめる
+      flush(printed === maxLines - 1 ? `${line}…` : line)
       line = char
-      offsetY += lineHeight
     } else {
       line = candidate
     }
   }
 
-  if (line) ctx.fillText(line, x, offsetY)
+  if (line && printed < maxLines) flush(line)
 }

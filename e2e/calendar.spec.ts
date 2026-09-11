@@ -123,6 +123,36 @@ test('繰り返しに曜日を選ぶと、その曜日ぶんだけ並ぶ', async
   )
 })
 
+test('繰り返しに「n 回ごと」を選ぶと、保存されて開き直しても残る', async ({ page }) => {
+  await signIn(page, 'ひとり目')
+  await createBoard(page, stamp())
+  await openCalendar(page)
+
+  await page.getByRole('button', { name: '予定を追加' }).click()
+  await page.getByPlaceholder('予定のタイトル').fill('隔週練習')
+  await page.getByRole('combobox').first().selectOption({ label: '毎週' })
+  await page.getByLabel('何回ごとか').selectOption('2')
+  await page.getByRole('button', { name: '火', exact: true }).click()
+  await page.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(page.getByPlaceholder('予定のタイトル')).toHaveCount(0)
+
+  const all = page.getByTitle('隔週練習', { exact: true })
+  await expect.poll(async () => await all.count(), { timeout: 20_000 }).toBeGreaterThan(0)
+
+  /*
+   * 開き直して、間隔が保存されていることを見る。
+   * 画面から DB まで recurrence_interval が通っていることを、ここで一度だけ確かめる。
+   * 件数で見ないのは、月の境目で 2 件にも 3 件にもなるため。
+   */
+  await all.first().click()
+  await page.getByRole('radio', { name: 'すべての回を変更' }).click()
+  await expect(page.getByLabel('何回ごとか')).toHaveValue('2')
+  await expect(page.getByRole('button', { name: '火', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  )
+})
+
 test('繰り返し予定の出欠は、その回にだけ付く', async ({ page }) => {
   await signIn(page, 'ひとり目')
   await createBoard(page, stamp())

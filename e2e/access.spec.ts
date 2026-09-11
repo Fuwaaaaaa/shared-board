@@ -6,6 +6,7 @@ import {
   openAsGuest,
   openBoardSettings,
   openMembers,
+  openShare,
   signIn,
   waitForSaved,
   writeInNote,
@@ -243,4 +244,45 @@ test('取り消された人が申請し直すと、承認待ちに並ぶ（勝�
   } finally {
     await context.close()
   }
+})
+
+/*
+ * カレンダーの購読 URL は、参加者かどうかを見ていない別の鍵。
+ * だから「全員を外す」では止まらない —— ここが一番誤解されやすい。
+ *
+ * 「締め出した」と思っている人は、ふつう「もう誰も見られない」と思う。
+ * 共有リンクと一緒に購読 URL も転送されていたら、外したあとも予定は流れ続ける。
+ * 自動では止めない（身内のカレンダーから予定が黙って消えるのも事故になる）ので、
+ * その場で一度だけ聞く。その 1 回が出ているかを見る。
+ */
+test('全員を外したあと、カレンダーの購読 URL も止めるか聞かれる', async ({ page }) => {
+  await signIn(page, 'ひとり目')
+  await createBoard(page, `E2E 購読 ${Date.now().toString(36)}`)
+
+  await openShare(page)
+  await page.getByRole('button', { name: '📅 購読 URL を作る' }).click()
+  await expect(page.getByRole('button', { name: '止める' })).toBeVisible()
+
+  // 押す前に、締め出しでは止まらないことが画面に出ている
+  await expect(page.getByText('購読 URL は別の鍵')).toBeVisible()
+
+  // 共有リンクの作り直しは外す。作り直すと URL が変わり、この画面ごと入れ替わる
+  await page.getByLabel('共有リンクも作り直す（おすすめ）').uncheck()
+
+  const asked: string[] = []
+  page.on('dialog', (dialog) => {
+    asked.push(dialog.message())
+    void dialog.accept()
+  })
+
+  await page.getByRole('button', { name: '全員を外す' }).click()
+
+  // 「はい」と答えたので、購読 URL は止まって作る前の姿に戻る
+  await expect(page.getByRole('button', { name: '📅 購読 URL を作る' })).toBeVisible({
+    timeout: 20_000,
+  })
+
+  expect(asked).toHaveLength(2)
+  expect(asked[0]).toContain('カレンダーの購読 URL は止まりません')
+  expect(asked[1]).toContain('購読 URL は、まだ有効です')
 })

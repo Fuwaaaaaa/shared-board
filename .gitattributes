@@ -1,0 +1,17 @@
+# 改行コードはリポジトリ側を LF で統一する。
+#
+# インデックスはもともと全 179 ファイルが LF なので、この宣言で履歴は動かない。
+# 効くのは作業ツリーのほうで、core.autocrlf=true の Windows でも CRLF を
+# 書き戻さなくなる。置かないでいると、中身と関係のない差分が
+# 触るたびに出る（実際、未コミットの 46 ファイル中 9 ファイルで出ていた）。
+* text=auto eol=lf
+
+# 画像は触らない
+*.png binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.woff  binary
+*.woff2 binary

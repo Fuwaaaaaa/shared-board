@@ -1,9 +1,9 @@
 import { useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import {
-  dropEntry,
   outboxSnapshot,
   reloadOutbox,
+  settleSent,
   subscribeOutbox,
   updateEntry,
 } from '../lib/outboxStore'
@@ -11,8 +11,7 @@ import { onAnnounce, withFlushLock } from '../lib/writeQueueDb'
 import {
   classifyError,
   identityChanged,
-  MAX_ATTEMPTS,
-  nextBackoff,
+  nextRetryState,
   nullOrphanRefs,
   orderForFlush,
   type QueueEntry,
@@ -75,33 +74,20 @@ async function send(entry: QueueEntry, userId: string): Promise<boolean> {
       if (error) throw error
     }
 
-    await dropEntry(entry.key)
+    // 送っているあいだに書き足されていたら、消さずに送り直す側へ回す
+    await settleSent(entry.key, entry.rev)
     return true
   } catch (e) {
     const result = classifyError(e)
 
     if (result.outcome === 'success') {
-      // 前回の送信が実は通っていた。ここで捨てないと永久に残る
-      await dropEntry(entry.key)
+      // 前回の送信が実は通っていた。ここで片付けないと永久に残る
+      await settleSent(entry.key, entry.rev)
       return true
     }
 
     if (result.outcome === 'retry') {
-      const attempts = entry.attempts + 1
-      if (attempts >= MAX_ATTEMPTS) {
-        await updateEntry(entry.key, {
-          state: 'failed',
-          attempts,
-          reason: 'unknown',
-          errorText: '何度か試しましたが送れませんでした。',
-        })
-        return false
-      }
-      await updateEntry(entry.key, {
-        state: 'pending',
-        attempts,
-        nextAttemptAt: Date.now() + nextBackoff(entry.attempts),
-      })
+      await updateEntry(entry.key, nextRetryState(entry, result.transport ?? false, Date.now()))
       return false
     }
 
@@ -111,6 +97,22 @@ async function send(entry: QueueEntry, userId: string): Promise<boolean> {
       errorText: result.errorText,
     })
     return false
+  }
+}
+
+/**
+ * 回線が戻ったときは、様子見の待ち時間を捨ててすぐ送る。
+ *
+ * 間隔は「届かない相手を叩き続けない」ためのものなので、圏外を抜けた瞬間まで
+ * 持ち越す意味がない。持ち越すと、つながっているのに最大 5 分待たされる
+ * （flush は nextAttemptAt を過ぎたものしか送らないため）。
+ */
+async function resumeAfterReconnect(): Promise<void> {
+  const waiting = outboxSnapshot().filter(
+    (entry) => entry.state === 'pending' && (entry.transportAttempts ?? 0) > 0,
+  )
+  for (const entry of waiting) {
+    await updateEntry(entry.key, { transportAttempts: 0, nextAttemptAt: 0 })
   }
 }
 
@@ -163,7 +165,7 @@ export function useWriteQueue(userId: string) {
       void flush(userId)
     }
 
-    const onOnline = () => run()
+    const onOnline = () => void resumeAfterReconnect().then(run)
     const onVisibility = () => {
       if (document.visibilityState === 'visible') run()
     }

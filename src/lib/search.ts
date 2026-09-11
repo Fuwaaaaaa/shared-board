@@ -13,7 +13,7 @@
  */
 
 import { toBoardParts } from './dates'
-import type { CalendarEvent, Comment, Note, Todo } from './types'
+import { COMMENT_TARGET_LABELS, type CalendarEvent, type Comment, type Note, type Todo } from './types'
 
 export type SearchKind = 'note' | 'event' | 'todo' | 'comment'
 /** 飛び先のタブ。RoomHeader の TabKey の部分集合（lib から UI に依存しないため別に持つ） */
@@ -39,6 +39,14 @@ export interface SearchInput {
   events: CalendarEvent[]
   todos: Todo[]
   comments: Comment[]
+  /*
+   * コメントの飛び先を確かめるためだけに要る（本文は検索の対象ではない）。
+   * 渡さないと、画像・ファイル・フレームへのコメントが
+   * 「対象がもう無い」と判定されて 1 件も出なくなる。
+   */
+  images: { id: string }[]
+  attachments: { id: string }[]
+  frames: { id: string }[]
 }
 
 export const KIND_LABELS: Record<SearchKind, string> = {
@@ -217,6 +225,9 @@ export function searchRoom(query: string, data: SearchInput): SearchHit[] {
     ...data.notes.map((n) => n.id),
     ...data.events.map((e) => e.id),
     ...data.todos.map((t) => t.id),
+    ...data.images.map((i) => i.id),
+    ...data.attachments.map((a) => a.id),
+    ...data.frames.map((f) => f.id),
   ])
 
   for (const comment of data.comments) {
@@ -241,8 +252,10 @@ export function searchRoom(query: string, data: SearchInput): SearchHit[] {
       icon: '💬',
       title: comment.body,
       subtitle: `${comment.author_name} — ${
-        comment.target_type === 'board' ? 'チャット' : KIND_LABELS[comment.target_type]
-      }へのコメント`,
+        comment.target_type === 'board'
+          ? 'チャット'
+          : `${COMMENT_TARGET_LABELS[comment.target_type]}へのコメント`
+      }`,
       score,
       stamp: comment.created_at,
     })

@@ -26,6 +26,8 @@ function spec(
     zone: UTC_ZONE,
     interval: 1,
     byDay: [],
+    byMonth: [],
+    byMonthDay: [],
     bySetPos: [],
     // RFC 5545 の既定は月曜
     wkst: 1,
@@ -267,6 +269,8 @@ describe('occurrencesAt（BYDAY）', () => {
         { weekday: 2, nth: null },
         { weekday: 4, nth: null },
       ],
+      byMonth: [],
+      byMonthDay: [],
       bySetPos: [],
       wkst: 1,
     }, 0)
@@ -281,6 +285,8 @@ describe('occurrencesAt（BYDAY）', () => {
       freq: 'weekly',
       interval: 1,
       byDay: sunday,
+      byMonth: [],
+      byMonthDay: [],
       bySetPos: [],
       wkst: 1,
     }, 0)
@@ -288,6 +294,8 @@ describe('occurrencesAt（BYDAY）', () => {
       freq: 'weekly',
       interval: 1,
       byDay: sunday,
+      byMonth: [],
+      byMonthDay: [],
       bySetPos: [],
       wkst: 0,
     }, 0)
@@ -300,6 +308,8 @@ describe('occurrencesAt（BYDAY）', () => {
       freq: 'daily' as const,
       interval: 1,
       byDay: [{ weekday: 2, nth: null }],
+      byMonth: [],
+      byMonthDay: [],
       bySetPos: [],
       wkst: 1,
     }
@@ -313,6 +323,8 @@ describe('occurrencesAt（BYDAY）', () => {
       freq: 'monthly' as const,
       interval: 1,
       byDay: [{ weekday: 2, nth: 2 }],
+      byMonth: [],
+      byMonthDay: [],
       bySetPos: [],
       wkst: 1,
     }
@@ -325,6 +337,8 @@ describe('occurrencesAt（BYDAY）', () => {
       freq: 'monthly',
       interval: 1,
       byDay: [{ weekday: 2, nth: null }],
+      byMonth: [],
+      byMonthDay: [],
       bySetPos: [],
       wkst: 1,
     }, 0)
@@ -342,6 +356,8 @@ describe('occurrencesAt（BYDAY）', () => {
       freq: 'monthly' as const,
       interval: 1,
       byDay: [{ weekday: 2, nth: null }],
+      byMonth: [],
+      byMonthDay: [],
       bySetPos,
       wkst: 1,
     })
@@ -354,6 +370,8 @@ describe('occurrencesAt（BYDAY）', () => {
       freq: 'monthly' as const,
       interval: 1,
       byDay: [{ weekday: 2, nth: 5 }],
+      byMonth: [],
+      byMonthDay: [],
       bySetPos: [],
       wkst: 1,
     }
@@ -368,6 +386,8 @@ describe('occurrencesAt（BYDAY）', () => {
       freq: 'monthly',
       interval: 1,
       byDay: [],
+      byMonth: [],
+      byMonthDay: [],
       bySetPos: [],
       wkst: 1,
     }, 1)
@@ -496,6 +516,182 @@ describe('BYDAY つきの展開（相手の暦で数える）', () => {
       '2026-09-01T10:00:00.000Z',
       '2026-09-03T10:00:00.000Z',
       '2026-09-08T10:00:00.000Z',
+    ])
+  })
+})
+
+describe('occurrencesAt（BYMONTHDAY / BYMONTH）', () => {
+  const utcDays = (dates: Date[]) => dates.map((d) => d.toISOString().slice(0, 10))
+
+  /** 2026-09-01 は火曜 */
+  const base = { y: 2026, m: 9, d: 1, hh: 10, mm: 0, ss: 0 }
+
+  const at = (
+    over: Partial<
+      Pick<
+        RecurrenceSpec,
+        'freq' | 'interval' | 'byDay' | 'byMonth' | 'byMonthDay' | 'bySetPos' | 'wkst'
+      >
+    > &
+      Pick<RecurrenceSpec, 'freq'>,
+    n: number,
+    from = base,
+  ) =>
+    utcDays(
+      occurrencesAt(
+        UTC_ZONE,
+        from,
+        { interval: 1, byDay: [], byMonth: [], byMonthDay: [], bySetPos: [], wkst: 1, ...over },
+        n,
+      ),
+    )
+
+  it('毎月 + BYMONTHDAY は、その日付ぶんに増える', () => {
+    expect(at({ freq: 'monthly', byMonthDay: [1, 15] }, 0)).toEqual([
+      '2026-09-01',
+      '2026-09-15',
+    ])
+    expect(at({ freq: 'monthly', byMonthDay: [1, 15] }, 1)).toEqual([
+      '2026-10-01',
+      '2026-10-15',
+    ])
+  })
+
+  it('BYMONTHDAY の負の値は、月末から数える', () => {
+    // -1 は月末。月ごとに 30 / 31 / 28 と変わる
+    expect(at({ freq: 'monthly', byMonthDay: [-1] }, 0)).toEqual(['2026-09-30'])
+    expect(at({ freq: 'monthly', byMonthDay: [-1] }, 1)).toEqual(['2026-10-31'])
+    // 9 月から 5 か月後は 2027 年 2 月。うるう年ではないので 28 日
+    expect(at({ freq: 'monthly', byMonthDay: [-1] }, 5)).toEqual(['2027-02-28'])
+    // -2 は月末の 1 つ前
+    expect(at({ freq: 'monthly', byMonthDay: [-2] }, 0)).toEqual(['2026-09-29'])
+  })
+
+  /*
+   * ボード自身の予定は「その月に無い日は月末へ丸める」。
+   * 外から来た .ics は RFC どおり「飛ばす」。この違いは意図したもので、
+   * 書き出す側が RDATE で埋めている（src/lib/ics.ts）。
+   */
+  it('その月に無い日は、丸めずに飛ばす', () => {
+    // 9 月は 30 日まで
+    expect(at({ freq: 'monthly', byMonthDay: [31] }, 0)).toEqual([])
+    expect(at({ freq: 'monthly', byMonthDay: [31] }, 1)).toEqual(['2026-10-31'])
+    expect(at({ freq: 'monthly', byMonthDay: [30, 31] }, 0)).toEqual(['2026-09-30'])
+  })
+
+  it('毎年 + BYMONTH + BYMONTHDAY は、その 1 日（祝日カレンダーの形）', () => {
+    const xmas = { y: 2026, m: 12, d: 25, hh: 0, mm: 0, ss: 0 }
+    expect(at({ freq: 'yearly', byMonth: [12], byMonthDay: [25] }, 0, xmas)).toEqual([
+      '2026-12-25',
+    ])
+    expect(at({ freq: 'yearly', byMonth: [12], byMonthDay: [25] }, 1, xmas)).toEqual([
+      '2027-12-25',
+    ])
+  })
+
+  it('毎年 + BYMONTH は、月そのものが増える', () => {
+    // 年 2 回。DTSTART より前の回は expandRecurrence 側で落とす
+    expect(at({ freq: 'yearly', byMonth: [3, 9] }, 0)).toEqual(['2026-03-01', '2026-09-01'])
+    expect(at({ freq: 'yearly', byMonth: [3, 9] }, 1)).toEqual(['2027-03-01', '2027-09-01'])
+  })
+
+  it('毎月 / 毎日 の BYMONTH は絞り込み（月は増えない）', () => {
+    // 毎月 + BYMONTH=9 は、9 月の回だけ残る
+    expect(at({ freq: 'monthly', byMonth: [9] }, 0)).toEqual(['2026-09-01'])
+    expect(at({ freq: 'monthly', byMonth: [9] }, 1)).toEqual([])
+    expect(at({ freq: 'monthly', byMonth: [9] }, 12)).toEqual(['2027-09-01'])
+
+    expect(at({ freq: 'daily', byMonth: [9] }, 0)).toEqual(['2026-09-01'])
+    // 9/1 の 30 日後は 10/1
+    expect(at({ freq: 'daily', byMonth: [9] }, 30)).toEqual([])
+  })
+
+  it('毎年 + BYMONTH + BYDAY は「11 月の第 4 木曜」になる', () => {
+    const nov = { y: 2026, m: 11, d: 26, hh: 0, mm: 0, ss: 0 }
+    const rule = { freq: 'yearly' as const, byMonth: [11], byDay: [{ weekday: 4, nth: 4 }] }
+    expect(at(rule, 0, nov)).toEqual(['2026-11-26'])
+    expect(at(rule, 1, nov)).toEqual(['2027-11-25'])
+  })
+
+  /* Outlook は「第 1 月曜」を、序数ではなく 1〜7 日との重なりで書いてくる */
+  it('BYDAY と BYMONTHDAY が両方あるときは、重なりだけを採る', () => {
+    const dates = at(
+      {
+        freq: 'monthly',
+        byDay: [{ weekday: 1, nth: null }],
+        byMonthDay: [1, 2, 3, 4, 5, 6, 7],
+      },
+      0,
+    )
+    // 2026 年 9 月の月曜は 7 / 14 / 21 / 28。1〜7 日と重なるのは 7 日だけ
+    expect(dates).toEqual(['2026-09-07'])
+  })
+
+  /* VTIMEZONE の切り替え規則が、まさにこの形で書かれている */
+  it('毎年 + BYMONTH + 最後の曜日（夏時間の切り替えの形）', () => {
+    const mar = { y: 2026, m: 3, d: 29, hh: 1, mm: 0, ss: 0 }
+    const rule = { freq: 'yearly' as const, byMonth: [3], byDay: [{ weekday: 0, nth: -1 }] }
+    // 2026 年 3 月の日曜は 1 / 8 / 15 / 22 / 29
+    expect(at(rule, 0, mar)).toEqual(['2026-03-29'])
+    expect(at(rule, 1, mar)).toEqual(['2027-03-28'])
+  })
+})
+
+describe('expandRecurrence（BYMONTHDAY / BYMONTH）', () => {
+  it('DTSTART より前に来る回は出さない', () => {
+    // 毎年 3 月と 9 月。DTSTART が 9 月なので、初年の 3 月は出ない
+    const dates = expandRecurrence(
+      spec({
+        start: new Date('2026-09-01T10:00:00Z'),
+        freq: 'yearly',
+        byMonth: [3, 9],
+      }),
+      new Date('2026-01-01T00:00:00Z'),
+      new Date('2027-12-31T23:59:59Z'),
+      50,
+    )
+    expect(iso(dates)).toEqual([
+      '2026-09-01T10:00:00.000Z',
+      '2027-03-01T10:00:00.000Z',
+      '2027-09-01T10:00:00.000Z',
+    ])
+  })
+
+  it('COUNT は、実際に出た回だけを数える', () => {
+    // 毎月 31 日。31 日の無い月は回そのものが生まれないので、数にも入らない
+    const dates = expandRecurrence(
+      spec({
+        start: new Date('2026-01-31T10:00:00Z'),
+        freq: 'monthly',
+        byMonthDay: [31],
+        count: 3,
+      }),
+      new Date('2026-01-01T00:00:00Z'),
+      new Date('2027-12-31T23:59:59Z'),
+      50,
+    )
+    expect(iso(dates)).toEqual([
+      '2026-01-31T10:00:00.000Z',
+      '2026-03-31T10:00:00.000Z',
+      '2026-05-31T10:00:00.000Z',
+    ])
+  })
+
+  it('範囲の手前から始まった繰り返しでも、月末の回を拾える', () => {
+    const dates = expandRecurrence(
+      spec({
+        start: new Date('2020-01-31T10:00:00Z'),
+        freq: 'monthly',
+        byMonthDay: [-1],
+      }),
+      new Date('2026-09-01T00:00:00Z'),
+      new Date('2026-11-30T23:59:59Z'),
+      50,
+    )
+    expect(iso(dates)).toEqual([
+      '2026-09-30T10:00:00.000Z',
+      '2026-10-31T10:00:00.000Z',
+      '2026-11-30T10:00:00.000Z',
     ])
   })
 })

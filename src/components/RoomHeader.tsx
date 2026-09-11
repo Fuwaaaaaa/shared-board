@@ -67,7 +67,8 @@ export default function RoomHeader({
   const { userId, displayName, setDisplayName } = useIdentity()
   const access = accessInfo(preview)
   const sync = useSyncStatus()
-  const outbox = useOutbox()
+  // 数えるのはこのボードのぶんだけ（送信箱は端末にひとつで、全ボード分が入っている）
+  const outbox = useOutbox(preview.id)
 
   return (
     <header className="shrink-0 border-b border-slate-200 bg-white print:hidden">

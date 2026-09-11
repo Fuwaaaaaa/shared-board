@@ -95,7 +95,16 @@ function comment(over: Partial<Comment> = {}): Comment {
 }
 
 function input(over: Partial<SearchInput> = {}): SearchInput {
-  return { notes: [], events: [], todos: [], comments: [], ...over }
+  return {
+    notes: [],
+    events: [],
+    todos: [],
+    comments: [],
+    images: [],
+    attachments: [],
+    frames: [],
+    ...over,
+  }
 }
 
 afterEach(() => {
@@ -249,6 +258,41 @@ describe('searchRoom — 幽霊ヒットを出さない', () => {
     })
     expect(hits).toHaveLength(1)
     expect(hits[0].subtitle).toContain('チャット')
+  })
+
+  /*
+   * 画像・ファイル・フレームにもコメントできる。
+   * 生きているかを見る一覧に足し忘れると、この 3 種のコメントが
+   * 「対象がもう無い」と判定されて、検索から丸ごと消える。
+   */
+  it('画像・ファイル・フレームへのコメントも、対象が生きていれば出す', () => {
+    const cases = [
+      { target_type: 'image' as const, key: 'images' as const, label: '画像' },
+      { target_type: 'file' as const, key: 'attachments' as const, label: 'ファイル' },
+      { target_type: 'frame' as const, key: 'frames' as const, label: 'フレーム' },
+    ]
+
+    for (const { target_type, key, label } of cases) {
+      const hits = searchRoom('いいですね', {
+        ...input(),
+        [key]: [{ id: 'x1' }],
+        comments: [comment({ target_type, target_id: 'x1' })],
+      })
+      expect(hits, label).toHaveLength(1)
+      expect(hits[0].subtitle).toContain(`${label}へのコメント`)
+      // 画像・ファイル・フレームはボードの上にあるので、飛び先はホワイトボード
+      expect(hits[0].tab).toBe('board')
+    }
+  })
+
+  it('消えた画像・ファイル・フレームへのコメントは出さない', () => {
+    for (const target_type of ['image', 'file', 'frame'] as const) {
+      const hits = searchRoom('いいですね', {
+        ...input(),
+        comments: [comment({ target_type, target_id: 'gone' })],
+      })
+      expect(hits, target_type).toEqual([])
+    }
   })
 })
 

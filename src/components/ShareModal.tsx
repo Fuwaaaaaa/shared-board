@@ -171,6 +171,15 @@ export default function ShareModal({ preview, onClose, onUpdated }: Props) {
    *
    * リンク公開のままでは URL を知っている人が入り直せてしまうので、
    * サーバー側で必ず承認制（合言葉つきなら合言葉つき）に落としてから外す。
+   *
+   * カレンダーの購読 URL は、これでは止まらない。別の鍵で、参加者かどうかを見ていないため
+   * （board-ics は room_secrets.calendar_token だけで照合する）。
+   * ここが一番誤解されるところ —— 「全員締め出した」つもりの人は、ふつう
+   * 「もう誰も見られない」と思う。転送されたリンクと一緒に購読 URL も渡っていたら、
+   * 締め出したあとも予定は流れ続ける。
+   * だから、締め出したその場で一度だけ聞く。自動では止めない
+   * （購読 URL は身内のカレンダーに登録してあることが多く、黙って切ると
+   *   「予定が消えた」という別の事故になる）。
    */
   async function revokeAll() {
     const lines = [
@@ -180,6 +189,7 @@ export default function ShareModal({ preview, onClose, onUpdated }: Props) {
       rotateOnRevoke ? '・共有リンクも作り直します（古い URL は開けなくなります）' : '',
       '・外された人には「参加が取り消されました」と通知が届きます',
       '・付箋や予定は消えません',
+      calendarToken ? '・カレンダーの購読 URL は止まりません（このあと確認します）' : '',
       '',
       'よろしいですか？',
     ].filter(Boolean)
@@ -198,6 +208,29 @@ export default function ShareModal({ preview, onClose, onUpdated }: Props) {
       setError(failed.message)
       setBusy(false)
       return
+    }
+
+    // 画面が別の URL へ移る前に聞く（移ったあとではこの画面ごと無くなる）
+    if (calendarToken) {
+      const stop = window.confirm(
+        [
+          '📅 カレンダーの購読 URL は、まだ有効です。',
+          '',
+          'この URL を知っている人は、このボードに参加していなくても',
+          'これからの予定を見続けられます。',
+          '共有リンクと一緒に渡っているかもしれないときは、ここで止めてください。',
+          '',
+          '購読 URL も止めますか？',
+          '（止めると、登録した人のカレンダーからこのボードの予定が消えます）',
+        ].join('\n'),
+      )
+      if (stop) {
+        const { error: stopFailed } = await stopCalendarFeed()
+        if (stopFailed) {
+          // 締め出し自体は済んでいる。ここで止まらず、理由だけ残す
+          setError(`購読 URL を止められませんでした: ${stopFailed}`)
+        }
+      }
     }
 
     const nextSlug = data as string
@@ -251,6 +284,22 @@ export default function ShareModal({ preview, onClose, onUpdated }: Props) {
     setBusy(false)
   }
 
+  /**
+   * 購読 URL を止める本体。確認は呼ぶ側で出す。
+   * 「全員を外す」からも呼ぶので、busy / error はここでは触らない。
+   */
+  async function stopCalendarFeed(): Promise<{ error: string | null }> {
+    const { error: failed } = await supabase.rpc('clear_calendar_token', {
+      p_room_id: preview.id,
+    })
+
+    if (failed) return { error: failed.message }
+
+    setCalendarToken(null)
+    setCalendarTokenAt(null)
+    return { error: null }
+  }
+
   async function clearCalendarToken() {
     if (!window.confirm('購読 URL を止めます。登録した人のカレンダーからは予定が消えます。')) {
       return
@@ -259,15 +308,8 @@ export default function ShareModal({ preview, onClose, onUpdated }: Props) {
     setBusy(true)
     setError(null)
 
-    const { error: failed } = await supabase.rpc('clear_calendar_token', {
-      p_room_id: preview.id,
-    })
-
-    if (failed) setError(failed.message)
-    else {
-      setCalendarToken(null)
-      setCalendarTokenAt(null)
-    }
+    const { error: failed } = await stopCalendarFeed()
+    if (failed) setError(failed)
     setBusy(false)
   }
 
@@ -454,6 +496,14 @@ export default function ShareModal({ preview, onClose, onUpdated }: Props) {
                 入り方を承認制（合言葉を設定していれば合言葉つき）に切り替えます。
                 付箋・予定・やることは消えません。呼び戻したい人には、新しいリンクを送り直してください。
               </p>
+              {calendarToken && (
+                <p className="mb-3 rounded-lg bg-rose-50 px-3 py-2 text-xs leading-relaxed text-rose-800">
+                  📅 カレンダーの<strong className="font-semibold">購読 URL は別の鍵</strong>
+                  なので、これでは止まりません。
+                  URL を知っている人は、参加していなくても予定を見続けられます。
+                  外したあとに、止めるかどうかを確認します。
+                </p>
+              )}
               <label className="mb-3 flex items-center gap-2 text-xs text-slate-600">
                 <input
                   type="checkbox"

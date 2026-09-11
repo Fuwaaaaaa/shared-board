@@ -21,10 +21,19 @@
  *
  * 設定:
  *   select decrypted_secret from vault.decrypted_secrets where name = 'cron_shared_secret';
- *   supabase secrets set CRON_SHARED_SECRET=<その値>
+ *   npx supabase secrets set CRON_SHARED_SECRET=<その値>
  */
 
-const SECRET = Deno.env.get('CRON_SHARED_SECRET') ?? ''
+/**
+ * 合言葉。読むのは呼び出しのたび。
+ *
+ * モジュールの読み込み時に 1 度だけ読むと、テストから差し替えられない
+ * （import した時点で値が焼き付く）。実行中に環境変数が変わることはないので、
+ * 毎回読んでも本番の挙動は変わらない。
+ */
+function secret(): string {
+  return Deno.env.get('CRON_SHARED_SECRET') ?? ''
+}
 
 async function sha256(value: string): Promise<Uint8Array> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
@@ -39,12 +48,13 @@ async function sha256(value: string): Promise<Uint8Array> {
  * CRON_SHARED_SECRET が未設定のときは誰も通さない（開けっ放しにしない）。
  */
 export async function isCronCaller(req: Request): Promise<boolean> {
-  if (SECRET === '') return false
+  const expected = secret()
+  if (expected === '') return false
 
   const given = req.headers.get('x-cron-secret') ?? ''
   if (given === '') return false
 
-  const [a, b] = await Promise.all([sha256(given), sha256(SECRET)])
+  const [a, b] = await Promise.all([sha256(given), sha256(expected)])
   let diff = 0
   for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i]
   return diff === 0

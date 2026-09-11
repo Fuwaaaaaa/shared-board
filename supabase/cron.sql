@@ -13,7 +13,7 @@
 --
 --  ■ 実行したあと、生成された合言葉を Edge Function 側にも同じ値で設定してください:
 --      select decrypted_secret from vault.decrypted_secrets where name = 'cron_shared_secret';
---      supabase secrets set CRON_SHARED_SECRET=<その値>
+--      npx supabase secrets set CRON_SHARED_SECRET=<その値>
 --    手順は docs/SETUP.md「プッシュ通知」を参照してください。
 --
 --  ■ 合言葉を入れ替えたいときは、次を実行してから Edge Function 側も設定し直します:
@@ -55,7 +55,7 @@ begin
   -- Edge Function を呼ぶときの合言葉。ここで自動生成する（貼り付ける値はありません）。
   -- 生成した値は、このあと Edge Function 側の secrets にも同じものを入れてください:
   --   select decrypted_secret from vault.decrypted_secrets where name = 'cron_shared_secret';
-  --   supabase secrets set CRON_SHARED_SECRET=<その値>
+  --   npx supabase secrets set CRON_SHARED_SECRET=<その値>
   if not exists (select 1 from vault.secrets where name = 'cron_shared_secret') then
     perform vault.create_secret(
       encode(extensions.gen_random_bytes(32), 'hex'),

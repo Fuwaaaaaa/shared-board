@@ -2,8 +2,13 @@
 #
 # 手元でやっている検証を、そのまま押したときに回す。
 #
-#   1. checks  … lint / tsc / vitest。何も要らないので数分で返る
+#   1. checks  … lint / tsc / vitest / Edge Function（Deno）。数分で返る
 #   2. backend … Supabase を立てて pgTAP と Playwright
+#
+# Edge Function を backend ではなく checks に入れてあるのは、Supabase を
+# 立てずに走るため。テストは fetch を差し替えて handler を直接呼ぶので、
+# DB もネットワークも要らない（supabase/functions/tests/helpers.ts）。
+# deno は devDependency なので、npm ci で入る版がそのまま手元と揃う。
 #
 # backend を 1 つのジョブにまとめてあるのは、supabase start が
 # 10 個ほどの image を取ってくるため。pgTAP と E2E で 2 回払うより、
@@ -26,14 +31,14 @@ concurrency:
 
 jobs:
   checks:
-    name: lint / 型 / 単体テスト
+    name: lint / 型 / 単体テスト / Edge Function
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: .nvmrc
           cache: npm
 
       - run: npm ci
@@ -48,6 +53,23 @@ jobs:
       - name: 単体テスト（node / jsdom）
         run: npm test
 
+      # esm.sh と npm: から取ってくるぶんを持ち越す。
+      # 鍵は deno.lock なので、依存を上げたときだけ取り直しになる
+      - name: Deno のキャッシュ
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/deno
+          key: deno-${{ runner.os }}-${{ hashFiles('supabase/functions/deno.lock') }}
+          restore-keys: deno-${{ runner.os }}-
+
+      # tsc は supabase/ を見ていない（tsconfig.json の include にない）。
+      # Edge Function の型はここでしか見ていないので、テストの前に通す
+      - name: Edge Function の型
+        run: npm run check:functions
+
+      - name: Edge Function のテスト（Deno）
+        run: npm run test:functions
+
   backend:
     name: 権限（pgTAP）とブラウザ（Playwright）
     runs-on: ubuntu-latest
@@ -58,18 +80,16 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: .nvmrc
           cache: npm
 
       - run: npm ci
 
-      # 手元と同じ版に固定する。上げるときはここも一緒に上げる
-      - uses: supabase/setup-cli@v1
-        with:
-          version: 2.117.0
-
+      # Supabase CLI は devDependency で、package.json に版を完全固定してある。
+      # setup-cli の action を使うと版の定義元が package.json と CI の 2 か所になり、
+      # 手元と CI で違う版が動いていても誰も気づけない。npm ci で入るものを使う。
       - name: Supabase を立てる
-        run: supabase start
+        run: npx supabase start
 
       # このリポジトリに supabase/migrations はない。DB は冪等な schema.sql 1 本で、
       # 手元では SQL Editor に貼って適用している（docs/SETUP.md）。
@@ -89,18 +109,20 @@ jobs:
             psql -v ON_ERROR_STOP=1 -U postgres -d postgres < supabase/schema.sql
 
       - name: 権限のテスト（pgTAP）
-        run: supabase test db
+        run: npx supabase test db
 
       # 手元の .env.local は git に入れていないので、ここで作る。
       # ローカルの anon key は誰の環境でも同じ既定値で、秘密ではない。
       - name: .env.local を作る
         run: |
-          eval "$(supabase status -o env | sed 's/^/export /')"
+          eval "$(npx supabase status -o env | sed 's/^/export /')"
           printf 'VITE_SUPABASE_URL=%s\nVITE_SUPABASE_ANON_KEY=%s\n' \
             "$API_URL" "$ANON_KEY" > .env.local
 
+      # Chromium は全部、Firefox / WebKit は @smoke だけを走らせる
+      # （振り分けは playwright.config.ts の projects）
       - name: ブラウザを入れる
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install --with-deps chromium firefox webkit
 
       # CI では e2e/global-setup.ts が「つながらない」を握りつぶさず落とす。
       # 飛ばして緑になると、通ったのか何も走らなかったのか分からないため

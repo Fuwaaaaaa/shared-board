@@ -9,6 +9,7 @@ import {
   looksMojibake,
   parseCsvObjects,
   parseFlexibleDate,
+  parseInterval,
   parseWeekOrdinal,
   parseWeekdays,
   toCsv,
@@ -27,6 +28,7 @@ const EVENT_HEADERS = [
   '繰り返し',
   '繰り返しの曜日',
   '繰り返しの週',
+  '繰り返しの間隔',
   '繰り返しの終了日',
   '通知(分前)',
   'タグ',
@@ -41,6 +43,7 @@ const TODO_HEADERS = [
   '繰り返し',
   '繰り返しの曜日',
   '繰り返しの週',
+  '繰り返しの間隔',
   'タグ',
   'メモ',
 ]
@@ -94,6 +97,7 @@ export default function ImportExportModal({ boardName, onClose }: Props) {
         event.recurrence_week === null || event.recurrence_week === undefined
           ? ''
           : (MONTH_WEEK_LABELS[String(event.recurrence_week)] ?? ''),
+        (event.recurrence_interval ?? 1) > 1 ? String(event.recurrence_interval) : '',
         event.recurrence_until ?? '',
         event.remind_minutes ?? '',
         (event.tags ?? []).join(' '),
@@ -117,6 +121,7 @@ export default function ImportExportModal({ boardName, onClose }: Props) {
         todo.recurrence_week === null || todo.recurrence_week === undefined
           ? ''
           : (MONTH_WEEK_LABELS[String(todo.recurrence_week)] ?? ''),
+        (todo.recurrence_interval ?? 1) > 1 ? String(todo.recurrence_interval) : '',
         (todo.tags ?? []).join(' '),
         todo.notes,
       ])
@@ -415,18 +420,21 @@ function normalizeRecurrence(value: string | undefined) {
 }
 
 /**
- * CSV の 1 行から繰り返しの 3 列を作る。
+ * CSV の 1 行から繰り返しの 4 列を作る。
  * 規則に合わない組み合わせ（毎日なのに曜日つき、など）は normalizeRule が落とす。
+ * 「繰り返しの間隔」列が無い古い CSV は parseInterval が 1 に倒す。
  */
 function csvRule(item: Record<string, string>) {
   const rule = normalizeRule({
     recurrence: normalizeRecurrence(item['繰り返し']),
     days: parseWeekdays(item['繰り返しの曜日']),
     week: parseWeekOrdinal(item['繰り返しの週']),
+    interval: parseInterval(item['繰り返しの間隔']),
   })
   return {
     recurrence: rule.recurrence,
     recurrence_days: rule.days,
     recurrence_week: rule.week,
+    recurrence_interval: rule.interval ?? 1,
   }
 }

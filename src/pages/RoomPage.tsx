@@ -14,6 +14,7 @@ import { useWriteQueue } from '../hooks/useWriteQueue'
 import RoomHeader, { type TabKey } from '../components/RoomHeader'
 import AccessRequestPanel from '../components/AccessRequestPanel'
 import Loading from '../components/Loading'
+import ErrorBoundary from '../components/ErrorBoundary'
 import type { SearchHit } from '../components/SearchModal'
 import { useBoardUpdates } from '../hooks/useBoardUpdates'
 import type { CalendarEvent, RoomPreview } from '../lib/types'
@@ -284,16 +285,22 @@ function RoomShell({
     jumpTo(hit.tab, hit.targetId)
   }
 
-  /** 日程調整で日が決まったら、そのまま予定として登録する */
-  async function createEventFromPoll(event: CalendarEvent) {
+  /**
+   * 日程調整で日が決まったら、そのまま予定として登録する。作れたら true。
+   *
+   * 作れなかったことは呼び出し側（PollPanel）が伝える。ここで黙って戻ると、
+   * 日程調整は締まったのに暦には何も無い、という食い違いだけが残る。
+   */
+  async function createEventFromPoll(event: CalendarEvent): Promise<boolean> {
     events.upsertLocal(event)
     const { error } = await supabase.from('events').insert(event)
     if (error) {
       events.removeLocal(event.id)
-      return
+      return false
     }
     setShowPolls(false)
     jumpTo('calendar', event.id)
+    return true
   }
 
   const focusId = focus && focus.tab === tab ? focus.id : null
@@ -325,97 +332,101 @@ function RoomShell({
       />
 
       <main className="min-h-0 flex-1">
-        <Suspense fallback={<Loading />}>
-          {tab === 'board' && (
-            <WhiteboardTab
-              peers={peers}
-              onCursorMove={sendCursor}
-              focusId={focusId}
-              focusNonce={focusNonce}
-              boardName={preview.name}
-              onOpenShortcuts={() => setShowShortcuts(true)}
-              onJump={jumpTo}
-              onOpenShare={() => setShowShare(true)}
-              onEditingChange={setEditing}
-            />
-          )}
-          {tab === 'calendar' && (
-            <CalendarTab
-              reminders={reminders}
-              focusId={focusId}
-              focusNonce={focusNonce}
-              boardName={preview.name}
-              onJump={jumpTo}
-            />
-          )}
-          {tab === 'todo' && (
-            <TodoTab
-              reminders={reminders}
-              focusId={focusId}
-              focusNonce={focusNonce}
-              onJump={jumpTo}
-            />
-          )}
-          {tab === 'updates' && (
-            <UpdatesTab
-              updates={updates}
-              onJump={jumpTo}
-              onOpenChat={() => setChatOpen(true)}
-            />
-          )}
-          {tab === 'dashboard' && <DashboardTab onJump={jumpTo} />}
-        </Suspense>
+        <ErrorBoundary key={tab} where={`tab:${tab}`} variant="inline">
+          <Suspense fallback={<Loading />}>
+            {tab === 'board' && (
+              <WhiteboardTab
+                peers={peers}
+                onCursorMove={sendCursor}
+                focusId={focusId}
+                focusNonce={focusNonce}
+                boardName={preview.name}
+                onOpenShortcuts={() => setShowShortcuts(true)}
+                onJump={jumpTo}
+                onOpenShare={() => setShowShare(true)}
+                onEditingChange={setEditing}
+              />
+            )}
+            {tab === 'calendar' && (
+              <CalendarTab
+                reminders={reminders}
+                focusId={focusId}
+                focusNonce={focusNonce}
+                boardName={preview.name}
+                onJump={jumpTo}
+              />
+            )}
+            {tab === 'todo' && (
+              <TodoTab
+                reminders={reminders}
+                focusId={focusId}
+                focusNonce={focusNonce}
+                onJump={jumpTo}
+              />
+            )}
+            {tab === 'updates' && (
+              <UpdatesTab
+                updates={updates}
+                onJump={jumpTo}
+                onOpenChat={() => setChatOpen(true)}
+              />
+            )}
+            {tab === 'dashboard' && <DashboardTab onJump={jumpTo} />}
+          </Suspense>
+        </ErrorBoundary>
       </main>
 
       {/* モーダルは開いた瞬間に取りに行く。受け皿を出すと画面が一瞬ちらつくので出さない */}
-      <Suspense fallback={null}>
-        {showMembers && (
-          <MemberPanel
-            members={members.rows}
-            preview={preview}
-            onClose={() => setShowMembers(false)}
-            onOpenShare={() => {
-              setShowMembers(false)
-              setShowShare(true)
-            }}
-          />
-        )}
-        {showShare && (
-          <ShareModal
-            preview={preview}
-            onUpdated={onUpdated}
-            onClose={() => setShowShare(false)}
-          />
-        )}
-        {showSearch && <SearchModal onClose={() => setShowSearch(false)} onJump={jumpToHit} />}
-        {showSettings && (
-          <BoardSettingsModal
-            preview={preview}
-            onClose={() => setShowSettings(false)}
-            onUpdated={onUpdated}
-            onOpenShare={() => {
-              setShowSettings(false)
-              setShowShare(true)
-            }}
-          />
-        )}
-        {showNotifications && (
-          <NotificationPanel
-            notifications={notifications.rows}
-            onClose={() => setShowNotifications(false)}
-            onMarkAllRead={notifications.markAllRead}
-            onMarkRead={notifications.markRead}
-            onRemove={notifications.remove}
-            onOpen={jumpTo}
-          />
-        )}
-        {showShortcuts && <ShortcutsModal onClose={() => setShowShortcuts(false)} />}
-        {showPolls && (
-          <PollPanel onClose={() => setShowPolls(false)} onCreateEvent={createEventFromPoll} />
-        )}
-        {showOutbox && <OutboxModal onClose={() => setShowOutbox(false)} />}
-        {chatOpen && <ChatPanel onClose={() => setChatOpen(false)} />}
-      </Suspense>
+      <ErrorBoundary where="modals" variant="inline">
+        <Suspense fallback={null}>
+          {showMembers && (
+            <MemberPanel
+              members={members.rows}
+              preview={preview}
+              onClose={() => setShowMembers(false)}
+              onOpenShare={() => {
+                setShowMembers(false)
+                setShowShare(true)
+              }}
+            />
+          )}
+          {showShare && (
+            <ShareModal
+              preview={preview}
+              onUpdated={onUpdated}
+              onClose={() => setShowShare(false)}
+            />
+          )}
+          {showSearch && <SearchModal onClose={() => setShowSearch(false)} onJump={jumpToHit} />}
+          {showSettings && (
+            <BoardSettingsModal
+              preview={preview}
+              onClose={() => setShowSettings(false)}
+              onUpdated={onUpdated}
+              onOpenShare={() => {
+                setShowSettings(false)
+                setShowShare(true)
+              }}
+            />
+          )}
+          {showNotifications && (
+            <NotificationPanel
+              notifications={notifications.rows}
+              onClose={() => setShowNotifications(false)}
+              onMarkAllRead={notifications.markAllRead}
+              onMarkRead={notifications.markRead}
+              onRemove={notifications.remove}
+              onOpen={jumpTo}
+            />
+          )}
+          {showShortcuts && <ShortcutsModal onClose={() => setShowShortcuts(false)} />}
+          {showPolls && (
+            <PollPanel onClose={() => setShowPolls(false)} onCreateEvent={createEventFromPoll} />
+          )}
+          {showOutbox && <OutboxModal onClose={() => setShowOutbox(false)} />}
+          {chatOpen && <ChatPanel onClose={() => setChatOpen(false)} />}
+        </Suspense>
+      </ErrorBoundary>
     </div>
   )
 }

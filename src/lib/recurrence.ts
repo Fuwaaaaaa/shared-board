@@ -13,6 +13,7 @@ import {
   firstIndexAtOrAfter,
   firstMatchingStart,
   hasByDay,
+  MAX_INTERVAL,
   normalizeRule,
   nthOccurrence,
   occurrenceKey,
@@ -25,6 +26,7 @@ import {
 import { DAY_MS, isBoardTimeZone, localDateOf, toBoardDate } from './dates'
 import {
   MONTH_WEEK_LABELS,
+  RECURRENCE_INTERVAL_UNITS,
   RECURRENCE_LABELS,
   WEEKDAY_LABELS,
   type CalendarEvent,
@@ -38,6 +40,7 @@ export {
   firstIndexAtOrAfter,
   firstMatchingStart,
   hasByDay,
+  MAX_INTERVAL,
   normalizeRule,
   nthOccurrence,
   occurrenceKey,
@@ -49,13 +52,27 @@ export {
 export type { RecurrenceRule }
 
 /**
- * 画面に出す繰り返しの言い方。「毎週 火・木」「毎月 第2火曜」「毎月 最終火曜」。
+ * 周期の言い方。間隔が 1 なら「毎週」、2 以上なら「3週ごと」。
+ *
+ * 毎週の 2 回ごとだけ「隔週」と言う。日本語で「2週ごと」がやや硬いため。
+ * 月は「隔月」を採らない——月 1 回か 2 か月に 1 回か揺れる語なので、
+ * 「2か月ごと」に寄せる。
+ */
+function intervalLabel(rule: RecurrenceRule): string {
+  const n = rule.interval ?? 1
+  if (rule.recurrence === 'none' || n <= 1) return RECURRENCE_LABELS[rule.recurrence]
+  if (rule.recurrence === 'weekly' && n === 2) return '隔週'
+  return `${n}${RECURRENCE_INTERVAL_UNITS[rule.recurrence]}ごと`
+}
+
+/**
+ * 画面に出す繰り返しの言い方。「毎週 火・木」「隔週 火・木」「毎月 第2火曜」。
  *
  * 文言だけをフロントに置いているのは、_shared に画面用の日本語を持ち込まないため
  * （Edge Function 側では要らないし、RECURRENCE_LABELS を二重に持つことになる）。
  */
 export function recurrenceLabel(rule: RecurrenceRule): string {
-  const base = RECURRENCE_LABELS[rule.recurrence]
+  const base = intervalLabel(rule)
   if (!hasByDay(rule)) return base
 
   if (rule.recurrence === 'weekly') {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  afterSend,
   classifyError,
   collapse,
   decideOnFailure,
@@ -9,6 +10,7 @@ import {
   lockedFields,
   MAX_ATTEMPTS,
   nextBackoff,
+  nextRetryState,
   nullOrphanRefs,
   orderForFlush,
   previewOf,
@@ -42,6 +44,7 @@ function makeEntry(over: Partial<QueueEntry> = {}): QueueEntry {
     label: '付箋',
     preview: '合宿の持ち物',
     seq: 1,
+    rev: 1,
     enqueuedAt: '2026-09-08T00:00:00.000Z',
     state: 'pending',
     attempts: 0,
@@ -112,6 +115,19 @@ describe('collapse', () => {
     }
     expect(entry).toMatchObject({ kind: 'create' })
     expect((entry!.row as { text: string }).text).toBe('12')
+  })
+
+  /*
+   * 送っているあいだに書き足されたかどうかは、これでしか見分けられない
+   * （送るのは flush が始めた時点の写しなので、往復中の書き足しは入っていない）。
+   */
+  it('ためるたびに rev が増える', () => {
+    const first = collapse(undefined, makeOp({ row: { id: 'note-1', text: 'あ' } }))!
+    expect(first.rev).toBe(1)
+    const second = collapse(first, makeOp({ kind: 'update', patch: { text: 'あい' } }))!
+    expect(second.rev).toBe(2)
+    const third = collapse(second, makeOp({ kind: 'update', patch: { text: 'あいう' } }))!
+    expect(third.rev).toBe(3)
   })
 
   it('最初にためた時刻と順番は保つ', () => {
@@ -238,9 +254,23 @@ describe('classifyError', () => {
   })
 
   it('通信の失敗と 5xx・429 は、もう一度試す', () => {
-    expect(classifyError({ message: 'TypeError: Failed to fetch' })).toEqual({ outcome: 'retry' })
+    expect(classifyError({ message: 'TypeError: Failed to fetch' })).toEqual({
+      outcome: 'retry',
+      transport: true,
+    })
     expect(classifyError({ status: 503, message: 'unavailable' })).toEqual({ outcome: 'retry' })
     expect(classifyError({ status: 429, message: 'too many' })).toEqual({ outcome: 'retry' })
+  })
+
+  /*
+   * 「届かなかった」と「届いたうえで断られた」は数え方が変わるので、印で分ける。
+   * ここが同じ扱いに戻ると、圏外にいるだけで送信箱が打ち切られる。
+   */
+  it('届かなかったものには印を付ける（5xx とは分ける）', () => {
+    expect(classifyError({ message: 'NetworkError' })).toMatchObject({ transport: true })
+    expect(classifyError({ status: 503, message: 'unavailable' })).not.toMatchObject({
+      transport: true,
+    })
   })
 
   it('知らない失敗は、理由を付けて残す', () => {
@@ -325,6 +355,99 @@ describe('nextBackoff', () => {
 
   it('試す回数には上限がある', () => {
     expect(MAX_ATTEMPTS).toBeGreaterThan(0)
+  })
+})
+
+describe('afterSend', () => {
+  /*
+   * ここが緩むと、送っているあいだに書き足した文字が黙って消える。
+   * 「書いたのに消えた」がいちばん困る形で起きるところ。
+   */
+  it('ためた回数が動いていなければ、そのまま捨てる', () => {
+    expect(afterSend(makeEntry({ rev: 3 }), 3)).toBe('drop')
+  })
+
+  it('送っているあいだに書き足されていたら、捨てずに送り直す', () => {
+    const next = afterSend(makeEntry({ kind: 'update', rev: 4 }), 3)
+    expect(next).not.toBe('drop')
+    expect(next).toMatchObject({ state: 'pending' })
+  })
+
+  /*
+   * 作成のまま送り直すと主キーの重複になり、「前回が実は通っていた」として
+   * 捨てられて、やはり書き足しが消える。行はもうあるので更新に変える。
+   */
+  it('作成は更新に変える。id と updated_at は落とす', () => {
+    const next = afterSend(
+      makeEntry({
+        kind: 'create',
+        rev: 2,
+        row: { id: 'note-1', room_id: 'room-1', text: 'あとで足した', updated_at: 'x' },
+      }),
+      1,
+    )
+
+    expect(next).toMatchObject({
+      kind: 'update',
+      row: undefined,
+      expectUpdatedAt: undefined,
+      patch: { room_id: 'room-1', text: 'あとで足した' },
+    })
+    const patch = (next as Partial<QueueEntry>).patch ?? {}
+    expect(Object.keys(patch).sort()).toEqual(['room_id', 'text'])
+  })
+
+  it('送り直すときは、待ち時間と試した回数を仕切り直す', () => {
+    const next = afterSend(
+      makeEntry({ kind: 'update', rev: 9, attempts: 5, transportAttempts: 4, nextAttemptAt: 999 }),
+      8,
+    )
+    expect(next).toMatchObject({ attempts: 0, transportAttempts: 0, nextAttemptAt: undefined })
+  })
+})
+
+describe('nextRetryState', () => {
+  /*
+   * ここが壊れると、オフラインで書いたものが「つながったら送られる」のではなく
+   * 11 分ほど（1+2+5+15+60+300+300 秒）で全件「送れませんでした」に落ちる。
+   * 目で見て気づける類の壊れ方ではないので、厚めに見る。
+   */
+  it('届かなかったぶんは、試した回数に数えない', () => {
+    let transportAttempts = 0
+    for (let i = 0; i < 50; i += 1) {
+      const next = nextRetryState({ attempts: 0, transportAttempts }, true, 0)
+      expect(next.state).toBe('pending')
+      expect(next.attempts).toBeUndefined()
+      transportAttempts = next.transportAttempts ?? 0
+    }
+    expect(transportAttempts).toBe(50)
+  })
+
+  it('届かないあいだも、様子見の間隔は伸びて 5 分で頭打ちになる', () => {
+    const at = (transportAttempts: number) =>
+      nextRetryState({ attempts: 0, transportAttempts }, true, 1_000).nextAttemptAt
+    expect(at(0)).toBe(1_000 + 1_000)
+    expect(at(1)).toBe(1_000 + 2_000)
+    expect(at(5)).toBe(1_000 + 300_000)
+    expect(at(99)).toBe(1_000 + 300_000)
+  })
+
+  it('サーバーに断られたぶんは数え、上限で打ち切る', () => {
+    expect(nextRetryState({ attempts: 0 }, false, 0)).toMatchObject({
+      state: 'pending',
+      attempts: 1,
+    })
+    expect(nextRetryState({ attempts: MAX_ATTEMPTS - 1 }, false, 0)).toMatchObject({
+      state: 'failed',
+      attempts: MAX_ATTEMPTS,
+      reason: 'unknown',
+    })
+  })
+
+  it('圏外を挟んでも、サーバーに断られた回数はそのまま', () => {
+    // attempts を返さない = updateEntry がその列に触らない = 3 のまま残る
+    expect(nextRetryState({ attempts: 3 }, true, 0).attempts).toBeUndefined()
+    expect(nextRetryState({ attempts: 3 }, false, 0)).toMatchObject({ attempts: 4 })
   })
 })
 

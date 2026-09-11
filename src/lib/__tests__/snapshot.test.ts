@@ -63,6 +63,9 @@ describe('isOrphanComment', () => {
     notes: new Set(['n1']),
     events: new Set(['e1']),
     todos: new Set(['t1']),
+    images: new Set(['i1']),
+    attachments: new Set(['f1']),
+    frames: new Set(['fr1']),
   }
 
   it('対象がある間は宙ぶらりんではない', () => {
@@ -87,5 +90,15 @@ describe('isOrphanComment', () => {
 
   it('種類ごとに別々の一覧を見る（付箋の id が予定にあっても混ざらない）', () => {
     expect(isOrphanComment({ target_type: 'event', target_id: 'n1' }, ids)).toBe(true)
+  })
+
+  it('画像・ファイル・フレームへのコメントも見る', () => {
+    expect(isOrphanComment({ target_type: 'image', target_id: 'i1' }, ids)).toBe(false)
+    expect(isOrphanComment({ target_type: 'file', target_id: 'f1' }, ids)).toBe(false)
+    expect(isOrphanComment({ target_type: 'frame', target_id: 'fr1' }, ids)).toBe(false)
+
+    expect(isOrphanComment({ target_type: 'image', target_id: 'gone' }, ids)).toBe(true)
+    expect(isOrphanComment({ target_type: 'file', target_id: 'gone' }, ids)).toBe(true)
+    expect(isOrphanComment({ target_type: 'frame', target_id: 'gone' }, ids)).toBe(true)
   })
 })

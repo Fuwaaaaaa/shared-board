@@ -1,17 +1,17 @@
+import { useMemo } from 'react'
 import { format, parseISO } from 'date-fns'
 import { ja } from 'date-fns/locale'
 import Modal from './Modal'
+import { useRoomData } from '../lib/roomData'
 import { dropEntry, updateEntry, useOutboxEntries } from '../lib/outboxStore'
 import { isPersistent } from '../lib/writeQueueDb'
 import type { FailureReason, QueueEntry } from '../lib/writeQueue'
 import { downloadText } from '../lib/ics'
-
-const TABLE_LABELS: Record<QueueEntry['table'], string> = {
-  notes: '付箋',
-  events: '予定',
-  todos: 'やること',
-  comments: 'コメント',
-}
+import {
+  outboxAsText,
+  outboxTitleOf,
+  outboxBodyOf,
+} from '../lib/outboxText'
 
 const REASON_LABELS: Record<FailureReason, string> = {
   permission: '書き込む権限がなくなっていました',
@@ -24,21 +24,6 @@ const REASON_LABELS: Record<FailureReason, string> = {
   unknown: '送れませんでした',
 }
 
-/** 一覧に出す 1 行の見出し */
-function titleOf(entry: QueueEntry): string {
-  const kind =
-    entry.kind === 'create' ? '追加' : entry.kind === 'update' ? '書き換え' : '削除'
-  return `${TABLE_LABELS[entry.table]}の${kind}`
-}
-
-/** 拾い出す用の本文 */
-function bodyOf(entry: QueueEntry): string {
-  if (entry.preview) return entry.preview
-  const source = entry.row ?? entry.patch ?? entry.base ?? {}
-  const value = source.text ?? source.title ?? source.body
-  return typeof value === 'string' ? value : ''
-}
-
 /**
  * 送信箱。
  *
@@ -49,14 +34,21 @@ function bodyOf(entry: QueueEntry): string {
  * 送れないことより、書いた文字が取り出せないことのほうが困る。
  */
 export default function OutboxModal({ onClose }: { onClose: () => void }) {
-  const entries = useOutboxEntries()
+  const { roomId } = useRoomData()
+  const all = useOutboxEntries()
+
+  /*
+   * 送信箱は端末にひとつで、全ボード分が同じ場所に入っている。
+   * ここで絞らないと、別のボードにためたものが混ざって出て、
+   * どれが今のボードの話なのか読めなくなる。
+   */
+  const entries = useMemo(() => all.filter((entry) => entry.roomId === roomId), [all, roomId])
+  const elsewhere = all.length - entries.length
+
   const pending = entries.filter((entry) => entry.state !== 'failed')
   const failed = entries.filter((entry) => entry.state === 'failed')
 
-  const allText = entries
-    .map((entry) => `[${titleOf(entry)}] ${bodyOf(entry)}`)
-    .filter(Boolean)
-    .join('\n')
+  const allText = outboxAsText(entries)
 
   async function copyAll() {
     try {
@@ -86,12 +78,12 @@ export default function OutboxModal({ onClose }: { onClose: () => void }) {
   }
 
   function renderRow(entry: QueueEntry) {
-    const body = bodyOf(entry)
+    const body = outboxBodyOf(entry)
 
     return (
       <li key={entry.key} className="border-b border-slate-100 px-3 py-2 last:border-b-0">
         <div className="flex items-baseline gap-2">
-          <span className="shrink-0 text-xs text-slate-500">{titleOf(entry)}</span>
+          <span className="shrink-0 text-xs text-slate-500">{outboxTitleOf(entry)}</span>
           <span className="min-w-0 flex-1 truncate text-sm text-slate-800">
             {body || '（本文なし）'}
           </span>
@@ -162,6 +154,26 @@ export default function OutboxModal({ onClose }: { onClose: () => void }) {
           </span>
         )}
       </p>
+
+      {/*
+        別のボードのぶんは出さないが、あることは伝える。黙って隠すと、
+        ためたまま忘れられて永久に出ていかない。取り出す道もここで残しておく。
+      */}
+      {elsewhere > 0 && (
+        <p className="mb-4 rounded-xl bg-slate-50 px-3 py-2 text-xs text-slate-600">
+          別のボードにも、まだ送っていないものが {elsewhere} 件あります。
+          そのボードを開くと送られます。
+          <button
+            type="button"
+            onClick={() =>
+              downloadText('送信箱_すべてのボード.txt', outboxAsText(all), 'text/plain')
+            }
+            className="ml-1 underline transition hover:text-slate-900"
+          >
+            すべてテキストで保存
+          </button>
+        </p>
+      )}
 
       {entries.length === 0 ? (
         <p className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-400">

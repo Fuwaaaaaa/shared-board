@@ -1,14 +1,16 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { format, formatDistanceToNowStrict, isToday, parseISO } from 'date-fns'
 import { ja } from 'date-fns/locale'
 import Modal from '../../components/Modal'
 import CommentList from '../../components/CommentList'
+import RecurrenceIntervalSelect from '../../components/RecurrenceIntervalSelect'
 import NotificationBanner from '../../components/NotificationBanner'
 import TagInput, { TagFilterBar } from '../../components/TagInput'
 import { useNow } from '../../hooks/useReminders'
 import { usePushNotifications } from '../../hooks/usePushNotifications'
 import { useOptimisticTable } from '../../hooks/useOptimisticTable'
 import { useNotice } from '../../hooks/useNotice'
+import { useFocusJump } from '../../hooks/useFocusJump'
 import { nextDueDate, normalizeRule, recurrenceLabel, ruleOf } from '../../lib/recurrence'
 import { boardDateTimeIso, localDateOf } from '../../lib/dates'
 import {
@@ -76,11 +78,8 @@ export default function TodoTab({ reminders, focusId, focusNonce, onJump }: Prop
   const [tagFilter, setTagFilter] = useState<string[]>([])
   const [view, setView] = useState<'list' | 'board'>('list')
 
-  useEffect(() => {
-    if (!focusId) return
-    const todo = todos.rows.find((t) => t.id === focusId)
-    if (todo) setEditing(todo)
-  }, [focusId, focusNonce, todos.rows])
+  // 検索・更新タブから飛んできたやることを開く
+  useFocusJump(focusId, focusNonce, todos.rows, (todo) => setEditing(todo))
 
   const commentCounts = useMemo(() => {
     const counts: Record<string, number> = {}
@@ -946,6 +945,7 @@ function TodoModal({
   const [recurrenceWeek, setRecurrenceWeek] = useState<number | null>(
     todo.recurrence_week ?? null,
   )
+  const [recurrenceInterval, setRecurrenceInterval] = useState(todo.recurrence_interval ?? 1)
   const [subtasks, setSubtasks] = useState<Subtask[]>(todo.subtasks ?? [])
   const [tags, setTags] = useState<string[]>(todo.tags ?? [])
   const [subtaskDraft, setSubtaskDraft] = useState('')
@@ -963,6 +963,7 @@ function TodoModal({
       recurrence: date ? recurrence : 'none',
       days: recurrenceDays,
       week: recurrenceWeek,
+      interval: recurrenceInterval,
     })
 
     await onSave({
@@ -975,6 +976,7 @@ function TodoModal({
       recurrence: rule.recurrence,
       recurrence_days: rule.days,
       recurrence_week: rule.week,
+      recurrence_interval: rule.interval ?? 1,
       subtasks,
       tags,
     })
@@ -1150,7 +1152,11 @@ function TodoModal({
               繰り返し
               <select
                 value={recurrence}
-                onChange={(e) => setRecurrence(e.target.value as Recurrence)}
+                onChange={(e) => {
+                  setRecurrence(e.target.value as Recurrence)
+                  // 選べる間隔は周期ごとに違うので、選択肢に無い値が残らないよう戻す
+                  setRecurrenceInterval(1)
+                }}
                 className="rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-800 disabled:bg-slate-50"
               >
                 {Object.entries(RECURRENCE_LABELS).map(([value, label]) => (
@@ -1159,6 +1165,11 @@ function TodoModal({
                   </option>
                 ))}
               </select>
+              <RecurrenceIntervalSelect
+                recurrence={recurrence}
+                interval={recurrenceInterval}
+                onChange={setRecurrenceInterval}
+              />
             </label>
           </div>
         )}
@@ -1179,7 +1190,12 @@ function TodoModal({
             <p className="text-xs text-slate-600">
               完了にすると、
               {recurrenceLabel(
-                normalizeRule({ recurrence, days: recurrenceDays, week: recurrenceWeek }),
+                normalizeRule({
+                  recurrence,
+                  days: recurrenceDays,
+                  week: recurrenceWeek,
+                  interval: recurrenceInterval,
+                }),
               )}
               の次回分が自動で作られます。
             </p>

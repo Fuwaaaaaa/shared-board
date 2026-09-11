@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { buildIcs, clampedRecurrenceDates } from '../ics'
 import { allDayEndIso, allDayStartIso, boardDateTimeIso, toBoardDate } from '../dates'
@@ -8,7 +9,11 @@ import type { CalendarEvent, EventOverride, Todo } from '../types'
  * 止めないと実行した日によって結果が変わる。
  */
 function freezeAt(iso: string) {
-  vi.useFakeTimers()
+  /*
+   * 止めたいのは時計だけ。既定のまま呼ぶと queueMicrotask まで差し替わり、
+   * vitest 側の後片付け（afterEach の await）が進まなくなって止まる。
+   */
+  vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(new Date(iso))
 }
 
@@ -30,6 +35,7 @@ function makeEvent(patch: Partial<CalendarEvent> = {}): CalendarEvent {
     recurrence: 'none',
     recurrence_days: [],
     recurrence_week: null,
+    recurrence_interval: null,
     recurrence_until: null,
     remind_minutes: null,
     tags: [],
@@ -200,6 +206,7 @@ describe('buildIcs', () => {
       recurrence: 'none',
       recurrence_days: [],
       recurrence_week: null,
+      recurrence_interval: null,
       subtasks: [],
       tags: [],
       status: 'todo',
@@ -531,6 +538,48 @@ describe('繰り返しの曜日指定を書き出す', () => {
     expect(rrule(buildIcs('ボード', [event]))).toBe('RRULE:FREQ=WEEKLY')
   })
 
+  it('隔週は INTERVAL=2 が FREQ の次に並ぶ', () => {
+    const event = makeEvent({
+      start_at: boardDateTimeIso('2026-09-01', '19:00'),
+      end_at: null,
+      recurrence: 'weekly',
+      recurrence_days: [2, 4],
+      recurrence_interval: 2,
+    })
+    expect(rrule(buildIcs('ボード', [event]))).toBe(
+      'RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=TU,TH;WKST=SU',
+    )
+  })
+
+  it('3 か月ごとの第 2 火曜', () => {
+    const event = makeEvent({
+      start_at: boardDateTimeIso('2026-09-08', '19:00'),
+      end_at: null,
+      recurrence: 'monthly',
+      recurrence_days: [2],
+      recurrence_week: 2,
+      recurrence_interval: 3,
+    })
+    expect(rrule(buildIcs('ボード', [event]))).toBe('RRULE:FREQ=MONTHLY;INTERVAL=3;BYDAY=2TU')
+  })
+
+  /*
+   * 既定は 1 なので書かない。これまでに書き出した .ics と 1 文字も
+   * 変わらないことが、取り込み先での見え方が変わらないことの証拠になる。
+   */
+  it('間隔が 1 なら INTERVAL を書かない', () => {
+    for (const recurrence_interval of [null, 1, undefined]) {
+      const event = makeEvent({
+        start_at: boardDateTimeIso('2026-09-01', '19:00'),
+        end_at: null,
+        recurrence: 'weekly',
+        recurrence_days: [2, 4],
+        recurrence_interval,
+      })
+      expect(rrule(buildIcs('ボード', [event]))).toBe('RRULE:FREQ=WEEKLY;BYDAY=TU,TH;WKST=SU')
+    }
+  })
+
   it('終了日つきでも BYDAY と UNTIL が並ぶ', () => {
     const event = makeEvent({
       start_at: boardDateTimeIso('2026-09-01', '19:00'),
@@ -587,5 +636,45 @@ describe('繰り返しの曜日指定を書き出す', () => {
     const at = new Date('2026-09-08T01:02:03.000Z')
     const lines = unfold(buildIcs('ボード', [makeEvent()], [], [], at))
     expect(lines.filter((l) => l.startsWith('DTSTAMP:'))).toContain('DTSTAMP:20260908T010203Z')
+  })
+})
+
+describe('board-ics が取ってくる列', () => {
+  /*
+   * 購読 URL（supabase/functions/board-ics）は、send-reminders とは別の
+   * 列一覧をベタ書きで持っている。ここに列を足し忘れても何もエラーにならず、
+   * ruleOf が undefined を見て従来どおりの並びに落ちる——Google や Apple に
+   * 配った予定だけが違う日に出る、という気づきにくい壊れ方をする。
+   *
+   * 書き出しに使う列（IcsEventLike）が 1 つでも欠けていたら落とす。
+   */
+  const ICS_EVENT_LIKE_COLUMNS = [
+    'id',
+    'title',
+    'description',
+    'start_at',
+    'end_at',
+    'all_day',
+    'kind',
+    'recurrence',
+    'recurrence_days',
+    'recurrence_week',
+    'recurrence_interval',
+    'recurrence_until',
+    'tags',
+  ]
+
+  it('IcsEventLike の列がすべて並んでいる', () => {
+    const source = readFileSync(
+      new URL('../../../supabase/functions/board-ics/handler.ts', import.meta.url),
+      'utf8',
+    )
+    const match = /\.from\('events'\)[\s\S]*?\.select\(\s*'([^']+)'/.exec(source)
+    expect(match, 'events の select が見つかりません').not.toBeNull()
+
+    const columns = match![1].split(',').map((c) => c.trim())
+    for (const column of ICS_EVENT_LIKE_COLUMNS) {
+      expect(columns, `${column} が board-ics の select にありません`).toContain(column)
+    }
   })
 })

@@ -63,6 +63,7 @@ function makeEvent(over: Partial<CalendarEvent> = {}): CalendarEvent {
     recurrence: 'none',
     recurrence_days: [],
     recurrence_week: null,
+    recurrence_interval: null,
     recurrence_until: null,
     remind_minutes: 60,
     tags: ['合宿'],

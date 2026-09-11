@@ -142,8 +142,8 @@ export function useOptimisticTable<T extends Row>(
         const context = contextRef.current
         const queueTable = queueTableOf(tableName)
 
+        const queued = new Set<string>()
         if (context && queueTable && decideOnFailure(e) === 'queue') {
-          let queued = 0
           for (const row of rest) {
             const ok = await queueOrFail(e, () => ({
               roomId: context.roomId,
@@ -160,14 +160,22 @@ export function useOptimisticTable<T extends Row>(
               ),
               seq: nextSeq(),
             }))
-            if (ok) queued++
+            if (ok) queued.add(row.id)
           }
           // 全部ためられたなら、書いた人から見れば「保存された」でよい
-          if (queued === rest.length) return true
+          if (queued.size === rest.length) return true
         }
 
-        // 途中まで入った分は残し、入らなかった分だけ戻す
-        for (const row of rows) if (!done.has(row.id)) table.removeLocal(row.id)
+        /*
+         * 途中まで入った分と、送信箱へためられた分は画面に残す。
+         * ためたものまで消すと、送信箱には居るのに盤面から消える
+         * （オーバーレイは signature が同じだと足し直さないので、
+         *  読み込み直すまで戻ってこない）。
+         */
+        for (const row of rows) {
+          if (done.has(row.id) || queued.has(row.id)) continue
+          table.removeLocal(row.id)
+        }
         fail(what, e)
         return false
       } finally {
@@ -379,6 +387,7 @@ export function useOptimisticTable<T extends Row>(
       for (const row of rows) befores.set(row.id, table.patchLocal(row.id, changes))
 
       const done = new Set<string>()
+      const savedRows: T[] = []
       try {
         for (const chunk of chunks(rows, CHUNK)) {
           const ids = chunk.map((row) => row.id)
@@ -389,7 +398,10 @@ export function useOptimisticTable<T extends Row>(
             .select()
           if (error) throw error
           const saved = (data ?? []) as T[]
-          for (const row of saved) done.add(row.id)
+          for (const row of saved) {
+            done.add(row.id)
+            savedRows.push(row)
+          }
           if (saved.length < ids.length) {
             throw new Error(
               saved.length === 0
@@ -400,8 +412,45 @@ export function useOptimisticTable<T extends Row>(
         }
         return true
       } catch (e) {
+        const rest = rows.filter((row) => !done.has(row.id))
+        const context = contextRef.current
+        const queueTable = queueTableOf(tableName)
+
+        /*
+         * まとめての変更も、1 件ずつのときと同じように送信箱へ回す。
+         * 回さないでいると、本文の書き換えはためられるのに、ゴミ箱へ入れるのは
+         * その場で失敗する——同じ画面の中で挙動が割れる。
+         *
+         * 楽観ロックは掛けない。ここへ来るのはゴミ箱の出し入れや一括の色替えで、
+         * 掛けると譲り合いになって動かせなくなる（patch 側と同じ判断）。
+         */
+        const queued = new Set<string>()
+        if (context && queueTable && decideOnFailure(e) === 'queue') {
+          for (const row of rest) {
+            const before = befores.get(row.id)
+            const ok = await queueOrFail(e, () => ({
+              roomId: context.roomId,
+              table: queueTable,
+              rowId: row.id,
+              userId: context.userId,
+              kind: 'update' as const,
+              patch: changes as Record<string, unknown>,
+              base: before ? (pick(before, fields) as Record<string, unknown>) : undefined,
+              label: what,
+              preview: previewOf(
+                (row as unknown as Record<string, unknown>).text ??
+                  (row as unknown as Record<string, unknown>).title ??
+                  (row as unknown as Record<string, unknown>).body,
+              ),
+              seq: nextSeq(),
+            }))
+            if (ok) queued.add(row.id)
+          }
+          if (queued.size === rest.length) return true
+        }
+
         for (const row of rows) {
-          if (done.has(row.id)) continue
+          if (done.has(row.id) || queued.has(row.id)) continue
           const before = befores.get(row.id)
           if (before) table.patchLocal(row.id, pick(before, fields))
         }
@@ -410,6 +459,7 @@ export function useOptimisticTable<T extends Row>(
       } finally {
         for (const release of releases) release()
         // 保留を外してからサーバーの行を取り込む（updated_at などを揃える）
+        for (const row of savedRows) table.applyServerRow(row)
       }
     }
 

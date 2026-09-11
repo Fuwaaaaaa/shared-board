@@ -15,7 +15,7 @@ interface Props {
  * 探す・並べるの中身は src/lib/search.ts（純粋関数・テストあり）。
  */
 export default function SearchModal({ onClose, onJump }: Props) {
-  const { notes, events, todos, comments } = useRoomData()
+  const { notes, events, todos, comments, images, attachments, frames } = useRoomData()
   const [query, setQuery] = useState('')
 
   const hits = useMemo(
@@ -25,8 +25,21 @@ export default function SearchModal({ onClose, onJump }: Props) {
         events: events.rows,
         todos: todos.rows,
         comments: comments.rows,
+        // 中身は探さない。コメントの飛び先が生きているかを見るためだけに渡す
+        images: images.rows,
+        attachments: attachments.rows,
+        frames: frames.rows,
       }),
-    [query, notes.rows, events.rows, todos.rows, comments.rows],
+    [
+      query,
+      notes.rows,
+      events.rows,
+      todos.rows,
+      comments.rows,
+      images.rows,
+      attachments.rows,
+      frames.rows,
+    ],
   )
 
   return (

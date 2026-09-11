@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { boundingBox, insideRect, type Rect } from '../boardGeometry'
+import { anchorPoints, boundingBox, insideRect, type Rect } from '../boardGeometry'
 
 const FRAME: Rect = { x: 100, y: 100, w: 200, h: 200 }
 
@@ -78,5 +78,36 @@ describe('boundingBox', () => {
 
   it('空なら null', () => {
     expect(boundingBox([])).toBeNull()
+  })
+})
+
+describe('anchorPoints', () => {
+  /*
+   * 線は画面（ConnectorsLayer）と PNG の書き出し（boardExport）の両方が引く。
+   * 計算がずれると「画面と書き出しで線の向きが違う」ことになるので、
+   * ここで縁の当たり方そのものを固定しておく。
+   */
+  const box = (x: number, y: number) => ({ x, y, w: 100, h: 100 })
+
+  it('真横に並ぶと、向かい合う辺の中点どうしをつなぐ', () => {
+    // 中心 (50,50) と (250,50)。右辺 x=100 から左辺 x=200 へ
+    expect(anchorPoints(box(0, 0), box(200, 0))).toEqual([100, 50, 200, 50])
+  })
+
+  it('真上下に並ぶと、上下の辺の中点どうしをつなぐ', () => {
+    expect(anchorPoints(box(0, 200), box(0, 0))).toEqual([50, 200, 50, 100])
+  })
+
+  it('斜めなら、縦横で先に当たるほうの辺で止まる', () => {
+    // 中心 (50,50) → (250,150)。dx=200 dy=100 なので横が先に当たる
+    const [x1, y1, x2, y2] = anchorPoints(box(0, 0), box(200, 100))
+    expect(x1).toBe(100)
+    expect(y1).toBe(75)
+    expect(x2).toBe(200)
+    expect(y2).toBe(125)
+  })
+
+  it('重なって中心が同じなら、中心をそのまま返す（0 除算にしない）', () => {
+    expect(anchorPoints(box(0, 0), box(0, 0))).toEqual([50, 50, 50, 50])
   })
 })

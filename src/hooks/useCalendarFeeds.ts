@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
-import { expandFeedEvents, isFeedTruncated, type FeedEvent } from '../lib/icsParse'
+import {
+  expandFeedEvents,
+  hasUnsupportedRecurrence,
+  isFeedTruncated,
+  type FeedEvent,
+} from '../lib/icsParse'
 import type { CalendarFeed } from '../lib/types'
 import { messageOf } from '../lib/errorMessage'
 
@@ -168,9 +173,10 @@ export function useCalendarFeeds(feeds: CalendarFeed[], from: Date, to: Date) {
     return () => window.clearInterval(timer)
   }, [key, refresh])
 
-  const [events, truncatedIds] = useMemo<[FeedEvent[], string[]]>(() => {
+  const [events, truncatedIds, unreadableIds] = useMemo<[FeedEvent[], string[], string[]]>(() => {
     const result: FeedEvent[] = []
     const truncated: string[] = []
+    const unreadable: string[] = []
     for (const feed of enabled) {
       const text = texts[feed.id]
       if (!text) continue
@@ -182,20 +188,26 @@ export function useCalendarFeeds(feeds: CalendarFeed[], from: Date, to: Date) {
       )
       // 展開の上限に達したら、黙って切り捨てずに設定画面で知らせる
       if (isFeedTruncated(expanded)) truncated.push(feed.id)
+      // 繰り返しを読めなかった予定も同じ。1 回だけ出ていることを知らせる
+      if (hasUnsupportedRecurrence(expanded)) unreadable.push(feed.id)
       result.push(...expanded)
     }
-    return [result, truncated]
+    return [result, truncated, unreadable]
   }, [enabled, texts, from, to])
 
   // 取得の失敗と同じ場所（購読先ごとの一行）に出す
   const shownErrors = useMemo(() => {
-    if (truncatedIds.length === 0) return errors
+    if (truncatedIds.length === 0 && unreadableIds.length === 0) return errors
     const next = { ...errors }
     for (const id of truncatedIds) {
       next[id] ??= '予定が多すぎるため、一部だけ表示しています。'
     }
+    for (const id of unreadableIds) {
+      next[id] ??=
+        'まだ読めない形式の繰り返し予定があります。その予定は最初の 1 回だけ出しています。'
+    }
     return next
-  }, [errors, truncatedIds])
+  }, [errors, truncatedIds, unreadableIds])
 
   return { events, errors: shownErrors, loading, refresh }
 }

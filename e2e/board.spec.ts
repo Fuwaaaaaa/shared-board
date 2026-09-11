@@ -17,7 +17,12 @@ test.skip(
 /** 走らせるたびに別のボードにする。前の回の残りを踏まない */
 const stamp = () => `E2E ${Date.now().toString(36)}`
 
-test('名前を入れて、ボードを作って、付箋を置くと、リロードしても残る', async ({ page }) => {
+/*
+ * @smoke … Firefox / WebKit でも走る。
+ * ボードを作って、書いて、保存されて、開き直しても残る —— この一本が通らなければ、
+ * そのブラウザではこのアプリは使えない。
+ */
+test('@smoke 名前を入れて、ボードを作って、付箋を置くと、リロードしても残る', async ({ page }) => {
   await signIn(page, 'ひとり目')
   await createBoard(page, stamp())
 

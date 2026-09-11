@@ -60,14 +60,20 @@ export default function FeedSettingsModal({ errors, loading, onRefresh, onClose 
     onRefresh()
   }
 
+  // どちらも先に画面を進めてから送る。失敗したら戻す（上の追加と同じ形）
   async function toggle(feed: CalendarFeed) {
     feeds.upsertLocal({ ...feed, enabled: !feed.enabled })
-    await supabase.from('calendar_feeds').update({ enabled: !feed.enabled }).eq('id', feed.id)
+    const { error } = await supabase
+      .from('calendar_feeds')
+      .update({ enabled: !feed.enabled })
+      .eq('id', feed.id)
+    if (error) feeds.upsertLocal(feed)
   }
 
   async function remove(feed: CalendarFeed) {
     feeds.removeLocal(feed.id)
-    await supabase.from('calendar_feeds').delete().eq('id', feed.id)
+    const { error } = await supabase.from('calendar_feeds').delete().eq('id', feed.id)
+    if (error) feeds.upsertLocal(feed)
   }
 
   return (

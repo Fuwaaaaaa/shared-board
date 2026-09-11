@@ -103,7 +103,9 @@ export default function NotificationPanel({
                 <div className="flex items-baseline gap-2">
                   <span className="shrink-0">{icon}</span>
                   <span className="text-sm font-medium text-slate-700">
-                    {notification.actor_name || '誰か'}
+                    {notification.kind === 'digest'
+                      ? `ほかに ${notification.folded_count} 件`
+                      : notification.actor_name || '誰か'}
                   </span>
                   <span className="text-xs text-slate-400">
                     {isToday(at)

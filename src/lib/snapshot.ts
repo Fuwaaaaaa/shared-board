@@ -5,7 +5,7 @@
  * 置き換えはサーバー側の restore_snapshot が行い、控えに無い行はゴミ箱へ入れる。
  */
 
-import type { Comment } from './types'
+import type { Comment, CommentTarget } from './types'
 
 /*
  * payload の大きさの上限。
@@ -75,20 +75,43 @@ export function missingBlobPaths(
   return rows.map((row) => row.storage_path).filter((path) => !existing.has(path))
 }
 
+/** いま生きている（ゴミ箱に入っていない）ものの id。コメントの飛び先の確認に使う */
+export interface LiveTargetIds {
+  notes: Set<string>
+  events: Set<string>
+  todos: Set<string>
+  images: Set<string>
+  attachments: Set<string>
+  frames: Set<string>
+}
+
+/**
+ * コメントの対象と、その id を持つ集合の対応。
+ *
+ * Record にしてあるので、CommentTarget を増やしたのにここを足し忘れると
+ * 型で落ちる。以前は if を並べて最後に false を返していたので、
+ * 知らない種類のコメントが「対象は生きている」と黙って扱われていた。
+ */
+const TARGET_SETS: Record<Exclude<CommentTarget, 'board'>, keyof LiveTargetIds> = {
+  note: 'notes',
+  event: 'events',
+  todo: 'todos',
+  image: 'images',
+  file: 'attachments',
+  frame: 'frames',
+}
+
 /**
  * 対象がもう無いコメントか。
  *
- * comments.target_id には FK が無い（付箋・予定・やることのどれを指すかが
+ * comments.target_id には FK が無い（付箋・予定・画像などのどれを指すかが
  * 行によって違うため）。控えたあとに作った付箋へのコメントは、戻すと
  * 宙ぶらりんになる。消すのは中身の破壊なので、表示側でそう見せて受ける。
  */
 export function isOrphanComment(
   comment: Pick<Comment, 'target_type' | 'target_id'>,
-  ids: { notes: Set<string>; events: Set<string>; todos: Set<string> },
+  ids: LiveTargetIds,
 ): boolean {
   if (comment.target_type === 'board' || !comment.target_id) return false
-  if (comment.target_type === 'note') return !ids.notes.has(comment.target_id)
-  if (comment.target_type === 'event') return !ids.events.has(comment.target_id)
-  if (comment.target_type === 'todo') return !ids.todos.has(comment.target_id)
-  return false
+  return !ids[TARGET_SETS[comment.target_type]].has(comment.target_id)
 }

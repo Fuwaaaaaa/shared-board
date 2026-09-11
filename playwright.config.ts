@@ -9,7 +9,7 @@ import { defineConfig, devices } from '@playwright/test'
  *
  * ローカルの Supabase が要る。動いていなければ e2e/global-setup.ts が
  * 全部スキップにするので、npm test の邪魔はしない。
- *   supabase start
+ *   npm run db:start
  * 手順は docs/SETUP.md にある。
  */
 
@@ -37,7 +37,25 @@ export default defineConfig({
     timezoneId: 'Asia/Tokyo',
   },
 
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  /*
+   * Chromium だけが全部を走る。Firefox と WebKit は @smoke を付けたものだけ。
+   *
+   * 全部を 3 つのブラウザで回すと、workers: 1 なので単純に 3 倍かかる。
+   * 一方で、ブラウザによって違うのは主に「読み込めるか」「触れるか」のところ
+   * （React.lazy の分割読み込み、pointer / transform: scale、Intl の書式）で、
+   * 権限や保存の話は 1 つのブラウザで見れば足りる。
+   *
+   * WebKit を落とさないのは、iPhone / iPad の Safari がこれだから。
+   * このボードは会議室で手元の端末から開く使い方を想定しているので、
+   * ここが動かないのに気づけないのは困る。
+   * ただし画面の大きさは Desktop のまま。スマホの幅で崩れないかは
+   * 別の話（レイアウトのテストが要る）なので、ここでは engine の違いだけを見る。
+   */
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    { name: 'firefox', use: { ...devices['Desktop Firefox'] }, grep: /@smoke/ },
+    { name: 'webkit', use: { ...devices['Desktop Safari'] }, grep: /@smoke/ },
+  ],
 
   webServer: {
     command: 'npm run dev',

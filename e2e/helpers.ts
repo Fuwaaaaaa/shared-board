@@ -139,3 +139,9 @@ export async function openBoardSettings(page: Page, title: string) {
   await page.getByRole('button', { name: new RegExp(title) }).click()
   await expect(page.getByRole('heading', { name: 'ボードの設定' })).toBeVisible()
 }
+
+/** 共有の画面を開く */
+export async function openShare(page: Page) {
+  await page.getByRole('button', { name: '🔗 共有' }).click()
+  await expect(page.getByRole('heading', { name: /共有/ })).toBeVisible()
+}

@@ -22,6 +22,7 @@ import { ja } from 'date-fns/locale'
 import Modal from '../../components/Modal'
 import CommentList from '../../components/CommentList'
 import AttendancePanel from '../../components/AttendancePanel'
+import RecurrenceIntervalSelect from '../../components/RecurrenceIntervalSelect'
 import NotificationBanner from '../../components/NotificationBanner'
 import TagInput, { TagFilterBar } from '../../components/TagInput'
 import {
@@ -61,6 +62,7 @@ import {
 import { useCalendarFeeds } from '../../hooks/useCalendarFeeds'
 import { useOptimisticTable } from '../../hooks/useOptimisticTable'
 import { useNotice } from '../../hooks/useNotice'
+import { useFocusJump } from '../../hooks/useFocusJump'
 import FeedSettingsModal from '../../components/FeedSettingsModal'
 import type { FeedEvent } from '../../lib/icsParse'
 import { buildIcs, downloadText } from '../../lib/ics'
@@ -159,11 +161,7 @@ export default function CalendarTab({
   }
 
   // 横断検索や通知からのジャンプ。回の情報がないので、これからの回を 1 つ選んで開く
-  useEffect(() => {
-    if (!focusId) return
-    const event = events.rows.find((e) => e.id === focusId)
-    if (!event) return
-
+  useFocusJump(focusId, focusNonce, events.rows, (event) => {
     const now = new Date()
     const next =
       expandOccurrences([event], now, addDays(now, 365), overrides.rows)[0] ??
@@ -171,8 +169,7 @@ export default function CalendarTab({
 
     setCursor(next ? next.start : parseISO(event.start_at))
     setEditing(next ?? baseOccurrence(event))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusId, focusNonce, events.rows])
+  })
 
   const range = useMemo(() => {
     if (view === 'day') return { start: startOfDay(cursor), end: addDays(startOfDay(cursor), 1) }
@@ -270,15 +267,25 @@ export default function CalendarTab({
   async function saveAttendance(occurrence: EventOccurrence, answer: AttendanceAnswer) {
     const existing = myAttendance(attendance.rows, occurrence, userId)
 
+    /*
+     * 取り消しも付け替えも、失敗したら画面を戻す。
+     * 戻さないと、変わったように見えたまま実際は元のままで、
+     * 次に開き直したときに黙って戻っている。下の insert と同じ形。
+     */
     if (existing) {
       // 同じ答えをもう一度押したら取り消す
       if (existing.answer === answer) {
         attendance.removeLocal(existing.id)
-        await supabase.from('event_attendance').delete().eq('id', existing.id)
+        const { error } = await supabase.from('event_attendance').delete().eq('id', existing.id)
+        if (error) attendance.upsertLocal(existing)
         return
       }
       attendance.upsertLocal({ ...existing, answer })
-      await supabase.from('event_attendance').update({ answer }).eq('id', existing.id)
+      const { error } = await supabase
+        .from('event_attendance')
+        .update({ answer })
+        .eq('id', existing.id)
+      if (error) attendance.upsertLocal(existing)
       return
     }
 
@@ -379,6 +386,7 @@ export default function CalendarTab({
       recurrence: draft.recurrence,
       days: draft.recurrenceDays,
       week: draft.recurrenceWeek,
+      interval: draft.recurrenceInterval,
     })
 
     /*
@@ -403,6 +411,7 @@ export default function CalendarTab({
       recurrence: rule.recurrence,
       recurrence_days: rule.days,
       recurrence_week: rule.week,
+      recurrence_interval: rule.interval ?? 1,
       recurrence_until: rule.recurrence === 'none' ? null : draft.recurrenceUntil || null,
       remind_minutes: draft.remind,
       tags: draft.tags,
@@ -427,6 +436,7 @@ export default function CalendarTab({
           recurrenceUntil: patch.recurrence_until ?? '',
           days: rule.days,
           week: rule.week,
+          interval: rule.interval ?? 1,
         },
         existing,
       )
@@ -824,13 +834,26 @@ export default function CalendarTab({
 /** 外部カレンダーの予定は編集できないので、点線の枠で区別して出す */
 function FeedChip({ event }: { event: FeedEvent }) {
   const palette = EVENT_COLORS[event.color] ?? EVENT_COLORS.slate
+
+  /*
+   * 繰り返しを読めなかった予定には ⚠ を付ける。
+   *
+   * 出しているのは最初の 1 回だけで、2 回目以降は出していない。
+   * 印が無いと「そういう単発の予定」に見えてしまい、
+   * 「来るはずの回が来ていない」ことに誰も気づけない。
+   */
+  const title = event.recurrenceUnsupported
+    ? `${event.feedName}: ${event.title}（繰り返しの形式に未対応です。最初の 1 回だけ出しています）`
+    : `${event.feedName}: ${event.title}`
+
   return (
     <div
-      title={`${event.feedName}: ${event.title}`}
+      title={title}
       className="truncate rounded border border-dashed px-1.5 py-0.5 text-[11px] leading-tight"
       style={{ borderColor: palette.dot, color: palette.text }}
     >
-      🌐 {!event.allDay && <span className="font-medium">{format(event.start, 'HH:mm')} </span>}
+      {event.recurrenceUnsupported ? '⚠' : '🌐'}{' '}
+      {!event.allDay && <span className="font-medium">{format(event.start, 'HH:mm')} </span>}
       {event.title}
     </div>
   )
@@ -1510,6 +1533,8 @@ interface EventDraft {
   recurrenceDays: number[]
   /** 毎月の第 n 週（1〜5、-1 は最終）。null なら開始日と同じ日付 */
   recurrenceWeek: number | null
+  /** 「n 回ごと」。1 なら毎回 */
+  recurrenceInterval: number
   recurrenceUntil: string
   remind: number | null
   tags: string[]
@@ -1557,6 +1582,7 @@ function buildDraft(
     recurrence: occurrence?.event.recurrence ?? 'none',
     recurrenceDays: occurrence?.event.recurrence_days ?? [],
     recurrenceWeek: occurrence?.event.recurrence_week ?? null,
+    recurrenceInterval: occurrence?.event.recurrence_interval ?? 1,
     recurrenceUntil: occurrence?.event.recurrence_until ?? '',
     remind: source ? source.remind_minutes : null,
     tags: source?.tags ?? [],
@@ -1788,6 +1814,12 @@ function EventModal({
       if (patch.date && next.recurrenceWeek !== null) {
         next.recurrenceDays = [localDateOf(next.date).getDay()]
       }
+
+      // 選べる間隔は周期ごとに違う（毎週なら 4 週まで、毎月なら 6 か月まで）。
+      // 戻さないと、毎週の「4」から毎年に変えたときに選択肢に無い値が残る
+      if (patch.recurrence && patch.recurrence !== current.recurrence) {
+        next.recurrenceInterval = 1
+      }
       return next
     })
   }
@@ -1797,6 +1829,7 @@ function EventModal({
     recurrence: draft.recurrence,
     days: draft.recurrenceDays,
     week: draft.recurrenceWeek,
+    interval: draft.recurrenceInterval,
   })
 
   /**
@@ -2076,6 +2109,11 @@ function EventModal({
             </select>
             {draft.recurrence !== 'none' && (
               <>
+                <RecurrenceIntervalSelect
+                  recurrence={draft.recurrence}
+                  interval={draft.recurrenceInterval}
+                  onChange={(interval) => update({ recurrenceInterval: interval })}
+                />
                 <span className="text-sm text-slate-500">終了</span>
                 <input
                   type="date"

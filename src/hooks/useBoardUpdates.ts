@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { useRoomData } from '../lib/roomData'
 import { isOrphanComment } from '../lib/snapshot'
 import type { TabKey } from '../components/RoomHeader'
-import type { Activity } from '../lib/types'
+import type { Activity, CommentTarget } from '../lib/types'
 
 export type UpdateCategory = 'board' | 'calendar' | 'todo' | 'comment' | 'member'
 
@@ -144,10 +144,23 @@ function accessLine(
   }
 }
 
-const COMMENT_TARGETS = {
-  note: { label: '付箋', tab: 'board' as TabKey },
-  event: { label: '予定', tab: 'calendar' as TabKey },
-  todo: { label: 'やること', tab: 'todo' as TabKey },
+/*
+ * 更新タブでの呼び名。上の TARGET_LABELS に揃えて「やること」と呼ぶ。
+ *
+ * types.ts の COMMENT_TARGET_LABELS とは顔ぶれが同じだが、あちらは検索用で
+ * タブの名前（「リマインド」）を使う。揃え方が画面ごとに違うので、
+ * ひとつの表には寄せていない。tab はここにしか無い。
+ */
+const COMMENT_TARGETS: Record<
+  Exclude<CommentTarget, 'board'>,
+  { label: string; tab: TabKey }
+> = {
+  note: { label: '付箋', tab: 'board' },
+  event: { label: '予定', tab: 'calendar' },
+  todo: { label: 'やること', tab: 'todo' },
+  image: { label: '画像', tab: 'board' },
+  file: { label: 'ファイル', tab: 'board' },
+  frame: { label: 'フレーム', tab: 'board' },
 }
 
 /**
@@ -158,8 +171,19 @@ const COMMENT_TARGETS = {
  * 表示の直前でここに集める。追加のフェッチは要らない。
  */
 export function useBoardUpdates(): BoardUpdate[] {
-  const { activities, comments, polls, pollOptions, members, notes, events, todos } =
-    useRoomData()
+  const {
+    activities,
+    comments,
+    polls,
+    pollOptions,
+    members,
+    notes,
+    events,
+    todos,
+    images,
+    attachments,
+    frames,
+  } = useRoomData()
 
   return useMemo(() => {
     const list: BoardUpdate[] = []
@@ -198,6 +222,9 @@ export function useBoardUpdates(): BoardUpdate[] {
       notes: new Set(notes.rows.map((n) => n.id)),
       events: new Set(events.rows.map((e) => e.id)),
       todos: new Set(todos.rows.map((t) => t.id)),
+      images: new Set(images.rows.map((i) => i.id)),
+      attachments: new Set(attachments.rows.map((a) => a.id)),
+      frames: new Set(frames.rows.map((f) => f.id)),
     }
 
     for (const comment of comments.rows) {
@@ -287,5 +314,8 @@ export function useBoardUpdates(): BoardUpdate[] {
     notes.rows,
     events.rows,
     todos.rows,
+    images.rows,
+    attachments.rows,
+    frames.rows,
   ])
 }

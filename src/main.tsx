@@ -2,6 +2,7 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import App from './App'
+import ErrorBoundary from './components/ErrorBoundary'
 import { IdentityProvider } from './lib/identity'
 import { ThemeProvider } from './lib/theme'
 import { installErrorReporting } from './lib/errorReport'
@@ -21,14 +22,23 @@ installErrorReporting()
  */
 void loadOutbox()
 
+/*
+ * いちばん外側の受け皿。
+ *
+ * Provider ごと落ちたときのためで、ふだん働くのは App の中側（画面ごと）の
+ * ほう。こちらまで来ると、ヘッダーも導線も残らない代わりに、
+ * 送信箱の中身だけは取り出せる。
+ */
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <BrowserRouter>
-      <ThemeProvider>
-        <IdentityProvider>
-          <App />
-        </IdentityProvider>
-      </ThemeProvider>
-    </BrowserRouter>
+    <ErrorBoundary where="root">
+      <BrowserRouter>
+        <ThemeProvider>
+          <IdentityProvider>
+            <App />
+          </IdentityProvider>
+        </ThemeProvider>
+      </BrowserRouter>
+    </ErrorBoundary>
   </React.StrictMode>,
 )

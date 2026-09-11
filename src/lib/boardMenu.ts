@@ -13,7 +13,14 @@
 import { joinSections, type CtxTarget, type MenuNode } from './menuTypes'
 import { shortcutDisplay } from './shortcuts'
 import { insideRect } from './boardGeometry'
-import type { Attachment, BoardImage, Connector, Frame, Note } from './types'
+import type {
+  Attachment,
+  BoardImage,
+  CommentSubject,
+  Connector,
+  Frame,
+  Note,
+} from './types'
 
 export type AlignKind = 'left' | 'top' | 'row' | 'column' | 'grid'
 
@@ -67,7 +74,7 @@ export interface BoardMenuActions {
   wrapInFrame: (rows: Note[]) => void
   copyStyle: (note: Note) => void
   pasteStyle: (rows: Note[]) => void
-  openComments: (note: Note) => void
+  openComments: (subject: CommentSubject) => void
   convert: (rows: Note[], target: 'todo' | 'event') => void
   align: (kind: AlignKind) => void
   changeZ: (rows: Note[], where: 'front' | 'back') => void
@@ -292,7 +299,7 @@ function noteMenu(s: BoardMenuState, a: BoardMenuActions, id: string): MenuNode[
         label: 'コメント・タグ',
         disabled: many,
         disabledReason: onlyOne,
-        run: () => a.openComments(note),
+        run: () => a.openComments({ kind: 'note', note }),
       },
       s.canEdit && {
         id: 'to-todo',
@@ -350,6 +357,14 @@ function imageMenu(s: BoardMenuState, a: BoardMenuActions, id: string): MenuNode
   // 「最前面へ」を押しても付箋の下から出てこないため（壊れて見える）
   return joinSections([
     [
+      {
+        id: 'comments',
+        icon: '💬',
+        label: 'コメント',
+        run: () => a.openComments({ kind: 'image', image }),
+      },
+    ],
+    [
       s.canEdit && {
         id: 'delete-image',
         icon: '🗑',
@@ -373,6 +388,12 @@ function frameMenu(s: BoardMenuState, a: BoardMenuActions, id: string): MenuNode
         disabled: inside.length === 0,
         disabledReason: 'フレームの中に付箋がありません',
         run: () => a.selectNotes(inside),
+      },
+      {
+        id: 'comments',
+        icon: '💬',
+        label: 'コメント',
+        run: () => a.openComments({ kind: 'frame', frame }),
       },
     ],
     [
@@ -422,6 +443,12 @@ function attachmentMenu(s: BoardMenuState, a: BoardMenuActions, id: string): Men
         disabled: !url,
         disabledReason: 'まだ読み込めていません',
         run: () => a.openUrl(url),
+      },
+      {
+        id: 'comments',
+        icon: '💬',
+        label: 'コメント',
+        run: () => a.openComments({ kind: 'file', attachment }),
       },
     ],
     [

@@ -56,9 +56,22 @@ export interface QueueEntry {
   preview: string
   /** 同じ表の中の順番 */
   seq: number
+  /**
+   * ためた回数。同じ行へ書き足すたびに 1 つ増える。
+   *
+   * 送っているあいだに書き足されたかどうかを、これで見分ける
+   * （送るのは flush が始めた時点の写しなので、往復中の書き足しは入っていない）。
+   */
+  rev: number
   enqueuedAt: string
   state: QueueState
+  /** サーバーに断られた回数。MAX_ATTEMPTS で打ち切る */
   attempts: number
+  /**
+   * 通信そのものが届かなかった回数。様子見の間隔を伸ばすためだけに数える。
+   * attempts と分けているのは、圏外にいるだけで打ち切られないようにするため。
+   */
+  transportAttempts?: number
   nextAttemptAt?: number
   reason?: FailureReason
   /** サーバーが返した文言。そのまま見せる */
@@ -108,6 +121,7 @@ export function collapse(existing: QueueEntry | undefined, op: QueueOp): QueueEn
     label: op.label,
     preview: op.preview,
     seq: existing?.seq ?? op.seq,
+    rev: (existing?.rev ?? 0) + 1,
     enqueuedAt: existing?.enqueuedAt ?? new Date().toISOString(),
     state: 'pending',
     attempts: 0,
@@ -246,9 +260,89 @@ export function decideOnFailure(e: unknown): 'queue' | 'fail' {
   return 'fail'
 }
 
+/**
+ * 送れたあと、その 1 件をどうするか。
+ *
+ * 送るのは flush が始めた時点の写しなので、往復のあいだに同じ行へ書き足された
+ * ぶんは、その写しに入っていない。key だけを見て消すと、書き足しごと消える
+ * （書いたのに消えた、がいちばん困る形で起きる）。ためた回数（rev）が
+ * 動いていたら、消さずに送り直す側へ回す。
+ *
+ * ただし「作成」のまま送り直すと、こんどは主キーの重複になり
+ * 「前回の送信が実は通っていた」として捨てられ、やはり書き足しが消える。
+ * 行はもうサーバーにあるので、更新に変えて送る。
+ *
+ * id と updated_at を落とすのは、前者が宛先そのもので、後者はサーバーが
+ * 進めるものだから。room_id や author_id は残してよい——凍結のトリガーは
+ * 「変わったとき」だけ怒るので、同じ値なら通る。
+ */
+export function afterSend(entry: QueueEntry, sentRev: number): 'drop' | Partial<QueueEntry> {
+  if (entry.rev === sentRev) return 'drop'
+
+  const fresh = {
+    state: 'pending' as const,
+    attempts: 0,
+    transportAttempts: 0,
+    nextAttemptAt: undefined,
+  }
+
+  if (entry.kind !== 'create') return fresh
+
+  const row = { ...(entry.row ?? {}) }
+  delete row.id
+  delete row.updated_at
+
+  return {
+    ...fresh,
+    kind: 'update',
+    row: undefined,
+    patch: row,
+    // 送り直しは「こちらの内容で上書きする」なので、ロックは掛けない
+    expectUpdatedAt: undefined,
+  }
+}
+
+/**
+ * 送れなかったときの、次の状態。
+ *
+ * 肝は「届かなかった」と「届いたうえで断られた」を分けるところ。
+ * 送る側は navigator.onLine を見ていない（嘘をつくフラグなので、下の
+ * decideOnFailure のコメントどおり意図的に見ない）ので、届かなかったぶんまで
+ * attempts に数えると、ただ圏外にいるだけで打ち切りに達する。
+ * 1+2+5+15+60+300+300 秒 ≒ 11 分で送信箱が全件「送れませんでした」になり、
+ * 「つながったら送る」という約束が果たせなくなる。
+ *
+ * 様子見の間隔は伸ばしたいので、そちらは transportAttempts で別に数える。
+ */
+export function nextRetryState(
+  entry: Pick<QueueEntry, 'attempts' | 'transportAttempts'>,
+  transport: boolean,
+  now: number,
+): Partial<QueueEntry> {
+  if (transport) {
+    const transportAttempts = (entry.transportAttempts ?? 0) + 1
+    return {
+      state: 'pending',
+      transportAttempts,
+      nextAttemptAt: now + nextBackoff(transportAttempts - 1),
+    }
+  }
+
+  const attempts = entry.attempts + 1
+  if (attempts >= MAX_ATTEMPTS) {
+    return {
+      state: 'failed',
+      attempts,
+      reason: 'unknown',
+      errorText: '何度か試しましたが送れませんでした。',
+    }
+  }
+  return { state: 'pending', attempts, nextAttemptAt: now + nextBackoff(entry.attempts) }
+}
+
 export type Classified =
   | { outcome: 'success' }
-  | { outcome: 'retry' }
+  | { outcome: 'retry'; transport?: boolean }
   | { outcome: 'dead'; reason: FailureReason; errorText: string }
 
 /**
@@ -268,7 +362,8 @@ export function classifyError(e: unknown): Classified {
   const message = error.message ?? ''
   const details = error.details ?? ''
 
-  if (isTransportError(e)) return { outcome: 'retry' }
+  // 届かなかったのか、届いたうえで断られたのかは、数え方が変わるので呼び出し側へ伝える
+  if (isTransportError(e)) return { outcome: 'retry', transport: true }
 
   const status = error.status
   if (status !== undefined && (status >= 500 || status === 429)) return { outcome: 'retry' }

@@ -383,7 +383,8 @@ create table if not exists public.snapshots (
 );
 
 -- コメント / チャット
--- target_type='board' はボード全体のチャット、それ以外は付箋・予定・TODO に紐づく
+-- target_type='board' はボード全体のチャット、それ以外は
+-- 付箋・予定・TODO・画像・ファイル・フレームに紐づく
 create table if not exists public.comments (
   id          uuid primary key default gen_random_uuid(),
   room_id     uuid not null references public.rooms(id) on delete cascade,
@@ -404,6 +405,17 @@ create index if not exists todos_room_idx   on public.todos (room_id, due_at);
 create index if not exists members_room_idx on public.room_members (room_id);
 create index if not exists members_user_idx on public.room_members (user_id);
 create index if not exists images_room_idx   on public.images (room_id);
+-- コメントを付けられる先を広げる。
+--
+-- create table は「あれば作らない」ので、すでに動いている DB では上の CHECK は
+-- 古いままになる。曜日の決まりと同じく、drop してから付け直す。
+-- target_id に外部キーは無い（行によって指す表が違うため）。対象が消えたあとの
+-- 扱いは、画面側の search.ts と snapshot.ts が見ている。
+alter table public.comments drop constraint if exists comments_target_type_check;
+alter table public.comments add constraint comments_target_type_check check (
+  target_type in ('board', 'note', 'event', 'todo', 'image', 'file', 'frame')
+);
+
 create index if not exists comments_room_idx on public.comments (room_id, target_type, target_id, created_at);
 create index if not exists votes_room_idx    on public.note_votes (room_id, note_id);
 create index if not exists activities_idx    on public.activities (room_id, created_at desc);
@@ -485,6 +497,18 @@ alter table public.events add column if not exists recurrence_week smallint;
 alter table public.todos  add column if not exists recurrence_days smallint[] not null default '{}';
 alter table public.todos  add column if not exists recurrence_week smallint;
 
+-- 「n 回ごと」（隔週、3 か月ごと）。
+--
+-- null は 1（毎回）と同じ意味で、この列より前からある行は展開結果が 1 日も変わらない。
+-- not null default 1 にしないのは、画面が null を書いた瞬間に 23502 になる経路を
+-- 作らないため（recurrence_week と同じ形にそろえてある）。
+--
+-- そのぶん DB には「古い行の null」と「画面から保存し直した行の 1」が混ざる。
+-- 比べるところでは必ず coalesce(..., 1) を通すこと。素の値で比べると、
+-- 開いて保存しただけの予定が「並びが動いた」と判定され、出欠が消える。
+alter table public.events add column if not exists recurrence_interval smallint;
+alter table public.todos  add column if not exists recurrence_interval smallint;
+
 alter table public.events drop constraint if exists events_recurrence_days_check;
 alter table public.events add constraint events_recurrence_days_check check (
   cardinality(recurrence_days) <= 7
@@ -511,6 +535,25 @@ alter table public.todos drop constraint if exists todos_recurrence_week_check;
 alter table public.todos add constraint todos_recurrence_week_check check (
   recurrence_week is null
   or (recurrence = 'monthly' and recurrence_week between -1 and 5 and recurrence_week <> 0)
+) not valid;
+
+-- 上限 99 は _shared/recurrence.ts の MAX_INTERVAL と同じ数。曜日の決まりと同じく
+-- 2 か所に写しがあるので、変えるときは両方そろえること。
+--
+-- 末尾の「or recurrence_interval = 1」が要る。繰り返しを「繰り返さない」に戻すと
+-- normalizeRule が 1 を返すので、recurrence <> 'none' だけで書くとそれを弾いてしまう。
+alter table public.events drop constraint if exists events_recurrence_interval_check;
+alter table public.events add constraint events_recurrence_interval_check check (
+  recurrence_interval is null
+  or (recurrence_interval between 1 and 99
+      and (recurrence <> 'none' or recurrence_interval = 1))
+) not valid;
+
+alter table public.todos drop constraint if exists todos_recurrence_interval_check;
+alter table public.todos add constraint todos_recurrence_interval_check check (
+  recurrence_interval is null
+  or (recurrence_interval between 1 and 99
+      and (recurrence <> 'none' or recurrence_interval = 1))
 ) not valid;
 
 -- 参加者ごとの編集権限。false なら「閲覧・コメント・投票だけ」できる。
@@ -570,6 +613,13 @@ alter table public.events add column if not exists source_synced_at timestamptz;
 alter table public.events
   add column if not exists kind text not null default 'event'
   check (kind in ('event', 'deadline'));
+
+-- 通知の「まとめ」。
+--
+-- 流量の上限を超えたぶんを、黙って捨てるのをやめて 1 行にまとめる（tg_throttle_notifications）。
+-- その 1 行が何件ぶんかを持つのがこの列。0 は「まとめではない、ふつうの通知」。
+alter table public.notifications
+  add column if not exists folded_count integer not null default 0;
 
 -- 共有リンクの安全機能。
 --
@@ -664,10 +714,13 @@ create index if not exists connectors_deleted_idx  on public.connectors  (room_i
 create index if not exists attachments_deleted_idx on public.attachments (room_id, deleted_at);
 
 -- 通知の種類。増やすときはここと src/lib/types.ts の NOTIFICATION_KINDS を合わせる。
+--
+-- digest だけは人が作るものではなく、流量の上限を超えたときに
+-- tg_throttle_notifications が作る「ほかに N 件」の行。
 alter table public.notifications drop constraint if exists notifications_kind_check;
 alter table public.notifications
   add constraint notifications_kind_check
-  check (kind in ('mention', 'assigned', 'converted', 'join_request', 'join_decided'));
+  check (kind in ('mention', 'assigned', 'converted', 'join_request', 'join_decided', 'digest'));
 
 -- 通知のジャンプ先タブ。src/components/RoomHeader.tsx の TabKey と同じ集合。
 -- ここが自由だと、任意の文字列がプッシュ通知のリンクとして端末に配られる。
@@ -1631,7 +1684,7 @@ create trigger event_attendance_freeze_target
 -- ---- 繰り返しの並びが動いたら、回に紐づくものを落とす --------------------
 --
 -- 「この回だけ」の変更と出欠は occurrence_date（元の回の JST 開始日）で回を指す。
--- 開始日・繰り返し方・繰り返しの終了日・第 n 週が変わったり、曜日が減ったりすると
+-- 開始日・繰り返し方・繰り返しの終了日・第 n 週・間隔が変わったり、曜日が減ったりすると
 -- 回の並びごと動くので、その値はもう別の回を指してしまう。残すより落とすほうが安全
 -- （消えた日付に付いた ○ が、別の日の回として見えてしまう）。
 --
@@ -1653,11 +1706,16 @@ begin
     return null;
   end if;
 
+  -- 間隔は coalesce で 1 に読み替えてから比べる。この列より前からある行は null で、
+  -- 画面から保存し直すと 1 が入る。素の値で比べると、開いて保存しただけの予定が
+  -- 「動いた」と判定され、出欠と「この回だけ」が消える。
   if ((NEW.start_at at time zone 'Asia/Tokyo')::date, NEW.recurrence,
-      NEW.recurrence_until, NEW.recurrence_week)
+      NEW.recurrence_until, NEW.recurrence_week,
+      coalesce(NEW.recurrence_interval, 1))
      is distinct from
      ((OLD.start_at at time zone 'Asia/Tokyo')::date, OLD.recurrence,
-      OLD.recurrence_until, OLD.recurrence_week)
+      OLD.recurrence_until, OLD.recurrence_week,
+      coalesce(OLD.recurrence_interval, 1))
      or not (OLD.recurrence_days <@ NEW.recurrence_days)
   then
     delete from public.event_attendance a where a.event_id = NEW.id;
@@ -1891,6 +1949,108 @@ drop trigger if exists client_errors_throttle on public.client_errors;
 create trigger client_errors_throttle
   before insert on public.client_errors
   for each row execute function public.tg_throttle_client_errors();
+
+
+-- ---- サイト内通知の流量 -----------------------------------------------------
+--
+-- 入れる条件が can_edit_room ではなく can_access_room なので、閲覧だけの人でも
+-- 参加者あてに書ける。しかも send-reminders が未読を拾って Web Push に変えるため、
+-- 止めないと端末の通知を好きなだけ鳴らせてしまう。だから上限は要る。
+--
+-- 数えるのは差出人ではなく宛先。notifications は差出人の id を持っていないうえ、
+-- 困るのは受け取る側なので、そちらで止めるほうが確実。
+--
+-- 以前は「宛先ごとに毎分 20 件、超えた分は黙って捨てる」だった。2 つ問題があった。
+--
+--   1. 種類をまとめて数えていた。付箋 30 枚をまとめて やること に変換すると
+--      converted が 20 件で枠を食い切り、同じ分に届いた @メンションが黙って消える。
+--      重要さの違う通知が、先着順で押し出し合っていた。
+--   2. 捨てたことが誰にも残らなかった。受け取る側からは、そもそも送られなかったのか
+--      捨てられたのかが区別できない。
+--
+-- そこで枠を 2 つに分け、溢れたぶんは捨てずに「ほかに N 件」の 1 行へまとめる。
+--
+--   high（mention / assigned / join_request / join_decided）… 毎分 20 件
+--   low （converted）                                        … 毎分 10 件
+--
+-- low がいくら来ても high の枠は減らない。合計でも毎分 30 件 + まとめ 1 行が上限なので、
+-- Web Push を鳴らし続けられないことは変わらない。
+--
+-- まとめ行は 1 分に 1 つだけ作り、そのあとは folded_count を足していく（行は増えない）。
+-- created_at を今に寄せ直しているのは、まとめが通知の一覧で下に埋もれないようにするため。
+-- body / kind は notifications_freeze_body で凍っているので触らない。件数は列で持つ。
+create or replace function public.tg_throttle_notifications()
+returns trigger language plpgsql security definer
+set search_path = '' as $$
+declare
+  v_class  text;
+  v_limit  integer;
+  v_used   bigint;
+  v_digest uuid;
+begin
+  -- まとめ行そのものは数えないし、止めない（下でこの関数が作る）
+  if NEW.kind = 'digest' then
+    return NEW;
+  end if;
+
+  if NEW.kind = 'converted' then
+    v_class := 'low';
+    v_limit := 10;
+  else
+    v_class := 'high';
+    v_limit := 20;
+  end if;
+
+  select count(*) into v_used
+    from public.notifications n
+   where n.room_id = NEW.room_id
+     and n.user_id = NEW.user_id
+     and n.created_at > now() - interval '1 minute'
+     and n.kind <> 'digest'
+     and (case when n.kind = 'converted' then 'low' else 'high' end) = v_class;
+
+  if v_used < v_limit then
+    return NEW;
+  end if;
+
+  -- 溢れた。直近 1 分のまとめ行があれば、そこに足す
+  select n.id into v_digest
+    from public.notifications n
+   where n.room_id = NEW.room_id
+     and n.user_id = NEW.user_id
+     and n.kind = 'digest'
+     and n.created_at > now() - interval '1 minute'
+   order by n.created_at desc
+   limit 1;
+
+  if v_digest is null then
+    -- まだ無いので、この行自体をまとめ行にして入れる。
+    -- link_id は元の 1 件を指したままだと誤解を招くので外し、タブだけ残す
+    NEW.kind         := 'digest';
+    NEW.body         := '通知が続いたため、まとめています';
+    NEW.link_id      := null;
+    NEW.folded_count := 1;
+    NEW.read         := false;
+    -- 差出人は名乗らせない。溢れた 1 件目を送った人の名前が残ると、
+    -- そのあと別の人ぶんを足していったときに嘘になる
+    NEW.actor_name   := '';
+    return NEW;
+  end if;
+
+  update public.notifications
+     set folded_count = folded_count + 1,
+         read         = false,
+         created_at   = now()
+   where id = v_digest;
+
+  return null;
+end;
+$$;
+
+drop trigger if exists notifications_throttle on public.notifications;
+create trigger notifications_throttle
+  before insert on public.notifications
+  for each row execute function public.tg_throttle_notifications();
 
 
 -- =============================================================================

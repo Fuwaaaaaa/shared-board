@@ -103,7 +103,12 @@ VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 
 ## 5. ローカルで動かす
 
+**Node.js 22 以上**が要ります（`.nvmrc` に書いてあります。CI もこれを見ます）。
+Node 20 は 2026-04-30 で保守が終わっており、`@supabase/supabase-js` 自身も
+`>=22` を求めます。`nvm` を使っているなら、このフォルダで `nvm use` で切り替わります。
+
 ```bash
+node -v          # v22 以上であることを確認
 npm install
 npm run dev
 ```
@@ -248,12 +253,15 @@ VITE_VAPID_PUBLIC_KEY=BN...（Public Key）
 
 **秘密鍵**はサーバー側だけで使います。ブラウザには絶対に渡しません。
 
-```bash
-npm i -g supabase          # 未導入なら
-supabase login
-supabase link --project-ref <PROJECT_REF>
+Supabase CLI は **このリポジトリの devDependency** です。`npm install` を済ませてあれば、
+`npx supabase ...` で package.json に固定した版（2.117.0）が動きます。
+グローバルに入れたものを使うと、CI と違う版で動いていても誰も気づけません。
 
-supabase secrets set \
+```bash
+npx supabase login
+npx supabase link --project-ref <PROJECT_REF>
+
+npx supabase secrets set \
   VAPID_PUBLIC_KEY=BN...          \
   VAPID_PRIVATE_KEY=...           \
   VAPID_SUBJECT=mailto:you@example.com \
@@ -263,8 +271,8 @@ supabase secrets set \
 ### 3. 送信用の関数をデプロイする
 
 ```bash
-supabase functions deploy send-reminders
-supabase functions deploy purge-storage
+npx supabase functions deploy send-reminders
+npx supabase functions deploy purge-storage
 ```
 
 > **`--no-verify-jwt` は付けません。** JWT を検証するかどうかは
@@ -292,7 +300,7 @@ SQL Editor で実行します。1 分おきに関数が呼ばれるようにな�
 # SQL Editor で値を確認
 #   select decrypted_secret from vault.decrypted_secrets where name = 'cron_shared_secret';
 
-supabase secrets set CRON_SHARED_SECRET=<上で表示された値>
+npx supabase secrets set CRON_SHARED_SECRET=<上で表示された値>
 ```
 
 同時に「送信済み記録を 14 日で掃除」「変更履歴を 90 日で掃除」も設定されます。
@@ -370,11 +378,23 @@ Vercel の環境変数にも同じものを追加して再デプロイします�
 ブラウザから直接は読めません。取得は Edge Function が中継します。
 
 ```bash
-supabase functions deploy fetch-ics
+npx supabase functions deploy fetch-ics
 ```
 
 > **`--no-verify-jwt` は付けません。** この中継はログイン済みの人だけに開きます。
 > 検証するかどうかは `supabase/config.toml` に書いてあります。
+
+公開した画面から使うときは、**`SITE_URL` を設定してください**。この中継が
+CORS で許すオリジンになります。
+
+```bash
+npx supabase secrets set SITE_URL=https://your-app.vercel.app
+```
+
+未設定のときは `http://localhost:5173`（手元の開発サーバー）だけを許します。
+以前はどこからでも許していましたが、設定し忘れたまま公開しても動いてしまい、
+そのことに気づけませんでした。公開した画面で取り込みが CORS で弾かれたら、
+まずここを疑ってください。
 
 この中継には、外向きの踏み台にされないための守りが入っています。
 
@@ -487,39 +507,129 @@ npm test        # 純粋関数（node）とコンポーネント（jsdom）
 npm run test:e2e  # ブラウザで実際に触る（Playwright）
 ```
 
-`npm test` は `vitest.workspace.ts` が拡張子で環境を分けます。
+`npm test` は `vite.config.ts` の `test.projects` が拡張子で環境を分けます。
 `*.test.ts` は node、`*.test.tsx` は jsdom です。何も要らずに走ります。
+（もとは `vitest.workspace.ts` に置いていましたが、その形は Vitest 3 で非推奨・
+4 で廃止されたので移しました。）
 
 `npm run test:e2e` だけはローカルの Supabase が要ります。
 
 ```bash
-supabase start                     # 初回はブラウザの取得も要る
-npx playwright install chromium
+npm run db:start                            # 初回はブラウザの取得も要る
+npx playwright install chromium firefox webkit
 npm run test:e2e
+```
+
+Chromium は全部を走らせ、Firefox と WebKit は `@smoke` を付けたものだけを走らせます
+（`playwright.config.ts` の `projects`）。Chromium しか入れていないときは
+`npm run test:e2e -- --project=chromium` で足ります。
+
+Edge Function（Deno）のテストは何も要りません。Supabase も立てずに走ります。
+
+```bash
+npm run test:functions
 ```
 
 つながらないときはテストを落とさず全部飛ばします（`e2e/global-setup.ts`）。
 見ているのは「保存されてリロードしても残るか」「共有リンクを開いた 2 人目に
 届くか」「Ctrl+Z が本当に戻すか」など、ブラウザでしか確かめられないものだけです。
 
+### 本番へ `schema.sql` を流したあとの確認
+
+`schema.sql` を本番のプロジェクトに流したら、**必ず 1 回だけ**これを実行してください。
+
+```bash
+# Supabase の SQL Editor に貼るか、psql から
+psql -f supabase/release-smoke.sql
+```
+
+見ているのは、通知の「まとめ（digest）」でアプリ側が前提にしている 5 点だけです。
+
+| 確認したこと | 揃っていないと |
+| --- | --- |
+| `notifications.folded_count` 列がある | まとめの行を作るところで落ちる |
+| `kind` の制約が `digest` を許す | 同上（制約違反） |
+| ふつうの通知が作れる | 通知そのものが出ない |
+| 溢れた通知が `digest` の 1 行になる | 上限を超えたぶんが黙って消える |
+| `folded_count` が増え、行は増えない | 「ほかに N 件」の N が出ない |
+
+**通知が多いときにだけ落ちる**ので、揃っていなくても普段は気づけません。
+気づけるのは「@メンションが届かない」という形になってからです。
+
+pgTAP は要りません（本番には入っていないため）。使い捨てのボードを 1 つ作りますが、
+**行はすべて巻き戻され、永続データは残りません**。本番でそのまま実行できます
+（PostgreSQL では `nextval()` の消費だけは巻き戻りませんが、このファイルは
+シーケンスを 1 つも動かしません。触るのは主キーが `uuid` の 2 テーブルだけです）。
+外へ出る副作用もありません —— `schema.sql` のトリガーに `pg_net` の呼び出しは
+1 つも無いので、ここから通知やメールは飛びません。
+
+`supabase/tests/` の下に置いていないのは、`supabase test db` がその下の `.sql` を
+全部 pgTAP として拾ってしまうためです（`_stub_storage.sql` と同じ理由）。
+
+### リリースの記録を残す
+
+本番へ流したあと、**どの commit の `schema.sql` がどの本番 DB に入っているか**を
+辿れるようにしておきます。これが無いと、半年後に「この DB はどこまで入っているか」が
+誰にも分からなくなります（このリポジトリには `supabase/migrations/` が無く、
+DB 側に適用の記録が残らないため、なおさらです）。
+
+`release-smoke.sql` の最後に、貼るための 1 行が出ます。
+
+```text
+schema 適用 2026-09-10 15:29 JST / commit a1b2c3d / release-smoke 5/5 OK
+```
+
+`commit` の欄だけは DB が知らないので、人が渡します。渡さなければ `未記入` と出ます。
+
+**Supabase の SQL Editor で流すとき**は、ファイルの先頭近くにある次の行の
+コメントを外して、`git rev-parse --short HEAD` の結果を貼ります。
+
+```sql
+-- set local app.commit_sha = 'a1b2c3d';
+```
+
+**`psql` から流すとき**は、ファイルを触らずにこれで済みます。
+
+```bash
+{ echo "begin; set local app.commit_sha = '$(git rev-parse --short HEAD)';"
+  cat supabase/release-smoke.sql; } | psql "$DATABASE_URL"
+```
+
+`set local` はトランザクションの中でしか効かないので、先に `begin;` を送っています
+（`release-smoke.sql` 側の `begin;` は「すでに開始済み」の警告が出るだけで、
+同じ 1 つのトランザクションとして続き、最後の `rollback` で全部巻き戻ります）。
+
+出た 1 行を、そのままタグの説明にします。
+
+```bash
+git tag -a schema-2026-09-10 -m "schema 適用 2026-09-10 15:29 JST / commit a1b2c3d / release-smoke 5/5 OK"
+git push origin schema-2026-09-10
+```
+
+タグは commit を指しているので `git show schema-2026-09-10` からも辿れますが、
+**記録の 1 行だけを見ても対応が分かる**ようにしてあります。
+
+`まとめ` の行に「すべて通りました」と出れば終わりです。NG があれば、
+`supabase/schema.sql` を流し直してからもう一度実行してください。
+
 ### 権限（RLS）が効いているか — 自動テスト
 
 画面からの確認より先に、**DB だけで完結するテスト**を用意してあります。
 `supabase/tests/rls.test.sql` に、許可されるはずのことと拒否されるはずのことを
-304 件ぶん書いてあります（終了したボードへの書き込み、閲覧のみの人の編集、
+329 件ぶん書いてあります（終了したボードへの書き込み、閲覧のみの人の編集、
 変更履歴の偽造、全員締め出し、アクセスの取り消しと申し込み直し、参加期限、
 リンクの作り直し、他人のボードの行を指す「この回だけ」や投票、Storage の
 パスとポリシー、書いた人の名前の上書き、保存した状態からの復元など）。
 
 ```bash
-# Supabase CLI で
-supabase test db
+# Supabase CLI で（版は package.json に固定してある）
+npm run test:db
 
 # あるいは schema.sql を流した DB へ直接
 psql -U postgres -f supabase/tests/rls.test.sql
 ```
 
-`1..304` と出て `not ok` が 1 件も無ければ通っています。
+`1..329` と出て `not ok` が 1 件も無ければ通っています。
 すべてトランザクションの中で行い、最後に巻き戻すのでデータは残りません。
 
 > **本番のプロジェクトに流す前に、使い捨ての DB で試してください。**
@@ -544,12 +654,15 @@ psql -U postgres -f supabase/tests/rls.test.sql
 
 ### 押したときに自動で回す（GitHub Actions）
 
-`.github/workflows/ci.yml` が、上の 4 つをそのまま回します。
+`.github/workflows/ci.yml` が、上の 5 つをそのまま回します。
 
 | ジョブ | 中身 |
 | --- | --- |
-| `checks` | `npm run lint` / `npm run build`（`tsc --noEmit` 込み）/ `npm test` |
-| `backend` | `supabase start` → `schema.sql` を 2 回 → `supabase test db` → `npm run test:e2e` |
+| `checks` | `npm run lint` / `npm run build`（`tsc --noEmit` 込み）/ `npm test` / `npm run check:functions` / `npm run test:functions` |
+| `backend` | `npx supabase start` → `schema.sql` を 2 回 → `npx supabase test db` → `npm run test:e2e` |
+
+CI で Supabase CLI を入れ直していないのは、devDependency の版をそのまま使うためです。
+CLI の版の定義元は `package.json` の 1 か所だけにしてあります。
 
 `schema.sql` を 2 回流すのは冪等の確認です。このリポジトリには
 `supabase/migrations/` が無く、DB は何度でも流せる 1 本で成り立っているので、
@@ -650,11 +763,13 @@ Network タブで確認できます（承認前は中身のテーブルを読み
 | ボードの削除 | 片方でボードを削除 → もう一方も「ボードが見つかりません」に変わること |
 | 参加の条件 | 受付停止・参加期限・人数上限を変えると、その場で表示に反映されること |
 | 閲覧のみ権限 | 👥 から相手を「閲覧のみ」にする → 相手側で付箋を動かせず、コメントと投票はできること |
+| モーダルの操作 | 何か開いて Tab を押し続ける → フォーカスが中だけを回ること。Esc で閉じると、開く前の場所へ戻ること。2 枚重ねると手前だけが Esc で閉じること |
+| コメントの相手 | 画像・ファイル・フレームを右クリック →「💬 コメント」で書ける。Ctrl+F の検索に「画像へのコメント」などとして出て、対象を消すと検索から消えること |
 | 複数選択 | 何もない所からドラッグして囲む → まとめて移動・整列・色変更できること |
 | テキストボックス | 🔤 で枠なしの見出しを置けること |
 | テンプレート | 📐 から KPT やカンバンを適用できること |
 | 投票 | 付箋の 👍 を押すと数が増え、もう一方の画面にも反映されること |
-| PNG 書き出し | 📥 で画像が保存され、付箋・線・画像がすべて写っていること |
+| PNG 書き出し | 📥 で画像が保存され、付箋・手描き・画像・フレーム・線・ファイルがすべて写っていること。付箋を選んで書き出したときは、選んだ付箋どうしの線だけが出ること |
 | 更新タブ | 📣 に「誰が何をしたか」が時系列で並ぶこと。付箋を動かしただけでは増えないこと |
 | 予定のドラッグ | 月表示で予定を別の日へドラッグ → 日付が変わること（🔁 の予定は動かせない） |
 | 祝日 | 2026/5/6 が「振替休日」、9/22 が「国民の休日」と出ること |
@@ -904,10 +1019,21 @@ Ctrl+Z は自分の操作にしか効かないため、**他の人が消した�
     **減らした・入れ替えた**ときと、第 n 週を変えたときは取り消されます
   - 「第 5 火曜」が無い月は、丸めずに飛ばします（`.ics` の `FREQ=MONTHLY` と同じ読み方）
   - 規則は `_shared/recurrence.ts` の `normalizeRule` と `schema.sql` の
-    `events_recurrence_days_check` の 2 か所にあります。変えるときは両方そろえてください
-  - `send-reminders` も新しい 2 列（`recurrence_days` / `recurrence_week`）を読みます。
-    取ってくる列に足し忘れても**エラーにならず、通知だけが違う曜日に飛ぶ**ので、
-    列の並びは `src/lib/__tests__/recurrence.test.ts` で押さえてあります
+    `events_recurrence_days_check` / `events_recurrence_interval_check` の
+    3 か所にあります。変えるときは全部そろえてください
+  - `send-reminders` も繰り返しの 3 列（`recurrence_days` / `recurrence_week` /
+    `recurrence_interval`）を読みます。取ってくる列に足し忘れても**エラーにならず、
+    通知だけが違う日に飛ぶ**ので、列の並びは `src/lib/__tests__/recurrence.test.ts` で
+    押さえてあります。購読 URL（`board-ics`）は別の列一覧を持っていて、
+    そちらは `src/lib/__tests__/ics.test.ts` で押さえてあります
+- **「n 回ごと」**（隔週、3 か月ごと）も選べます。
+  - 上限は 99 です。選べる数は周期ごとに違います（毎週なら 4 週まで、毎月なら 6 か月まで）
+  - **間隔を変えると回の並びが動く**ので、「この回だけ」の変更と出欠は取り消されます
+  - この列より前からある予定は `recurrence_interval` が空（null）で、1（毎回）と同じ意味です。
+    比べるところでは必ず 1 に読み替えているので、**開いて保存し直しただけで出欠が消えることはありません**
+  - 「隔週 火・木」を木曜から始めると、最初の週は木だけ、2 週間後から火・木の両方が出ます。
+    週の起点が日曜だからで、`.ics` に書き出す `WKST=SU` と同じ意味です
+  - `.ics` には `INTERVAL=2` として書きます（1 のときは書きません。RFC 5545 の既定が 1 なので）
 - `.ics` の書き出しでは、削除した回は `EXDATE`、変更した回は `RECURRENCE-ID` 付きの
   `VEVENT` になります。Google カレンダーなどに取り込んでも例外が保たれます。
   曜日の指定は `BYDAY=TU,TH` / `BYDAY=2TU`（序数を前に置く形。Google と Apple が
@@ -925,7 +1051,7 @@ Apple カレンダーの「URL で追加」に貼ると、あとから足した�
 「外部カレンダーの取り込み」の逆向きです。
 
 ```bash
-supabase functions deploy board-ics
+npx supabase functions deploy board-ics
 ```
 
 > **`--no-verify-jwt` は付けません。** JWT を検証しない設定は

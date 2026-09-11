@@ -4,6 +4,8 @@ import { ja } from 'date-fns/locale'
 import Modal from './Modal'
 import { supabase } from '../lib/supabase'
 import { useIdentity } from '../lib/identity'
+import { useNotice } from '../hooks/useNotice'
+import { messageOf } from '../lib/errorMessage'
 import { useRoomData } from '../lib/roomData'
 import { getHolidayName } from '../lib/holidays'
 import { allDayStartIso, boardDateTimeIso } from '../lib/dates'
@@ -17,8 +19,8 @@ import {
 
 interface Props {
   onClose: () => void
-  /** 決定した候補日から予定を作る */
-  onCreateEvent: (event: CalendarEvent) => Promise<void>
+  /** 決定した候補日から予定を作る。作れたら true */
+  onCreateEvent: (event: CalendarEvent) => Promise<boolean>
 }
 
 /** 日程調整（候補日に ○ △ × をつけて集計する） */
@@ -26,6 +28,7 @@ export default function PollPanel({ onClose, onCreateEvent }: Props) {
   const { userId, displayName } = useIdentity()
   const { roomId, canEdit, polls, pollOptions, pollVotes } = useRoomData()
   const [creating, setCreating] = useState(false)
+  const [notice, setNotice] = useNotice()
 
   const sorted = useMemo(
     () => polls.rows.slice().sort((a, b) => b.created_at.localeCompare(a.created_at)),
@@ -37,15 +40,22 @@ export default function PollPanel({ onClose, onCreateEvent }: Props) {
       (v) => v.option_id === option.id && v.user_id === userId,
     )
 
+    /*
+     * 取り消しも付け替えも、失敗したら画面を戻す。
+     * 戻さないと、消えた・変わったように見えたまま実際は元のままで、
+     * 次に開き直したときに黙って生き返る。下の insert と同じ形。
+     */
     if (existing) {
       // 同じ答えをもう一度押したら取り消す
       if (existing.answer === answer) {
         pollVotes.removeLocal(existing.id)
-        await supabase.from('poll_votes').delete().eq('id', existing.id)
+        const { error } = await supabase.from('poll_votes').delete().eq('id', existing.id)
+        if (error) pollVotes.upsertLocal(existing)
         return
       }
       pollVotes.upsertLocal({ ...existing, answer })
-      await supabase.from('poll_votes').update({ answer }).eq('id', existing.id)
+      const { error } = await supabase.from('poll_votes').update({ answer }).eq('id', existing.id)
+      if (error) pollVotes.upsertLocal(existing)
       return
     }
 
@@ -66,13 +76,20 @@ export default function PollPanel({ onClose, onCreateEvent }: Props) {
 
   async function decide(poll: Poll, option: PollOption) {
     polls.upsertLocal({ ...poll, status: 'closed', decided_option_id: option.id })
-    await supabase
+    const { error } = await supabase
       .from('polls')
       .update({ status: 'closed', decided_option_id: option.id })
       .eq('id', poll.id)
 
+    // 締められていないのに締まって見えると、予定だけが増えていく
+    if (error) {
+      polls.upsertLocal(poll)
+      setNotice(`日程を決められませんでした: ${messageOf(error)}`)
+      return
+    }
+
     const now = new Date().toISOString()
-    await onCreateEvent({
+    const created = await onCreateEvent({
       id: crypto.randomUUID(),
       room_id: roomId,
       // 日程調整で決まるのは「集まる日」なので、締切ではなく予定
@@ -86,6 +103,7 @@ export default function PollPanel({ onClose, onCreateEvent }: Props) {
       recurrence: 'none',
       recurrence_days: [],
       recurrence_week: null,
+      recurrence_interval: null,
       recurrence_until: null,
       remind_minutes: option.all_day ? 1440 : 60,
       tags: [],
@@ -97,24 +115,42 @@ export default function PollPanel({ onClose, onCreateEvent }: Props) {
       created_at: now,
       updated_at: now,
     })
+
+    // 日程は決まったが予定にできなかった。黙って終わると誰も気づけない
+    if (!created) {
+      setNotice('日程は決まりましたが、予定を作れませんでした。暦から作り直してください。')
+    }
   }
 
   async function reopen(poll: Poll) {
     polls.upsertLocal({ ...poll, status: 'open', decided_option_id: null })
-    await supabase
+    const { error } = await supabase
       .from('polls')
       .update({ status: 'open', decided_option_id: null })
       .eq('id', poll.id)
+    if (error) {
+      polls.upsertLocal(poll)
+      setNotice(`開き直せませんでした: ${messageOf(error)}`)
+    }
   }
 
   async function removePoll(poll: Poll) {
     if (!window.confirm('この日程調整を削除します。よろしいですか？')) return
     polls.removeLocal(poll.id)
-    await supabase.from('polls').delete().eq('id', poll.id)
+    const { error } = await supabase.from('polls').delete().eq('id', poll.id)
+    if (error) {
+      polls.upsertLocal(poll)
+      setNotice(`削除できませんでした: ${messageOf(error)}`)
+    }
   }
 
   return (
     <Modal title="日程調整" onClose={onClose}>
+      {notice && (
+        <p role="status" className="mb-4 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          {notice}
+        </p>
+      )}
       {canEdit && (
         <button
           type="button"
