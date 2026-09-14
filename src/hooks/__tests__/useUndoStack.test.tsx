@@ -174,4 +174,91 @@ describe('useUndoStack', () => {
     expect(undoB).toHaveBeenCalledTimes(1)
     expect(result.current.undoLabel).toBe('A')
   })
+
+  it('取り消しの保存が返らなくても、新しい操作はその場で記録される', async () => {
+    const { result } = renderHook(() => useUndoStack())
+    const stuck = pending()
+    act(() => result.current.push(entry({ label: 'A', undo: stuck.run })))
+
+    act(() => {
+      void result.current.undo()
+    })
+    await act(async () => {})
+
+    // 止まった回線などで返らない 1 件のせいで、あとの操作の記録まで止めない
+    act(() => result.current.push(entry({ label: 'B' })))
+    expect(result.current.canUndo).toBe(true)
+    expect(result.current.undoLabel).toBe('B')
+  })
+
+  it('やり直しの保存を待つあいだに新しい操作をしたら、やり直した操作はその下に入る', async () => {
+    const { result } = renderHook(() => useUndoStack())
+    const redoA = pending()
+    const undoB = vi.fn()
+    act(() => result.current.push(entry({ label: 'A', redo: redoA.run })))
+    await act(async () => {
+      await result.current.undo()
+    })
+
+    let redone: Promise<void> = Promise.resolve()
+    act(() => {
+      redone = result.current.redo()
+    })
+    await act(async () => {})
+    act(() => result.current.push(entry({ label: 'B', undo: undoB })))
+
+    await act(async () => {
+      redoA.finish()
+      await redone
+    })
+
+    // 押した順は A のやり直し → B。次の Ctrl+Z は B から
+    expect(result.current.undoLabel).toBe('B')
+    await act(async () => {
+      await result.current.undo()
+    })
+    expect(undoB).toHaveBeenCalledTimes(1)
+    expect(result.current.undoLabel).toBe('A')
+  })
+
+  it('取り消しが失敗しても、次の取り消しはちゃんと動く', async () => {
+    const { result } = renderHook(() => useUndoStack())
+    const undo = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error('保存できなかった'))
+      .mockResolvedValueOnce(undefined)
+    act(() => result.current.push(entry({ undo })))
+
+    await act(async () => {
+      await result.current.undo()
+    })
+    expect(result.current.canUndo).toBe(true)
+
+    await act(async () => {
+      await result.current.undo()
+    })
+    expect(undo).toHaveBeenCalledTimes(2)
+    expect(result.current.canUndo).toBe(false)
+    expect(result.current.canRedo).toBe(true)
+  })
+
+  it('履歴を消したら、保存を待っていた取り消しはどこにも戻さない', async () => {
+    const { result } = renderHook(() => useUndoStack())
+    const stuck = pending()
+    act(() => result.current.push(entry({ undo: stuck.run })))
+
+    let undone: Promise<void> = Promise.resolve()
+    act(() => {
+      undone = result.current.undo()
+    })
+    await act(async () => {})
+    act(() => result.current.clear())
+
+    await act(async () => {
+      stuck.finish()
+      await undone
+    })
+    expect(result.current.canUndo).toBe(false)
+    expect(result.current.canRedo).toBe(false)
+  })
 })
