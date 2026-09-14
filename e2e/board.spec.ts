@@ -90,6 +90,43 @@ test('付箋を動かして Ctrl+Z を押すと、元の位置に戻る', async 
     .not.toBe(before.left)
 })
 
+/*
+ * 取り消した付箋は保存を待たずに戻るので、見てすぐやり直しを押せる。
+ * そのとき取り消しの保存がまだ返っていなくても、やり直しは捨てない。
+ *
+ * 手元の DB は速く、上のテストではこの隙間にまず当たらない（CI ではときどき当たって
+ * 落ちていた）。書き込みの返事を遅らせて、隙間を毎回つくる。
+ */
+test('保存が遅くても、取り消した直後のやり直しが効く', async ({ page }) => {
+  await signIn(page, 'ひとり目')
+  await createBoard(page, stamp())
+  await addFirstNote(page)
+  await waitForSaved(page)
+
+  const before = await positionOf(page, '[data-ctx-kind="note"]')
+  await dragAndWaitForSave(page, '[data-ctx-kind="note"]', 'notes', 120, 80)
+  const moved = await positionOf(page, '[data-ctx-kind="note"]')
+  expect(moved.left).not.toBe(before.left)
+
+  await page.route('**/rest/v1/notes*', async (route) => {
+    if (route.request().method() === 'PATCH') {
+      await new Promise((resolve) => setTimeout(resolve, 1500))
+    }
+    await route.continue()
+  })
+
+  await page.keyboard.press('Control+z')
+  await expect.poll(async () => positionOf(page, '[data-ctx-kind="note"]')).toEqual(before)
+
+  // 取り消しの保存はまだ返っていない
+  await page.keyboard.press('Control+Shift+z')
+  await expect.poll(async () => positionOf(page, '[data-ctx-kind="note"]')).toEqual(moved)
+
+  // 戻ってきた返事で、画面が取り消しの位置へ引き戻されない
+  await waitForSaved(page)
+  expect(await positionOf(page, '[data-ctx-kind="note"]')).toEqual(moved)
+})
+
 test('ファイルを置いて動かして Ctrl+Z を押すと、元の位置に戻る', async ({ page }) => {
   await signIn(page, 'ひとり目')
   await createBoard(page, stamp())

@@ -29,37 +29,60 @@ export function useUndoStack() {
     bump()
   }, [])
 
-  const undo = useCallback(async () => {
-    const entry = undoRef.current.pop()
-    if (!entry) return
-    bump()
-    try {
-      await entry.undo()
-    } catch {
-      // 保存に失敗した取り消しは「なかったこと」にせず、元のスタックに戻す。
-      // 理由は各操作が通知で出しているので、ここでは黙って戻すだけ
-      undoRef.current.push(entry)
-      bump()
-      return
-    }
-    redoRef.current.push(entry)
-    bump()
+  /*
+   * 取り消し・やり直しは、押した順に 1 つずつ流す。
+   *
+   * 画面は保存を待たずに戻る（楽観的更新）が、エントリを反対側のスタックへ移すのは
+   * 保存が返ってから。順に並べないと、戻った付箋を見てすぐ押したやり直しは
+   * 空のスタックを見て捨てられる。並べずに同時に走らせると、同じ行への書き込みが
+   * 追い越して、最後に残る状態が押した順と食い違う。
+   */
+  const queueRef = useRef<Promise<void>>(Promise.resolve())
+  const enqueue = useCallback((step: () => Promise<void>) => {
+    const next = queueRef.current.then(step)
+    queueRef.current = next
+    return next
   }, [])
 
-  const redo = useCallback(async () => {
-    const entry = redoRef.current.pop()
-    if (!entry) return
-    bump()
-    try {
-      await entry.redo()
-    } catch {
-      redoRef.current.push(entry)
-      bump()
-      return
-    }
-    undoRef.current.push(entry)
-    bump()
-  }, [])
+  const undo = useCallback(
+    () =>
+      enqueue(async () => {
+        const entry = undoRef.current.pop()
+        if (!entry) return
+        bump()
+        try {
+          await entry.undo()
+        } catch {
+          // 保存に失敗した取り消しは「なかったこと」にせず、元のスタックに戻す。
+          // 理由は各操作が通知で出しているので、ここでは黙って戻すだけ
+          undoRef.current.push(entry)
+          bump()
+          return
+        }
+        redoRef.current.push(entry)
+        bump()
+      }),
+    [enqueue],
+  )
+
+  const redo = useCallback(
+    () =>
+      enqueue(async () => {
+        const entry = redoRef.current.pop()
+        if (!entry) return
+        bump()
+        try {
+          await entry.redo()
+        } catch {
+          redoRef.current.push(entry)
+          bump()
+          return
+        }
+        undoRef.current.push(entry)
+        bump()
+      }),
+    [enqueue],
+  )
 
   const clear = useCallback(() => {
     undoRef.current = []
