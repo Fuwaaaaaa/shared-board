@@ -7,6 +7,8 @@ import {
   decideOnFailure,
   lockedFields,
   previewOf,
+  type QueueKind,
+  type QueueOp,
   type QueueTable,
 } from '../lib/writeQueue'
 import type { useRealtimeTable } from './useRealtimeTable'
@@ -63,6 +65,11 @@ function pick<T extends object>(row: T, keys: (keyof T)[]): Partial<T> {
   const out: Partial<T> = {}
   for (const key of keys) out[key] = row[key]
   return out
+}
+
+/** 行や変更を、送信箱に入れる形（列名 → 値）として扱う */
+function asRecord(value: object): Record<string, unknown> {
+  return value as Record<string, unknown>
 }
 
 function sameJson(a: unknown, b: unknown): boolean {
@@ -122,36 +129,75 @@ export function useOptimisticTable<T extends Row>(
       notifyRef.current(`${what}できませんでした: ${messageOf(e)}`)
     }
 
-    /*
-     * 送れなかったものを送信箱へ回す。回せたら true。
+    /** ためられる表で、ためる文脈（ボードと自分）があるときだけ返す */
+    function queueTarget() {
+      const context = contextRef.current
+      const queueTable = queueTableOf(tableName)
+      return context && queueTable ? { ...context, table: queueTable } : null
+    }
+
+    /** その行の分が送信箱に残っているか */
+    function inOutbox(id: string): boolean {
+      const target = queueTarget()
+      return target !== null && hasEntry(target.roomId, target.table, id)
+    }
+
+    /**
+     * 送信箱に入れる 1 件を組み立てる（作成・削除・書き換え・まとめての書き換えで共通）。
+     * ためられないとき（表が対象外・文脈が無い）は null。
      *
-     * 回すのは「通信そのものが届かなかった」ときだけ。権限や決まりの違反は
-     * つながり直しても同じ結果なので、これまでどおりその場で失敗にする。
-     * 回したときはローカルの見た目を戻さず、通知も出さない——書いた人からは
-     * 「保存された」ように見えるのが正しい（ヘッダーのピルが未送信を示す）。
+     * 一覧に出す本文の頭は、変更に文字があればそれ、無ければ元の行から拾う。ゴミ箱に入れる
+     * だけの変更は changes に文字が無く、元の行から拾わないと送信箱に中身の無い行が並ぶ
+     * （コメントは text ではなく body を持つ）。
+     *
+     * lock（楽観ロックに使う updated_at）は、文字と意味を持つ列を変えるときだけ掛ける
+     * （writeQueue.lockedFields）。位置や色は掛けない——掛けると譲り合いになって動かせなくなる。
      */
-    async function queueOrFail(
-      e: unknown,
-      make: () => Parameters<typeof enqueue>[0] | null,
-    ): Promise<boolean> {
-      if (decideOnFailure(e) !== 'queue') return false
-      return queueNow(make)
+    function buildOp(
+      kind: QueueKind,
+      rowId: string,
+      what: string,
+      parts: {
+        row?: Record<string, unknown>
+        patch?: Record<string, unknown>
+        base?: Record<string, unknown>
+        source?: Record<string, unknown>
+        lock?: string
+      },
+    ): QueueOp | null {
+      const target = queueTarget()
+      if (!target) return null
+      const { row, patch, base, source, lock } = parts
+      const textOf = (r?: Record<string, unknown>) => r?.text ?? r?.title ?? r?.body
+      const locked = patch !== undefined && lockedFields(target.table, patch).length > 0
+      return {
+        roomId: target.roomId,
+        table: target.table,
+        rowId,
+        userId: target.userId,
+        kind,
+        row,
+        patch,
+        base,
+        expectUpdatedAt: locked ? lock : undefined,
+        label: what,
+        preview: previewOf(textOf(patch) ?? textOf(row) ?? textOf(source)),
+        seq: nextSeq(),
+      }
     }
 
     /*
-     * 送らずに、そのまま送信箱へ入れる。入れられたら true。
+     * 送信箱へ入れる。入れられたら true。
      *
-     * 作成が送信箱に居る行への変更に使う。サーバーにはまだ行が無いので、送っても
-     * 0 行で終わるだけ。送信箱に入れれば、作成と 1 件に畳まれる（writeQueue.collapse）。
+     * 使うのは 2 つの場面だけ。
+     *   ・送ったが「通信そのものが届かなかった」とき（呼び出し側が decideOnFailure で見る）。
+     *     権限や決まりの違反はつながり直しても同じ結果なので、ためずにその場で失敗にする
+     *   ・送信箱にその行の分が残っていて、追い越さずに後ろへ並べるとき（routeFor）
+     * 入れたときはローカルの見た目を戻さず、通知も出さない——書いた人からは
+     * 「保存された」ように見えるのが正しい（ヘッダーのピルが未送信を示す）。
      */
-    async function queueNow(make: () => Parameters<typeof enqueue>[0] | null): Promise<boolean> {
-      const context = contextRef.current
-      const queueTable = queueTableOf(tableName)
-      if (!context || !queueTable) return false
-
-      const op = make()
+    async function queueNow(op: QueueOp | null): Promise<boolean> {
       if (!op) return false
-
       if (await enqueue(op)) return true
 
       notifyRef.current(
@@ -173,10 +219,7 @@ export function useOptimisticTable<T extends Row>(
      */
     async function routeFor(id: string): Promise<'send' | 'queue' | 'failed'> {
       if ((await createOutcome(tableName, id)) === 'failed') return 'failed'
-      const context = contextRef.current
-      const queueTable = queueTableOf(tableName)
-      if (context && queueTable && hasEntry(context.roomId, queueTable, id)) return 'queue'
-      return 'send'
+      return inOutbox(id) ? 'queue' : 'send'
     }
 
     /** 行を足す。成功したら true。失敗した分は画面から消して知らせる */
@@ -194,27 +237,7 @@ export function useOptimisticTable<T extends Row>(
         pendingCreates.set(createKey(tableName, row.id), gate)
       }
 
-      /** 送信箱に入れるときの 1 件 */
-      const createOp = (row: T) => () => {
-        const context = contextRef.current
-        const queueTable = queueTableOf(tableName)
-        if (!context || !queueTable) return null
-        return {
-          roomId: context.roomId,
-          table: queueTable,
-          rowId: row.id,
-          userId: context.userId,
-          kind: 'create' as const,
-          row: row as unknown as Record<string, unknown>,
-          label: what,
-          preview: previewOf(
-            (row as unknown as Record<string, unknown>).text ??
-              (row as unknown as Record<string, unknown>).title ??
-              (row as unknown as Record<string, unknown>).body,
-          ),
-          seq: nextSeq(),
-        }
-      }
+      const createOp = (row: T) => buildOp('create', row.id, what, { row: asRecord(row) })
 
       const done = new Set<string>()
       const queued = new Set<string>()
@@ -224,13 +247,12 @@ export function useOptimisticTable<T extends Row>(
          * 同じ id の分が送信箱に残っている（送信箱にある作成を消したあと、取り消しで
          * 作り直した など）なら、送らずにその後ろに並べる。先に INSERT を送ると、
          * あとから送信箱の DELETE が届いて、作り直した行が消える。
+         * ここで routeFor を使わないのは、この insert 自身の作成待ちを待ってしまうため。
          */
-        const context = contextRef.current
-        const queueTable = queueTableOf(tableName)
-        if (context && queueTable && rows.some((row) => hasEntry(context.roomId, queueTable, row.id))) {
+        if (rows.some((row) => inOutbox(row.id))) {
           sendRows = []
           for (const row of rows) {
-            if (!hasEntry(context.roomId, queueTable, row.id)) sendRows.push(row)
+            if (!inOutbox(row.id)) sendRows.push(row)
             // 入れられなかった（大きすぎる）行は、下の後始末で画面から外す。理由は queueNow が知らせている
             else if (await queueNow(createOp(row))) queued.add(row.id)
           }
@@ -247,13 +269,9 @@ export function useOptimisticTable<T extends Row>(
         for (const row of unqueued) table.removeLocal(row.id)
         return unqueued.length === 0
       } catch (e) {
-        const rest = sendRows.filter((row) => !done.has(row.id))
-        const context = contextRef.current
-        const queueTable = queueTableOf(tableName)
-
-        if (context && queueTable && decideOnFailure(e) === 'queue') {
-          for (const row of rest) {
-            if (await queueOrFail(e, createOp(row))) queued.add(row.id)
+        if (decideOnFailure(e) === 'queue') {
+          for (const row of sendRows) {
+            if (!done.has(row.id) && (await queueNow(createOp(row)))) queued.add(row.id)
           }
           // 全部ためられたなら、書いた人から見れば「保存された」でよい
           if (rows.every((row) => done.has(row.id) || queued.has(row.id))) return true
@@ -291,26 +309,7 @@ export function useOptimisticTable<T extends Row>(
       const releases = rows.map((row) => table.holdLocal(row.id, 'delete'))
       for (const row of rows) table.removeLocal(row.id)
 
-      /** 送信箱に入れるときの 1 件 */
-      const deleteOp = (row: T) => () => {
-        const context = contextRef.current
-        const queueTable = queueTableOf(tableName)
-        if (!context || !queueTable) return null
-        return {
-          roomId: context.roomId,
-          table: queueTable,
-          rowId: row.id,
-          userId: context.userId,
-          kind: 'delete' as const,
-          label: what,
-          preview: previewOf(
-            (row as unknown as Record<string, unknown>).text ??
-              (row as unknown as Record<string, unknown>).title ??
-              (row as unknown as Record<string, unknown>).body,
-          ),
-          seq: nextSeq(),
-        }
-      }
+      const deleteOp = (row: T) => buildOp('delete', row.id, what, { source: asRecord(row) })
 
       const done = new Set<string>()
       // 作成に失敗していた行。どこにも無いので戻さないが、消せたことにもしない
@@ -409,43 +408,13 @@ export function useOptimisticTable<T extends Row>(
         if (before) table.patchLocal(id, pick(before, fields))
       }
 
-      /** 送信箱に入れるときの 1 件 */
-      const updateOp = () => {
-        const context = contextRef.current
-        const queueTable = queueTableOf(tableName)
-        if (!context || !queueTable) return null
-        const locked = lockedFields(queueTable, changes as Record<string, unknown>)
-        return {
-          roomId: context.roomId,
-          table: queueTable,
-          rowId: id,
-          userId: context.userId,
-          kind: 'update' as const,
-          patch: changes as Record<string, unknown>,
-          base: before ? (pick(before, fields) as Record<string, unknown>) : undefined,
-          /*
-           * 文字と意味を持つ列を変えるときだけ、楽観ロックを掛けて送り直す。
-           * 位置や色は掛けない（掛けると譲り合いになって動かせなくなる）。
-           */
-          expectUpdatedAt:
-            locked.length > 0
-              ? (expectUpdatedAt ??
-                ((before as Record<string, unknown> | undefined)?.updated_at as string | undefined))
-              : undefined,
-          label: what,
-          preview: previewOf(
-            (changes as Record<string, unknown>).text ??
-              (changes as Record<string, unknown>).title ??
-              (changes as Record<string, unknown>).body ??
-              (before as Record<string, unknown> | undefined)?.text ??
-              // ゴミ箱に入れるだけの変更は changes に文字が無い。元の行から拾わないと
-              // 送信箱に中身の無い行が並ぶ（コメントは text ではなく body を持つ）
-              (before as Record<string, unknown> | undefined)?.title ??
-              (before as Record<string, unknown> | undefined)?.body,
-          ),
-          seq: nextSeq(),
-        }
-      }
+      const updateOp = () =>
+        buildOp('update', id, what, {
+          patch: asRecord(changes),
+          base: before ? asRecord(pick(before, fields)) : undefined,
+          source: before ? asRecord(before) : undefined,
+          lock: expectUpdatedAt ?? (before ? (asRecord(before).updated_at as string) : undefined),
+        })
 
       try {
         // 作ったばかりの行・送信箱に分が残っている行は、追い越さない（routeFor）
@@ -456,7 +425,7 @@ export function useOptimisticTable<T extends Row>(
           return 'error'
         }
         if (route === 'queue') {
-          if (await queueNow(updateOp)) {
+          if (await queueNow(updateOp())) {
             release()
             return 'ok'
           }
@@ -467,8 +436,15 @@ export function useOptimisticTable<T extends Row>(
           return 'error'
         }
 
-        // 作成が返ったあとなら、expectUpdatedAt は作成前の値のままで合わない。
-        // そのときは下の「updated_at が合わなかった」を 1 回通って揃う
+        /*
+         * 作成を待ったあとでも、expectUpdatedAt は作成前に控えた値のままでよい。
+         * notes / events の updated_at を進めるトリガーは UPDATE のときだけで
+         * （tg_touch_note_updated_at / tg_touch_event_updated_at）、INSERT では画面が
+         * 決めて送った値がそのまま入るので、1 回目で一致する。
+         * INSERT で updated_at が変わる表が増えても、下の「updated_at が合わなかった」を
+         * 1 回通って揃う。ただしそこで見ているのは text / tags だけなので、別の列に
+         * ロックを掛ける表では、その判定も合わせて広げること。
+         */
         let expect = expectUpdatedAt
         for (let attempt = 0; attempt < 2; attempt++) {
           let query = supabase.from(tableName).update(changes as Record<string, unknown>).eq('id', id)
@@ -528,7 +504,7 @@ export function useOptimisticTable<T extends Row>(
         }
         throw new Error('他の人の変更と重なりました')
       } catch (e) {
-        if (await queueOrFail(e, updateOp)) {
+        if (decideOnFailure(e) === 'queue' && (await queueNow(updateOp()))) {
           release()
           return 'ok'
         }
@@ -554,32 +530,16 @@ export function useOptimisticTable<T extends Row>(
       for (const row of rows) befores.set(row.id, table.patchLocal(row.id, changes))
 
       /*
-       * 送信箱に入れるときの 1 件。
-       *
-       * 楽観ロックは掛けない。ここへ来るのはゴミ箱の出し入れや一括の色替えで、
-       * 掛けると譲り合いになって動かせなくなる（patch 側と同じ判断）。
+       * 楽観ロックは掛けない（lock を渡さない）。ここへ来るのはゴミ箱の出し入れや
+       * 一括の色替えで、掛けると譲り合いになって動かせなくなる。
        */
-      const updateOpFor = (row: T) => () => {
-        const context = contextRef.current
-        const queueTable = queueTableOf(tableName)
-        if (!context || !queueTable) return null
+      const updateOpFor = (row: T) => {
         const before = befores.get(row.id)
-        return {
-          roomId: context.roomId,
-          table: queueTable,
-          rowId: row.id,
-          userId: context.userId,
-          kind: 'update' as const,
-          patch: changes as Record<string, unknown>,
-          base: before ? (pick(before, fields) as Record<string, unknown>) : undefined,
-          label: what,
-          preview: previewOf(
-            (row as unknown as Record<string, unknown>).text ??
-              (row as unknown as Record<string, unknown>).title ??
-              (row as unknown as Record<string, unknown>).body,
-          ),
-          seq: nextSeq(),
-        }
+        return buildOp('update', row.id, what, {
+          patch: asRecord(changes),
+          base: before ? asRecord(pick(before, fields)) : undefined,
+          source: asRecord(row),
+        })
       }
 
       const done = new Set<string>()
@@ -646,7 +606,7 @@ export function useOptimisticTable<T extends Row>(
          */
         if (decideOnFailure(e) === 'queue') {
           for (const row of rest) {
-            if (await queueOrFail(e, updateOpFor(row))) queued.add(row.id)
+            if (await queueNow(updateOpFor(row))) queued.add(row.id)
           }
           if (rest.every((row) => queued.has(row.id))) {
             restore(blocked)

@@ -118,9 +118,47 @@ export async function positionOf(page: Page, selector: string) {
   }))
 }
 
-/** 「保存済み」が出るまで待つ。押した直後に読み直すと取りこぼす */
+/**
+ * 「保存済み」が出るまで待つ。押した直後に読み直すと取りこぼす。
+ *
+ * 「保存済み」は、書き込みを頼んでから処理が終わるまで出ない（syncStatus.holdSaving）。
+ * 作成の返事を待っている書き換えや、保存が返ってから積まれる取り消しも、その内側に入る。
+ */
 export async function waitForSaved(page: Page) {
   await expect(page.getByText('保存済み')).toBeVisible({ timeout: 20_000 })
+}
+
+/**
+ * ヘッダーの保存状態（保存済み / 同期中）の移り変わりを、画面が変わるたびに記録し始める。
+ * 返した関数で、それまでの並びを取り出す（同じ状態が続いたものは 1 つにまとめる）。
+ *
+ * waitForSaved は「最後に保存済みになった」ことしか見ないので、途中で一瞬
+ * 「保存済み」を挟んでも通ってしまう。そこを確かめたいときに使う。
+ */
+export async function recordSyncStates(page: Page): Promise<() => Promise<string[]>> {
+  await page.evaluate(() => {
+    const store = window as unknown as { __syncStates: string[] }
+    store.__syncStates = []
+    const read = () =>
+      document.querySelector('header [title="保存しています"]')
+        ? '同期中'
+        : document.querySelector('header [title^="書いたものはみんなに届いています"]')
+          ? '保存済み'
+          : null
+    const note = () => {
+      const state = read()
+      const last = store.__syncStates[store.__syncStates.length - 1]
+      if (state && last !== state) store.__syncStates.push(state)
+    }
+    note()
+    new MutationObserver(note).observe(document.body, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ['title'],
+    })
+  })
+  return () => page.evaluate(() => (window as unknown as { __syncStates: string[] }).__syncStates)
 }
 
 /** ボードの中に入れているか（ツールバーが出ているか） */

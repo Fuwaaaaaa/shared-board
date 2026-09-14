@@ -4,6 +4,7 @@ import {
   createBoard,
   dragAndWaitForSave,
   positionOf,
+  recordSyncStates,
   signIn,
   waitForSaved,
   writeInNote,
@@ -54,10 +55,16 @@ test('付箋を貼る保存が遅くても、すぐ書いた文字はリロー�
     await route.continue()
   })
 
+  const syncStates = await recordSyncStates(page)
   await addFirstNote(page)
   await writeInNote(page, '合宿の持ち物')
   await waitForSaved(page)
   await expect(page.getByText(/できませんでした/)).toHaveCount(0)
+
+  // 作成が返ってから文字の保存が出るまでのあいだに、一瞬でも「保存済み」を挟まない。
+  // 挟むと、そこで閉じたり読み込み直したりした人の文字が消える
+  const states = await syncStates()
+  expect(states.slice(states.indexOf('同期中'))).toEqual(['同期中', '保存済み'])
 
   await page.reload()
   await expect(page.locator('[data-ctx-kind="note"]')).toHaveCount(1)
@@ -138,7 +145,9 @@ test('保存が遅くても、取り消した直後のやり直しが効く', as
   await expect
     .poll(async () => (await positionOf(page, '[data-ctx-kind="note"]')).left)
     .not.toBe(before.left)
-  // 遅らせたいのは取り消しの保存だけ。ドラッグの保存は先に終わらせておく
+  // 遅らせたいのは取り消しの保存だけ。ドラッグの保存は先に終わらせておく。
+  // 「保存済み」は patch が返り終えるまで出ないので（holdSaving）、ドラッグの取り消しは
+  // もう積まれている。ここで Ctrl+Z を押しても、1 つ前の「付箋の追加」を取り消さない
   await waitForSaved(page)
   const moved = await positionOf(page, '[data-ctx-kind="note"]')
 
