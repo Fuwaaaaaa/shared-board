@@ -120,7 +120,7 @@ test('オフラインで書いたものが、リロードを跨いで残り、�
   }
 })
 
-test('つながっていないあいだに作って取り消したものは、1 件も送らない', async ({
+test('つながっていないあいだに作って取り消したものは、中身を 1 文字も送らない', async ({
   page,
   context,
 }) => {
@@ -146,8 +146,8 @@ test('つながっていないあいだに作って取り消したものは、1 
   }
   await expect(note).toHaveCount(0, { timeout: 20_000 })
 
-  // つなぎ直しても、この付箋のための書き込みは 1 本も出ない
-  // （作って消したので、送信箱の中で相殺されている）
+  // つなぎ直しても、この付箋の中身は送らない。作って消したので、送信箱の中では
+  // 「その id を消す」の 1 件だけになっている（作成が実は届いていた場合に備えて残す）
   const posted: string[] = []
   page.on('request', (request) => {
     if (request.url().includes('/rest/v1/notes')) posted.push(request.postData() ?? '')
@@ -156,6 +156,119 @@ test('つながっていないあいだに作って取り消したものは、1 
   await allowWrites(context)
   await page.waitForTimeout(4_000)
   expect(posted.filter((body) => body.includes('すぐ取り消す'))).toHaveLength(0)
+})
+
+/*
+ * 付箋の作成（POST）だけを細工する。lose が true のあいだ、次のどちらかにする。
+ *
+ *   'reply' … サーバーには届け、ページには通信の失敗として返す（返事だけが失われた）
+ *   'send'  … サーバーにも届けない
+ *
+ * 書き換え（PATCH）や削除は細工しない。「作成は送信箱で送り直しを待っているのに、
+ * 回線は戻っていて、あとの書き込みは直接届いてしまう」順番を作るため。
+ */
+async function breakCreates(page: Page, what: 'reply' | 'send') {
+  const state = { lose: true }
+  await page.route('**/rest/v1/notes*', async (route) => {
+    if (!state.lose || route.request().method() !== 'POST') return route.continue()
+    if (what === 'reply') await route.fetch()
+    await route.abort('failed')
+  })
+  return state
+}
+
+test('作成が届いたのに返事が失われても、そのあと書いた文字はサーバーに残る', async ({ page }) => {
+  await signIn(page, 'ひとり目')
+  const url = await createBoard(page, stamp())
+  const creates = await breakCreates(page, 'reply')
+
+  await addFirstNote(page)
+  const pill = page.getByRole('button', { name: /件未送信|件送れません/ })
+  await expect(pill).toBeVisible({ timeout: 20_000 })
+
+  // 作成は送信箱にある。サーバーには実は届いている
+  await writeInNote(page, '返事が消えても残る')
+
+  // 送り直した作成は主キーの重複で返る。確定するのは作成だけで、書いた文字は更新として送る
+  creates.lose = false
+  await expect(pill).toHaveCount(0, { timeout: 30_000 })
+
+  const { context: guestContext, page: guest } = await openAsGuest(
+    page.context().browser()!,
+    url,
+    'ふたり目',
+  )
+  try {
+    await expect(guest.getByText('返事が消えても残る', { exact: true })).toBeVisible({
+      timeout: 20_000,
+    })
+  } finally {
+    await guestContext.close()
+  }
+})
+
+test('作成が届いたのに返事が失われても、取り消して消した付箋は戻ってこない', async ({ page }) => {
+  await signIn(page, 'ひとり目')
+  const url = await createBoard(page, stamp())
+  const creates = await breakCreates(page, 'reply')
+
+  await addFirstNote(page)
+  const pill = page.getByRole('button', { name: /件未送信|件送れません/ })
+  await expect(pill).toBeVisible({ timeout: 20_000 })
+
+  const note = page.locator('[data-ctx-kind="note"]')
+  await page.keyboard.press('Control+z')
+  await expect(note).toHaveCount(0, { timeout: 20_000 })
+
+  creates.lose = false
+  await expect(pill).toHaveCount(0, { timeout: 30_000 })
+
+  // サーバーに届いていた作成は消されている（送信箱の作成を捨てるだけだと、ここで戻ってくる）
+  const { context: guestContext, page: guest } = await openAsGuest(
+    page.context().browser()!,
+    url,
+    'ふたり目',
+  )
+  try {
+    await expect(boardToolbar(guest)).toBeVisible({ timeout: 20_000 })
+    await guest.waitForLoadState('networkidle')
+    await expect(guest.locator('[data-ctx-kind="note"]')).toHaveCount(0)
+  } finally {
+    await guestContext.close()
+  }
+})
+
+test('作成が届かず送り直しを待つあいだに書いた文字も、「消された」扱いにならずに残る', async ({
+  page,
+}) => {
+  await signIn(page, 'ひとり目')
+  const url = await createBoard(page, stamp())
+  const creates = await breakCreates(page, 'send')
+
+  await addFirstNote(page)
+  const pill = page.getByRole('button', { name: /件未送信|件送れません/ })
+  await expect(pill).toBeVisible({ timeout: 20_000 })
+
+  // 回線はもう戻っている（PATCH は届く）。直接送ると、まだ無い行への UPDATE になる
+  await writeInNote(page, '送り直しを待つあいだに書いた')
+  await expect(page.getByText(/消されています|できませんでした/)).toHaveCount(0)
+  await expect(page.getByText('送り直しを待つあいだに書いた', { exact: true })).toBeVisible()
+
+  creates.lose = false
+  await expect(pill).toHaveCount(0, { timeout: 30_000 })
+
+  const { context: guestContext, page: guest } = await openAsGuest(
+    page.context().browser()!,
+    url,
+    'ふたり目',
+  )
+  try {
+    await expect(guest.getByText('送り直しを待つあいだに書いた', { exact: true })).toBeVisible({
+      timeout: 20_000,
+    })
+  } finally {
+    await guestContext.close()
+  }
 })
 
 test('オフラインのあいだは、画像やファイルを置けないとはっきり言う', async ({ page, context }) => {

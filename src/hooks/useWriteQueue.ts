@@ -67,10 +67,12 @@ async function send(entry: QueueEntry, userId: string): Promise<boolean> {
         throw { code: '42501', message: '書き込む権限がありません' }
       }
     } else {
-      const { error } = await supabase
-        .from(entry.table)
-        .update({ deleted_at: new Date().toISOString() })
-        .eq('id', entry.rowId)
+      /*
+       * 本当に消す。送信箱の delete は「作成が送信箱にあった行を消した」ときにしか
+       * 作られない（useOptimisticTable.remove）。作成が実は届いていれば消え、
+       * 届いていなければ 0 行で終わる。どちらでも送れたことにしてよい。
+       */
+      const { error } = await supabase.from(entry.table).delete().eq('id', entry.rowId)
       if (error) throw error
     }
 
@@ -81,8 +83,9 @@ async function send(entry: QueueEntry, userId: string): Promise<boolean> {
     const result = classifyError(e)
 
     if (result.outcome === 'success') {
-      // 前回の送信が実は通っていた。ここで片付けないと永久に残る
-      await settleSent(entry.key, entry.rev)
+      // 前回の送信が実は通っていた。ここで片付けないと永久に残る。
+      // 確定したのは作成だけなので、そのあとの書き換えは settleSent が送り直しに回す
+      await settleSent(entry.key, entry.rev, result.alreadyExisted)
       return true
     }
 

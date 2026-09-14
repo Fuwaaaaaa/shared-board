@@ -42,9 +42,15 @@ export interface QueueEntry {
   /** ためた時点の auth.uid()。変わっていたらもう送れない */
   userId: string
   kind: QueueKind
-  /** create のとき、送る行そのもの */
+  /** create のとき、送る行そのもの（あとから畳んだ書き換えも入っている） */
   row?: Record<string, unknown>
-  /** update のとき、積み上げた変更 */
+  /**
+   * update のとき、積み上げた変更。
+   *
+   * create のときは「作成のあとに畳んだ書き換え」だけを別に持つ。作成が前にもう
+   * 届いていた（主キーの重複で返ってきた）とき、確定したのは作成だけなので、
+   * この分を更新として送り直す（afterSend）。
+   */
   patch?: Record<string, unknown>
   /** update のとき、ためる前の値（取り消しと、競合の見比べに使う） */
   base?: Record<string, unknown>
@@ -105,12 +111,13 @@ export function keyOf(roomId: string, table: QueueTable, rowId: string): string 
  *
  * 操作のログを再生するのではなく、行ごとの最終状態だけを持つ。
  * こうすると「作って 12 回直した付箋」は INSERT 1 回になり、
- * 「60 枚貼って取り消した」は 1 件も送らずに済む。
+ * 「60 枚貼って取り消した」は中身を 1 文字も送らずに済む（消す指示だけが残る）。
  * 件数の上限（tg_limit_rows_per_room）が見るのも、畳んだあとの数になる。
  *
- * null を返したときは、その行の分をまるごと捨てる（作って消したので送るものが無い）。
+ * delete は「id を指定して本当に消す」。ゴミ箱へ入れるのは deleted_at の update で、
+ * こちらには来ない。
  */
-export function collapse(existing: QueueEntry | undefined, op: QueueOp): QueueEntry | null {
+export function collapse(existing: QueueEntry | undefined, op: QueueOp): QueueEntry {
   const base: QueueEntry = {
     key: keyOf(op.roomId, op.table, op.rowId),
     roomId: op.roomId,
@@ -135,11 +142,24 @@ export function collapse(existing: QueueEntry | undefined, op: QueueOp): QueueEn
     return { ...base, base: op.base }
   }
 
-  // 作ってから消した。まだ送っていないので、なかったことにする
-  if (existing.kind === 'create' && op.kind === 'delete') return null
+  /*
+   * 作ってから消したときも、なかったことにはしない。
+   *
+   * 送信箱の作成は、どれも一度は送ろうとして返事を受け取れなかったもの。通信の途中で
+   * 切れただけで、サーバーには実は届いていることがある。ここで捨てると、その行が
+   * 消えずに残り、他の人の画面や次の読み込みで戻ってくる。
+   *
+   * 作成の中身は送らず、id を指定して消す 1 件だけにする。届いていなければ 0 行で
+   * 終わるだけで、届いていれば消える。作成 → 削除の順に送るのと、最後の状態は同じ。
+   */
 
   if (existing.kind === 'create' && op.kind === 'update') {
-    return { ...base, kind: 'create', row: { ...existing.row, ...op.patch } }
+    return {
+      ...base,
+      kind: 'create',
+      row: { ...existing.row, ...op.patch },
+      patch: { ...existing.patch, ...op.patch },
+    }
   }
 
   if (existing.kind === 'update' && op.kind === 'update') {
@@ -157,7 +177,7 @@ export function collapse(existing: QueueEntry | undefined, op: QueueOp): QueueEn
     return { ...base, kind: 'delete', base: existing.base ?? op.base }
   }
 
-  // delete のあとの create は、id を作り直している限り起きない
+  // 消したあとに作り直した（取り消しのやり直し）。作り直した行で送る
   return { ...base, kind: op.kind, row: op.row, patch: op.patch, base: op.base }
 }
 
@@ -275,16 +295,33 @@ export function decideOnFailure(e: unknown): 'queue' | 'fail' {
  * id と updated_at を落とすのは、前者が宛先そのもので、後者はサーバーが
  * 進めるものだから。room_id や author_id は残してよい——凍結のトリガーは
  * 「変わったとき」だけ怒るので、同じ値なら通る。
+ *
+ * alreadyExisted は、作成が主キーの重複で返ってきたとき。確定したのは
+ * 「作成は前にもう届いていた」ことだけで、そのあとに畳んだ書き換えは届いていない
+ * （重複で断られた INSERT に入っていただけ）。書き換えがあれば更新として送り直し、
+ * 無ければ片付ける。これを「全部送れた」と数えると、作ったあとに書いた文字が消える。
  */
-export function afterSend(entry: QueueEntry, sentRev: number): 'drop' | Partial<QueueEntry> {
-  if (entry.rev === sentRev) return 'drop'
-
+export function afterSend(
+  entry: QueueEntry,
+  sentRev: number,
+  alreadyExisted = false,
+): 'drop' | Partial<QueueEntry> {
   const fresh = {
     state: 'pending' as const,
     attempts: 0,
     transportAttempts: 0,
     nextAttemptAt: undefined,
   }
+
+  if (alreadyExisted && entry.kind === 'create') {
+    const patch = { ...(entry.patch ?? {}) }
+    delete patch.id
+    delete patch.updated_at
+    if (Object.keys(patch).length === 0) return 'drop'
+    return { ...fresh, kind: 'update', row: undefined, patch, expectUpdatedAt: undefined }
+  }
+
+  if (entry.rev === sentRev) return 'drop'
 
   if (entry.kind !== 'create') return fresh
 
@@ -341,7 +378,7 @@ export function nextRetryState(
 }
 
 export type Classified =
-  | { outcome: 'success' }
+  | { outcome: 'success'; alreadyExisted?: boolean }
   | { outcome: 'retry'; transport?: boolean }
   | { outcome: 'dead'; reason: FailureReason; errorText: string }
 
@@ -351,6 +388,8 @@ export type Classified =
  * 主キーの重複（23505 で details に「Key (id)=」がある）は、
  * 前回の送信が実は通っていたということなので成功として扱う。これが
  * 二重送信（2 つのタブ、通信の途中切れ）を安全にしている。
+ * ただし「作成が届いていた」ことしか分からないので、alreadyExisted で呼び出し側に
+ * 伝える。そのあとに畳んだ書き換えまで届いたことにはならない（afterSend）。
  *
  * ただし todos には主キー以外の部分一意インデックス
  * （todos_next_occurrence_uidx）があるので、23505 を一括りにはできない。
@@ -369,7 +408,13 @@ export function classifyError(e: unknown): Classified {
   if (status !== undefined && (status >= 500 || status === 429)) return { outcome: 'retry' }
 
   if (code === '23505') {
-    if (details.includes('Key (id)=')) return { outcome: 'success' }
+    /*
+     * 主キーかどうかは、details の「Key (id)=」か、制約名の「〜_pkey」で見る。
+     * PostgREST の版によっては details を返さず（null）、message の制約名しか残らない。
+     * details だけを見ていると、届いていた作成が「送れなかった」として止まる。
+     */
+    const primaryKey = details.includes('Key (id)=') || /unique constraint "\w+_pkey"/.test(message)
+    if (primaryKey) return { outcome: 'success', alreadyExisted: true }
     return { outcome: 'dead', reason: 'duplicate', errorText: message }
   }
 

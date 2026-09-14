@@ -65,6 +65,28 @@ export function endWrite(ok: boolean) {
   publish()
 }
 
+/**
+ * 書き込みを頼んでから、その処理が終わるまでを「同期中」に数える。返した関数で終える。
+ *
+ * HTTP の出入口（beginWrite / endWrite）だけで数えると、リクエストが実際に出るまでの
+ * あいだは数えられない。付箋を貼って作成の返事を待っている書き換えは、作成が返った瞬間に
+ * 数が 0 になり、書き換えのリクエストが出るまで一瞬「保存済み」になる。そこで閉じたり
+ * 読み込み直したりすると、まだ送っていない文字が消える。
+ *
+ * エラーの印には触らない。成功・失敗は、実際に送ったリクエスト側（endWrite）が決める。
+ */
+export function holdSaving(): () => void {
+  pending += 1
+  publish()
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    pending = Math.max(0, pending - 1)
+    publish()
+  }
+}
+
 /** エラー表示を消す（画面から「再読み込み」などを促したあと） */
 export function clearSyncError() {
   failed = false

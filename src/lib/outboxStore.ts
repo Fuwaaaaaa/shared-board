@@ -93,7 +93,7 @@ export function nextSeq(): number {
 /**
  * 1 件ためる。
  *
- * 同じ行の分があれば畳む。畳んだ結果が空（作って消した）なら、まるごと捨てる。
+ * 同じ行の分があれば畳む（作って消したものも、消す指示の 1 件として残る）。
  * 大きすぎるものは、ためずに false を返す——黙って落とすと
  * 「書いたのに消えた」がいちばん困る形で起きる。
  */
@@ -101,14 +101,6 @@ export async function enqueue(op: QueueOp): Promise<boolean> {
   const key = keyOf(op.roomId, op.table, op.rowId)
   const existing = entries.find((entry) => entry.key === key)
   const next = collapse(existing, op)
-
-  if (!next) {
-    entries = entries.filter((entry) => entry.key !== key)
-    await remove(key)
-    announce()
-    emit()
-    return true
-  }
 
   if (tooLargeToQueue(next)) return false
 
@@ -120,29 +112,14 @@ export async function enqueue(op: QueueOp): Promise<boolean> {
 }
 
 /**
- * まだ送っていない「作成」を取り消す。取り消せたら true。
+ * その行の分が送信箱に残っているか（作成・書き換え・削除のどれでも）。
  *
- * オフラインで作ってすぐ消したときに使う。送信箱には作成の 1 件しか無いので、
- * それを捨てれば送るものは残らない。
- *
- * 逆に、送信箱に無い行（サーバーにもうある行）の削除は、ここでは受けない。
- * 受けてしまうと、本当に消したいものを「ゴミ箱へ入れる」に読み替えることになり、
- * 消し方の意味が変わってしまう。
+ * 残っているあいだ、同じ行への次の書き込みはサーバーへ直接送らず、その後ろに並べる。
+ * 追い越すと、まだ届いていない作成に UPDATE / DELETE が先に当たって 0 行で終わる。
  */
-export async function cancelPendingCreate(
-  roomId: string,
-  table: QueueTable,
-  rowId: string,
-): Promise<boolean> {
+export function hasEntry(roomId: string, table: QueueTable, rowId: string): boolean {
   const key = keyOf(roomId, table, rowId)
-  const existing = entries.find((entry) => entry.key === key)
-  if (!existing || existing.kind !== 'create') return false
-
-  entries = entries.filter((entry) => entry.key !== key)
-  await remove(key)
-  announce()
-  emit()
-  return true
+  return entries.some((entry) => entry.key === key)
 }
 
 /** 送れた・捨てたので、送信箱から外す */
@@ -158,12 +135,17 @@ export async function dropEntry(key: string): Promise<void> {
  *
  * 送っているあいだに同じ行へ書き足されていたら、消さずに送り直す側へ回す
  * （判断は writeQueue.afterSend）。key だけで消すと、その書き足しごと消える。
+ * alreadyExisted は、作成が主キーの重複で返ってきたとき。
  */
-export async function settleSent(key: string, sentRev: number): Promise<void> {
+export async function settleSent(
+  key: string,
+  sentRev: number,
+  alreadyExisted = false,
+): Promise<void> {
   const current = entries.find((entry) => entry.key === key)
   if (!current) return
 
-  const next = afterSend(current, sentRev)
+  const next = afterSend(current, sentRev, alreadyExisted)
   if (next === 'drop') {
     await dropEntry(key)
     return

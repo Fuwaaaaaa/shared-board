@@ -1,7 +1,8 @@
 import { useMemo, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { messageOf } from '../lib/errorMessage'
-import { cancelPendingCreate, enqueue, nextSeq } from '../lib/outboxStore'
+import { enqueue, hasEntry, nextSeq } from '../lib/outboxStore'
+import { holdSaving } from '../lib/syncStatus'
 import {
   decideOnFailure,
   lockedFields,
@@ -78,6 +79,9 @@ function sameJson(a: unknown, b: unknown): boolean {
  *
  * そこで、同じ行への次の書き込みは、作成の結果が出てからサーバーへ送る。
  * 画面への反映はこれまでどおりその場でするので、待つのは通信だけ。
+ *
+ * ここで持つのは「insert() がいま送っている作成」だけ。送信箱で送り直しを待っている
+ * 作成や、送信箱がいま送っている作成は、送信箱そのものを見る（routeFor）。
  *
  * 別の画面が同じ表を別の useOptimisticTable で持っていても取り違えないよう、
  * フックの中ではなくモジュールに置き、表の名前と id の組で引く。
@@ -156,9 +160,29 @@ export function useOptimisticTable<T extends Row>(
       return false
     }
 
+    /*
+     * その行への次の書き込みを、どう扱うか。
+     *
+     *   'send'   … サーバーへ送ってよい
+     *   'queue'  … 送信箱にその行の分が残っている。追い越さずに、その後ろに並べる
+     *   'failed' … 作成に失敗した。行はどこにも無く、失敗はもう知らせてある
+     *
+     * 送信箱に残っているのは、送り直しを待っている作成・いま送っている作成・
+     * 通信が切れて止まっている書き換えなど。どれも「サーバーはまだその続きを知らない」
+     * ので、同じ行の次の書き込みを直接送ると順番が入れ替わる。
+     */
+    async function routeFor(id: string): Promise<'send' | 'queue' | 'failed'> {
+      if ((await createOutcome(tableName, id)) === 'failed') return 'failed'
+      const context = contextRef.current
+      const queueTable = queueTableOf(tableName)
+      if (context && queueTable && hasEntry(context.roomId, queueTable, id)) return 'queue'
+      return 'send'
+    }
+
     /** 行を足す。成功したら true。失敗した分は画面から消して知らせる */
     async function insert(rows: T[], what = '保存'): Promise<boolean> {
       if (rows.length === 0) return true
+      const saving = holdSaving()
       const releases = rows.map((row) => table.holdLocal(row.id, 'insert'))
       for (const row of rows) table.upsertLocal(row)
 
@@ -170,42 +194,69 @@ export function useOptimisticTable<T extends Row>(
         pendingCreates.set(createKey(tableName, row.id), gate)
       }
 
+      /** 送信箱に入れるときの 1 件 */
+      const createOp = (row: T) => () => {
+        const context = contextRef.current
+        const queueTable = queueTableOf(tableName)
+        if (!context || !queueTable) return null
+        return {
+          roomId: context.roomId,
+          table: queueTable,
+          rowId: row.id,
+          userId: context.userId,
+          kind: 'create' as const,
+          row: row as unknown as Record<string, unknown>,
+          label: what,
+          preview: previewOf(
+            (row as unknown as Record<string, unknown>).text ??
+              (row as unknown as Record<string, unknown>).title ??
+              (row as unknown as Record<string, unknown>).body,
+          ),
+          seq: nextSeq(),
+        }
+      }
+
       const done = new Set<string>()
       const queued = new Set<string>()
+      let sendRows = rows
       try {
-        for (const chunk of chunks(rows, CHUNK)) {
+        /*
+         * 同じ id の分が送信箱に残っている（送信箱にある作成を消したあと、取り消しで
+         * 作り直した など）なら、送らずにその後ろに並べる。先に INSERT を送ると、
+         * あとから送信箱の DELETE が届いて、作り直した行が消える。
+         */
+        const context = contextRef.current
+        const queueTable = queueTableOf(tableName)
+        if (context && queueTable && rows.some((row) => hasEntry(context.roomId, queueTable, row.id))) {
+          sendRows = []
+          for (const row of rows) {
+            if (!hasEntry(context.roomId, queueTable, row.id)) sendRows.push(row)
+            // 入れられなかった（大きすぎる）行は、下の後始末で画面から外す。理由は queueNow が知らせている
+            else if (await queueNow(createOp(row))) queued.add(row.id)
+          }
+        }
+
+        for (const chunk of chunks(sendRows, CHUNK)) {
           const { data, error } = await supabase.from(tableName).insert(chunk).select()
           if (error) throw error
           for (const row of chunk) done.add(row.id)
           for (const row of (data ?? []) as T[]) table.applyServerRow(row)
         }
-        return true
+
+        const unqueued = rows.filter((row) => !done.has(row.id) && !queued.has(row.id))
+        for (const row of unqueued) table.removeLocal(row.id)
+        return unqueued.length === 0
       } catch (e) {
-        const rest = rows.filter((row) => !done.has(row.id))
+        const rest = sendRows.filter((row) => !done.has(row.id))
         const context = contextRef.current
         const queueTable = queueTableOf(tableName)
 
         if (context && queueTable && decideOnFailure(e) === 'queue') {
           for (const row of rest) {
-            const ok = await queueOrFail(e, () => ({
-              roomId: context.roomId,
-              table: queueTable,
-              rowId: row.id,
-              userId: context.userId,
-              kind: 'create' as const,
-              row: row as unknown as Record<string, unknown>,
-              label: what,
-              preview: previewOf(
-                (row as unknown as Record<string, unknown>).text ??
-                  (row as unknown as Record<string, unknown>).title ??
-                  (row as unknown as Record<string, unknown>).body,
-              ),
-              seq: nextSeq(),
-            }))
-            if (ok) queued.add(row.id)
+            if (await queueOrFail(e, createOp(row))) queued.add(row.id)
           }
           // 全部ためられたなら、書いた人から見れば「保存された」でよい
-          if (queued.size === rest.length) return true
+          if (rows.every((row) => done.has(row.id) || queued.has(row.id))) return true
         }
 
         /*
@@ -221,6 +272,7 @@ export function useOptimisticTable<T extends Row>(
         fail(what, e)
         return false
       } finally {
+        saving()
         for (const release of releases) release()
         // 待たせていた同じ行への書き込みを、結果に合わせて先へ進める
         for (const row of rows) {
@@ -235,36 +287,56 @@ export function useOptimisticTable<T extends Row>(
     /** 行を本当に消す。成功したら true。消せなかった分は画面に戻して知らせる */
     async function remove(rows: T[], what = '削除'): Promise<boolean> {
       if (rows.length === 0) return true
+      const saving = holdSaving()
       const releases = rows.map((row) => table.holdLocal(row.id, 'delete'))
       for (const row of rows) table.removeLocal(row.id)
 
+      /** 送信箱に入れるときの 1 件 */
+      const deleteOp = (row: T) => () => {
+        const context = contextRef.current
+        const queueTable = queueTableOf(tableName)
+        if (!context || !queueTable) return null
+        return {
+          roomId: context.roomId,
+          table: queueTable,
+          rowId: row.id,
+          userId: context.userId,
+          kind: 'delete' as const,
+          label: what,
+          preview: previewOf(
+            (row as unknown as Record<string, unknown>).text ??
+              (row as unknown as Record<string, unknown>).title ??
+              (row as unknown as Record<string, unknown>).body,
+          ),
+          seq: nextSeq(),
+        }
+      }
+
       const done = new Set<string>()
+      // 作成に失敗していた行。どこにも無いので戻さないが、消せたことにもしない
+      const failedCreate = new Set<string>()
       try {
         /*
          * 作成中の行は、結果が出てから消す。先に DELETE が届くと 0 行で終わり、
          * あとから INSERT が通って、消したはずの行が戻ってくる。
-         * 作成に失敗した行はもうどこにも無いので、消せたことにする。
-         * 作成が送信箱に居る行は、その作成を取り消せば送るものが残らない。
+         *
+         * 送信箱にその行の分が残っているなら、送信箱の作成を黙って捨てずに、
+         * 消す指示をその後ろに並べる。作成は返事が失われただけで実は届いていることがあり、
+         * 捨てると消したはずの行がサーバーに残る（writeQueue.collapse）。
+         *
+         * 作成に失敗していた行は、消せたことにしない。true を返すと呼び出し側が
+         * 「削除」を取り消しの山に積み、Ctrl+Z が無い行を戻そうとして毎回失敗する。
          */
-        const outcomes = await Promise.all(rows.map((row) => createOutcome(tableName, row.id)))
-        const context = contextRef.current
-        const queueTable = queueTableOf(tableName)
+        const routes = await Promise.all(rows.map((row) => routeFor(row.id)))
         const sendRows: T[] = []
         for (const [i, row] of rows.entries()) {
-          if (outcomes[i] === 'failed') {
-            done.add(row.id)
-            continue
+          if (routes[i] === 'failed') {
+            failedCreate.add(row.id)
+          } else if (routes[i] === 'queue') {
+            if (await queueNow(deleteOp(row))) done.add(row.id)
+          } else {
+            sendRows.push(row)
           }
-          if (
-            outcomes[i] === 'queued' &&
-            context &&
-            queueTable &&
-            (await cancelPendingCreate(context.roomId, queueTable, row.id))
-          ) {
-            done.add(row.id)
-            continue
-          }
-          sendRows.push(row)
         }
 
         for (const chunk of chunks(sendRows, CHUNK)) {
@@ -295,34 +367,24 @@ export function useOptimisticTable<T extends Row>(
             }
           }
         }
-        return true
+
+        // 送信箱に入れられなかった行は画面に戻す（理由は queueNow が知らせている）
+        const unqueued = rows.filter((row) => !done.has(row.id) && !failedCreate.has(row.id))
+        for (const row of unqueued) table.upsertLocal(row)
+        return unqueued.length === 0 && failedCreate.size === 0
       } catch (e) {
-        const context = contextRef.current
-        const queueTable = queueTableOf(tableName)
-
         /*
-         * オフラインで作ってすぐ消したときは、送信箱の「作成」を取り消せば済む。
-         * まだ 1 度も送っていないので、送るものが残らない。
-         *
-         * サーバーにもうある行の削除は、ためない。ためると
-         * 「本当に消す」を「ゴミ箱へ入れる」に読み替えることになり、意味が変わる。
+         * サーバーにもうある行の削除は、通信が切れても送信箱にためない。
+         * つながり直すまで「消えたように見えて実は残っている」状態を作るより、
+         * その場で戻して知らせるほうが分かりやすい。
          */
-        if (context && queueTable && decideOnFailure(e) === 'queue') {
-          const canceled: string[] = []
-          for (const row of rows) {
-            if (done.has(row.id)) continue
-            if (await cancelPendingCreate(context.roomId, queueTable, row.id)) {
-              canceled.push(row.id)
-            }
-          }
-          if (canceled.length === rows.filter((row) => !done.has(row.id)).length) return true
-          for (const id of canceled) done.add(id)
+        for (const row of rows) {
+          if (!done.has(row.id) && !failedCreate.has(row.id)) table.upsertLocal(row)
         }
-
-        for (const row of rows) if (!done.has(row.id)) table.upsertLocal(row)
         fail(what, e)
         return false
       } finally {
+        saving()
         for (const release of releases) release()
       }
     }
@@ -340,6 +402,7 @@ export function useOptimisticTable<T extends Row>(
       const fields = Object.keys(changes) as (keyof T)[]
       if (fields.length === 0) return 'ok'
 
+      const saving = holdSaving()
       const release = table.holdLocal(id, fields)
       const before = table.patchLocal(id, changes)
       const rollback = () => {
@@ -385,19 +448,20 @@ export function useOptimisticTable<T extends Row>(
       }
 
       try {
-        // 作ったばかりの行なら、作成の結果が出てから送る（pendingCreates の頭を参照）
-        const created = await createOutcome(tableName, id)
-        if (created === 'failed') {
+        // 作ったばかりの行・送信箱に分が残っている行は、追い越さない（routeFor）
+        const route = await routeFor(id)
+        if (route === 'failed') {
           // 作成に失敗したことはもう知らせてあり、行も画面から消えている。重ねて知らせない
           release()
           return 'error'
         }
-        if (created === 'queued') {
+        if (route === 'queue') {
           if (await queueNow(updateOp)) {
             release()
             return 'ok'
           }
-          // 入れられなかった理由（大きすぎる）は queueNow が知らせている
+          // 入れられなかった理由（大きすぎる）は queueNow が知らせている。
+          // 送信箱の後ろに並べられないものを、追い越して直接送ることはしない
           release()
           rollback()
           return 'error'
@@ -473,6 +537,8 @@ export function useOptimisticTable<T extends Row>(
         rollback()
         fail(what, e)
         return 'error'
+      } finally {
+        saving()
       }
     }
 
@@ -482,6 +548,7 @@ export function useOptimisticTable<T extends Row>(
       const fields = Object.keys(changes) as (keyof T)[]
       if (fields.length === 0) return true
 
+      const saving = holdSaving()
       const releases = rows.map((row) => table.holdLocal(row.id, fields))
       const befores = new Map<string, T | undefined>()
       for (const row of rows) befores.set(row.id, table.patchLocal(row.id, changes))
@@ -517,26 +584,32 @@ export function useOptimisticTable<T extends Row>(
 
       const done = new Set<string>()
       const queued = new Set<string>()
+      /*
+       * 送らなかった行。作成に失敗していた行（もう画面に無く、失敗も知らせてある）と、
+       * 送信箱の後ろに並べるはずが入れられなかった行（大きすぎる。queueNow が知らせている）。
+       * どちらも済んだことにはしない。true を返すと呼び出し側が取り消しの山に積み、
+       * Ctrl+Z が無い行を戻そうとして毎回失敗する。
+       */
+      const blocked = new Set<string>()
       const savedRows: T[] = []
-      let sendRows = rows
+      const sendRows: T[] = []
+
+      /** 画面を変更前に戻す（作成に失敗していた行は、もう画面に無いので何も起きない） */
+      const restore = (ids: Set<string>) => {
+        for (const id of ids) {
+          const before = befores.get(id)
+          if (before) table.patchLocal(id, pick(before, fields))
+        }
+      }
       try {
-        // 作ったばかりの行は、作成の結果が出てから（pendingCreates の頭を参照）
-        const outcomes = await Promise.all(rows.map((row) => createOutcome(tableName, row.id)))
-        if (outcomes.some((outcome) => outcome !== null)) {
-          sendRows = []
-          for (const [i, row] of rows.entries()) {
-            // 作成に失敗した行は、もう画面にも無く、知らせてもある
-            if (outcomes[i] === 'failed') {
-              done.add(row.id)
-              continue
-            }
-            // 作成が送信箱に居るなら、送らずに作成と畳ませる
-            if (outcomes[i] === 'queued' && (await queueNow(updateOpFor(row)))) {
-              queued.add(row.id)
-              continue
-            }
-            sendRows.push(row)
-          }
+        // 作ったばかりの行・送信箱に分が残っている行は、追い越さない（routeFor）
+        const routes = await Promise.all(rows.map((row) => routeFor(row.id)))
+        for (const [i, row] of rows.entries()) {
+          if (routes[i] === 'failed') blocked.add(row.id)
+          else if (routes[i] === 'send') sendRows.push(row)
+          else if (await queueNow(updateOpFor(row))) queued.add(row.id)
+          // 送信箱の後ろに並べられないものを、追い越して直接送ることはしない
+          else blocked.add(row.id)
         }
 
         for (const chunk of chunks(sendRows, CHUNK)) {
@@ -560,7 +633,9 @@ export function useOptimisticTable<T extends Row>(
             )
           }
         }
-        return true
+
+        restore(blocked)
+        return blocked.size === 0
       } catch (e) {
         const rest = sendRows.filter((row) => !done.has(row.id))
 
@@ -573,17 +648,17 @@ export function useOptimisticTable<T extends Row>(
           for (const row of rest) {
             if (await queueOrFail(e, updateOpFor(row))) queued.add(row.id)
           }
-          if (rest.every((row) => queued.has(row.id))) return true
+          if (rest.every((row) => queued.has(row.id))) {
+            restore(blocked)
+            return blocked.size === 0
+          }
         }
 
-        for (const row of rows) {
-          if (done.has(row.id) || queued.has(row.id)) continue
-          const before = befores.get(row.id)
-          if (before) table.patchLocal(row.id, pick(before, fields))
-        }
+        restore(new Set(rows.map((row) => row.id).filter((id) => !done.has(id) && !queued.has(id))))
         fail(what, e)
         return false
       } finally {
+        saving()
         for (const release of releases) release()
         // 保留を外してからサーバーの行を取り込む（updated_at などを揃える）
         for (const row of savedRows) table.applyServerRow(row)

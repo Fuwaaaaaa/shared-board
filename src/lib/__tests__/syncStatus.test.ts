@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { SYNC_LABELS, beginWrite, clearSyncError, endWrite, syncSnapshot } from '../syncStatus'
+import {
+  SYNC_LABELS,
+  beginWrite,
+  clearSyncError,
+  endWrite,
+  holdSaving,
+  syncSnapshot,
+} from '../syncStatus'
 
 /*
  * ヘッダーの「保存済み / 同期中 / 保存できません」。
@@ -66,6 +73,42 @@ describe('syncStatus', () => {
     beginWrite()
     expect(syncSnapshot()).toBe('saving')
     endWrite(true)
+    expect(syncSnapshot()).toBe('saved')
+  })
+
+  /*
+   * 書き込みを頼んでから、実際にリクエストが出るまでにも間がある
+   * （作成の返事を待っている書き換えなど）。そこを数えないと一瞬「保存済み」が出て、
+   * そのとき閉じると、まだ送っていない文字が消える。
+   */
+  it('頼んでから終えるまでは、リクエストが出ていなくても「同期中」', () => {
+    const done = holdSaving()
+    expect(syncSnapshot()).toBe('saving')
+
+    // 待っていた作成のリクエストが返っても、まだ終えていない
+    beginWrite()
+    endWrite(true)
+    expect(syncSnapshot()).toBe('saving')
+
+    done()
+    expect(syncSnapshot()).toBe('saved')
+  })
+
+  it('終えても、リクエストが断られた印は消さない', () => {
+    const done = holdSaving()
+    beginWrite()
+    endWrite(false)
+    done()
+    expect(syncSnapshot()).toBe('error')
+  })
+
+  it('終える関数を 2 回呼んでも、数は 1 つしか減らない', () => {
+    const outer = holdSaving()
+    const inner = holdSaving()
+    inner()
+    inner()
+    expect(syncSnapshot()).toBe('saving')
+    outer()
     expect(syncSnapshot()).toBe('saved')
   })
 

@@ -69,9 +69,37 @@ describe('collapse', () => {
     expect(entry.row).toMatchObject({ id: 'note-1', text: 'いろは' })
   })
 
-  it('create のあとの delete は、まるごと捨てる（1 件も送らない）', () => {
-    const created = collapse(undefined, makeOp({ row: { id: 'note-1', text: 'あ' } }))!
-    expect(collapse(created, makeOp({ kind: 'delete' }))).toBeNull()
+  /*
+   * 作成が実は前に届いていたとき（返事だけ失われた）、確定するのは作成だけ。
+   * あとから畳んだ書き換えを別に覚えていないと、送り直す手がかりが無くなる。
+   */
+  it('create のあとの update は、作成のあとの書き換えを別に覚える', () => {
+    const created = collapse(undefined, makeOp({ row: { id: 'note-1', text: '', x: 0 } }))!
+    const first = collapse(created, makeOp({ kind: 'update', patch: { text: 'あ' } }))!
+    const second = collapse(first, makeOp({ kind: 'update', patch: { x: 40 } }))!
+    expect(second.patch).toEqual({ text: 'あ', x: 40 })
+    expect(second.row).toEqual({ id: 'note-1', text: 'あ', x: 40 })
+  })
+
+  /*
+   * 送信箱の作成は、どれも一度送ろうとして返事を受け取れなかったもの。
+   * 実は届いていることがあるので、捨てると消したはずの行がサーバーに残る。
+   */
+  it('create のあとの delete は、中身を捨てて「消す」の 1 件だけ残す', () => {
+    const created = collapse(undefined, makeOp({ row: { id: 'note-1', text: 'すぐ消す' } }))!
+    const edited = collapse(created, makeOp({ kind: 'update', patch: { text: 'すぐ消す!' } }))!
+    const entry = collapse(edited, makeOp({ kind: 'delete' }))
+    expect(entry.kind).toBe('delete')
+    expect(entry.row).toBeUndefined()
+    expect(entry.patch).toBeUndefined()
+    // 送る中身に本文が残らない
+    expect(JSON.stringify(entry)).not.toContain('"text"')
+  })
+
+  it('消したあとに作り直したら、作り直した行で作成になる', () => {
+    const deleted = collapse(undefined, makeOp({ kind: 'delete' }))
+    const entry = collapse(deleted, makeOp({ kind: 'create', row: { id: 'note-1', text: '戻した' } }))
+    expect(entry).toMatchObject({ kind: 'create', row: { text: '戻した' } })
   })
 
   it('update を重ねると、列ごとに新しいほうが残る', () => {
@@ -205,14 +233,34 @@ describe('classifyError', () => {
    * ただし todos には主キー以外の部分一意インデックスがあるので、
    * 23505 を一括りにすると別物の行を握り潰す。
    */
-  it('主キーの重複は成功として扱う', () => {
+  it('主キーの重複は成功として扱い、作成が前に届いていたことを印にする', () => {
     expect(
       classifyError({
         code: '23505',
         message: 'duplicate key value violates unique constraint "notes_pkey"',
         details: 'Key (id)=(note-1) already exists.',
       }),
-    ).toEqual({ outcome: 'success' })
+    ).toEqual({ outcome: 'success', alreadyExisted: true })
+  })
+
+  it('details が返らない版でも、制約名が主キーなら同じく扱う', () => {
+    // ローカルの Supabase（PostgREST）はこの形で返す。details だけを見ていると取りこぼす
+    expect(
+      classifyError({
+        code: '23505',
+        message: 'duplicate key value violates unique constraint "notes_pkey"',
+        details: null as unknown as string,
+      }),
+    ).toEqual({ outcome: 'success', alreadyExisted: true })
+  })
+
+  it('主キー以外の重複は、details が返らなくても送れなかったものとして残す', () => {
+    const result = classifyError({
+      code: '23505',
+      message: 'duplicate key value violates unique constraint "todos_next_occurrence_uidx"',
+      details: null as unknown as string,
+    })
+    expect(result).toMatchObject({ outcome: 'dead', reason: 'duplicate' })
   })
 
   it('主キー以外の重複は、送れなかったものとして残す', () => {
@@ -403,6 +451,46 @@ describe('afterSend', () => {
       8,
     )
     expect(next).toMatchObject({ attempts: 0, transportAttempts: 0, nextAttemptAt: undefined })
+  })
+
+  /*
+   * 作成が主キーの重複で返ってきた = 前の INSERT が届いていた。確定したのは作成だけで、
+   * そのあとに畳んだ書き換えは、重複で断られた INSERT に入っていただけで届いていない。
+   * ここを「全部送れた」と数えると、付箋を貼ったあとに書いた文字が黙って消える。
+   */
+  it('作成が前に届いていたら、あとから畳んだ書き換えだけを更新として送り直す', () => {
+    const next = afterSend(
+      makeEntry({
+        kind: 'create',
+        rev: 2,
+        row: { id: 'note-1', room_id: 'room-1', text: 'あとで書いた', x: 0 },
+        patch: { text: 'あとで書いた' },
+      }),
+      2,
+      true,
+    )
+    expect(next).toEqual({
+      state: 'pending',
+      attempts: 0,
+      transportAttempts: 0,
+      nextAttemptAt: undefined,
+      kind: 'update',
+      row: undefined,
+      patch: { text: 'あとで書いた' },
+      expectUpdatedAt: undefined,
+    })
+  })
+
+  it('作成が前に届いていて、あとの書き換えが無ければ片付ける', () => {
+    expect(afterSend(makeEntry({ kind: 'create', rev: 1, row: { id: 'note-1' } }), 1, true)).toBe(
+      'drop',
+    )
+  })
+
+  it('送っているあいだに「消す」へ変わっていたら、重複で返っても消しに行く', () => {
+    const next = afterSend(makeEntry({ kind: 'delete', rev: 3 }), 2, true)
+    expect(next).toMatchObject({ state: 'pending' })
+    expect(next).not.toMatchObject({ kind: 'update' })
   })
 })
 
