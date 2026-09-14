@@ -34,9 +34,9 @@ jobs:
     name: lint / 型 / 単体テスト / Edge Function
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -56,7 +56,7 @@ jobs:
       # esm.sh と npm: から取ってくるぶんを持ち越す。
       # 鍵は deno.lock なので、依存を上げたときだけ取り直しになる
       - name: Deno のキャッシュ
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/deno
           key: deno-${{ runner.os }}-${{ hashFiles('supabase/functions/deno.lock') }}
@@ -76,9 +76,9 @@ jobs:
     # 手元での初回は image の取得込みで数分かかる。CI では余裕を持たせる
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -133,7 +133,7 @@ jobs:
       # pgTAP で落ちたときは何も無いので、無くても怒らせない
       - name: 失敗したときの記録（trace / 動画）
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-test-results
           path: test-results/

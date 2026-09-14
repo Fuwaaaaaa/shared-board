@@ -675,8 +675,9 @@ CI では `e2e/global-setup.ts` が「Supabase につながらない」を握り
 落とします（手元では飛ばします）。飛ばして緑になると、通ったのか
 何も走らなかったのかが色から区別できないためです。
 
-`supabase/setup-cli@v1` の `version` は手元の CLI に合わせて固定してあります。
-上げるときは一緒に上げてください。
+`actions/checkout` などの Action は、Node 24 で動く版（checkout・setup-node・
+upload-artifact は v7、cache は v6）に揃えてあります。Node 20 で動く版のままだと、
+GitHub が Node 24 で無理に動かし、実行のたびに警告が出ます。
 
 ### 権限（RLS）が効いているか — 画面から
 
