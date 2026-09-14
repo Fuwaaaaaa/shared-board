@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { buildIcs, clampedRecurrenceDates } from '../ics'
 import { allDayEndIso, allDayStartIso, boardDateTimeIso, toBoardDate } from '../dates'
+import { expandFeedEvents, parseIcs } from '../icsParse'
+import { expandOccurrences } from '../recurrence'
 import type { CalendarEvent, EventOverride, Todo } from '../types'
 
 /**
@@ -228,12 +230,10 @@ describe('buildIcs', () => {
 })
 
 describe('書き出したものを自分で読み戻せる', () => {
-  it('「この回だけ削除・変更」が往復で保たれる', async () => {
+  it('「この回だけ削除・変更」が往復で保たれる', () => {
     // 購読の取り込み側が EXDATE / RECURRENCE-ID を読まなかったころは、
     // 自分で書き出した .ics を自分のフィードに登録するだけで
     // 消した回が復活し、動かした回が二重に出ていた
-    const { expandFeedEvents } = await import('../icsParse')
-
     const event = makeEvent({
       recurrence: 'weekly',
       recurrence_until: '2026-09-22',
@@ -264,15 +264,13 @@ describe('書き出したものを自分で読み戻せる', () => {
     expect(hits.filter((h) => h.title === '今週だけ別の日')).toHaveLength(1)
   })
 
-  it('毎月 31 日の回が、アプリの表示と 1 回ずつ一致する', async () => {
+  it('毎月 31 日の回が、アプリの表示と 1 回ずつ一致する', () => {
     /*
      * アプリは「その月に無い日は月末へ丸める」、.ics の FREQ=MONTHLY は
      * 「無い日はその月を飛ばす」。この差を RDATE で埋めているので、
      * 書き出して読み戻すと同じ並びに戻るはず。
      * 埋め忘れれば回が減り、二重に足せば回が増えるので、どちらも見つかる。
      */
-    const { expandFeedEvents } = await import('../icsParse')
-    const { expandOccurrences } = await import('../recurrence')
     freezeAt('2026-01-01T00:00:00Z')
 
     const event = makeEvent({
@@ -316,8 +314,7 @@ describe('書き出したものを自分で読み戻せる', () => {
 })
 
 describe('絵文字（サロゲートペア）', () => {
-  it('折り返しても壊れず、読み戻せる', async () => {
-    const { parseIcs } = await import('../icsParse')
+  it('折り返しても壊れず、読み戻せる', () => {
     // 4 バイト文字なので、バイト数で折るときに割れやすい
     const title = '🎉'.repeat(40) + '打ち上げ'
     const text = buildIcs('ボード', [makeEvent({ title })], [], [])

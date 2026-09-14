@@ -18,7 +18,10 @@ export type SyncState = 'saved' | 'saving' | 'offline' | 'error'
 
 let pending = 0
 let failed = false
-let offline = typeof navigator === 'undefined' ? false : !navigator.onLine
+// はっきり false と言われたときだけオフラインにする（errorReport.ts と同じ）。
+// Node 21 以降は navigator があっても onLine が無く、!navigator.onLine だと
+// 最初から「オフライン」になる。
+let offline = typeof navigator !== 'undefined' && navigator.onLine === false
 let snapshot: SyncState = 'saved'
 
 const listeners = new Set<() => void>()

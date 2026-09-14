@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { boardDateTimeIso } from '../dates'
+import { buildIcs } from '../ics'
+import { expandOccurrences } from '../recurrence'
 import {
   expandFeedEvents,
   hasUnsupportedRecurrence,
@@ -625,11 +628,7 @@ describe('書き出したものを読み戻すと、同じ回になる', () => {
    * 書く側（_shared/ics.ts）と読む側（icsParse）を 1 つのテストで結ぶ。
    * 片方だけ直したときに、ここが落ちる。
    */
-  it('毎週 火・木', async () => {
-    const { buildIcs } = await import('../ics')
-    const { expandOccurrences } = await import('../recurrence')
-    const { boardDateTimeIso } = await import('../dates')
-
+  it('毎週 火・木', () => {
     const event = {
       id: 'e1',
       title: '練習',
@@ -672,11 +671,7 @@ describe('書き出したものを読み戻すと、同じ回になる', () => {
    * （FREQ=WEEKLY かつ INTERVAL>1 かつ BYDAY あり）で、
    * _shared/recurrence.ts の stepDates が日曜起点であることの対になる。
    */
-  it('隔週 火・木（週の起点が書く側と読む側で一致している）', async () => {
-    const { buildIcs } = await import('../ics')
-    const { expandOccurrences } = await import('../recurrence')
-    const { boardDateTimeIso } = await import('../dates')
-
+  it('隔週 火・木（週の起点が書く側と読む側で一致している）', () => {
     // 木曜始まり。初週が木だけになるので、起点がずれていれば必ず差が出る
     const event = {
       id: 'e3',
@@ -716,11 +711,7 @@ describe('書き出したものを読み戻すと、同じ回になる', () => {
     expect(mine.length).toBeGreaterThan(0)
   })
 
-  it('毎月 第 2 火曜', async () => {
-    const { buildIcs } = await import('../ics')
-    const { expandOccurrences } = await import('../recurrence')
-    const { boardDateTimeIso } = await import('../dates')
-
+  it('毎月 第 2 火曜', () => {
     const event = {
       id: 'e2',
       title: '定例',
