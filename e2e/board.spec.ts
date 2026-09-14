@@ -105,8 +105,13 @@ test('保存が遅くても、取り消した直後のやり直しが効く', as
 
   const before = await positionOf(page, '[data-ctx-kind="note"]')
   await dragAndWaitForSave(page, '[data-ctx-kind="note"]', 'notes', 120, 80)
+  // 待った PATCH がドラッグ前の書き込みの返事のこともあるので、動くまで待つ
+  await expect
+    .poll(async () => (await positionOf(page, '[data-ctx-kind="note"]')).left)
+    .not.toBe(before.left)
+  // 遅らせたいのは取り消しの保存だけ。ドラッグの保存は先に終わらせておく
+  await waitForSaved(page)
   const moved = await positionOf(page, '[data-ctx-kind="note"]')
-  expect(moved.left).not.toBe(before.left)
 
   await page.route('**/rest/v1/notes*', async (route) => {
     if (route.request().method() === 'PATCH') {
