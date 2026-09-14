@@ -22,13 +22,6 @@ export function useUndoStack() {
   const [, bumpVersion] = useState(0)
   const bump = () => bumpVersion((v) => v + 1)
 
-  const push = useCallback((entry: UndoEntry) => {
-    undoRef.current.push(entry)
-    if (undoRef.current.length > LIMIT) undoRef.current.shift()
-    redoRef.current = [] // 新しい操作をしたらやり直し履歴は捨てる
-    bump()
-  }, [])
-
   /*
    * 取り消し・やり直しは、押した順に 1 つずつ流す。
    *
@@ -38,11 +31,33 @@ export function useUndoStack() {
    * 追い越して、最後に残る状態が押した順と食い違う。
    */
   const queueRef = useRef<Promise<void>>(Promise.resolve())
-  const enqueue = useCallback((step: () => Promise<void>) => {
-    const next = queueRef.current.then(step)
+  const runningRef = useRef(0)
+  const enqueue = useCallback((step: () => void | Promise<void>) => {
+    runningRef.current += 1
+    const next = queueRef.current.then(step).finally(() => {
+      runningRef.current -= 1
+    })
     queueRef.current = next
     return next
   }, [])
+
+  const push = useCallback(
+    (entry: UndoEntry) => {
+      const record = () => {
+        undoRef.current.push(entry)
+        if (undoRef.current.length > LIMIT) undoRef.current.shift()
+        redoRef.current = [] // 新しい操作をしたらやり直し履歴は捨てる
+        bump()
+      }
+      // 取り消し・やり直しの保存を待っているあいだの新しい操作は、その後ろに並べる。
+      // 先に積むと、あとから返ってきた取り消しがやり直しの山に入り（捨てたはずの
+      // 履歴が戻る）、失敗した取り消しは新しい操作の上に戻る（次の Ctrl+Z が押した順を
+      // 飛ばす）。何も待っていなければ、今までどおりその場で積む。
+      if (runningRef.current === 0) record()
+      else void enqueue(record)
+    },
+    [enqueue],
+  )
 
   const undo = useCallback(
     () =>

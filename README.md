@@ -369,12 +369,12 @@ src/
 
 ## テスト
 
-テストは 5 つの層に分かれていて、**合計 1,196 件**です（657 + 80 + 67 + 39 + 353）。層ごとに走らせ方も速さも違うので、表では層ごとの数を並べています。
+テストは 5 つの層に分かれていて、**合計 1,198 件**です（657 + 82 + 67 + 39 + 353）。層ごとに走らせ方も速さも違うので、表では層ごとの数を並べています。
 
 | 層 | 道具 | 件数 | 走らせ方 |
 | --- | --- | --- | --- |
 | 純粋関数 | Vitest（node） | 657 件（29 本） | `npm test` |
-| コンポーネント | Vitest（jsdom） | 80 件（12 本） | `npm test` |
+| コンポーネント | Vitest（jsdom） | 82 件（12 本） | `npm test` |
 | Edge Function | Deno | 67 件 | `npm run test:functions` |
 | ブラウザ | Playwright | 39 件（Chromium 35、Firefox と WebKit は `@smoke` の 2 件ずつ） | `npm run test:e2e` |
 | 権限（RLS） | pgTAP | 353 件 | `npm run test:db` |

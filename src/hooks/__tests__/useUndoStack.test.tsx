@@ -11,18 +11,21 @@ import { act, renderHook } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { useUndoStack, type UndoEntry } from '../useUndoStack'
 
-/** 呼ばれてから、こちらが終わらせるまで返らない操作 */
+/** 呼ばれてから、こちらが終わらせる（または失敗させる）まで返らない操作 */
 function pending() {
-  let finish: () => void = () => {
+  const notYet = () => {
     throw new Error('まだ呼ばれていない')
   }
+  let finish: () => void = notYet
+  let fail: () => void = notYet
   const run = vi.fn(
     () =>
-      new Promise<void>((resolve) => {
+      new Promise<void>((resolve, reject) => {
         finish = resolve
+        fail = () => reject(new Error('保存できなかった'))
       }),
   )
-  return { run, finish: () => finish() }
+  return { run, finish: () => finish(), fail: () => fail() }
 }
 
 function entry(patch: Partial<UndoEntry>): UndoEntry {
@@ -113,5 +116,62 @@ describe('useUndoStack', () => {
     expect(redo).not.toHaveBeenCalled()
     expect(result.current.canUndo).toBe(true)
     expect(result.current.canRedo).toBe(false)
+  })
+
+  it('取り消しの保存を待つあいだに新しい操作をしたら、返ってきた取り消しはやり直しに積まない', async () => {
+    const { result } = renderHook(() => useUndoStack())
+    const undoA = pending()
+    const redoA = vi.fn()
+    const undoB = vi.fn()
+    act(() => result.current.push(entry({ label: 'A', undo: undoA.run, redo: redoA })))
+
+    let undone: Promise<void> = Promise.resolve()
+    act(() => {
+      undone = result.current.undo()
+    })
+    await act(async () => {})
+    // 取り消した付箋を見て、保存が返る前に別の付箋を動かす
+    act(() => result.current.push(entry({ label: 'B', undo: undoB })))
+
+    await act(async () => {
+      undoA.finish()
+      await undone
+    })
+
+    // 新しい操作をしたら、やり直しの履歴は捨てる（A は戻ってこない）
+    expect(result.current.canRedo).toBe(false)
+    expect(result.current.undoLabel).toBe('B')
+
+    await act(async () => {
+      await result.current.redo()
+    })
+    expect(redoA).not.toHaveBeenCalled()
+  })
+
+  it('取り消しに失敗しても、あいだにした新しい操作より上には戻らない', async () => {
+    const { result } = renderHook(() => useUndoStack())
+    const undoA = pending()
+    const undoB = vi.fn()
+    act(() => result.current.push(entry({ label: 'A', undo: undoA.run })))
+
+    let undone: Promise<void> = Promise.resolve()
+    act(() => {
+      undone = result.current.undo()
+    })
+    await act(async () => {})
+    act(() => result.current.push(entry({ label: 'B', undo: undoB })))
+
+    await act(async () => {
+      undoA.fail()
+      await undone
+    })
+
+    // 次の Ctrl+Z は、押した順どおり後からした B を先に取り消す
+    expect(result.current.undoLabel).toBe('B')
+    await act(async () => {
+      await result.current.undo()
+    })
+    expect(undoB).toHaveBeenCalledTimes(1)
+    expect(result.current.undoLabel).toBe('A')
   })
 })
