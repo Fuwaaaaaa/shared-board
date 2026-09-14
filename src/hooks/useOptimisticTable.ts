@@ -68,6 +68,30 @@ function sameJson(a: unknown, b: unknown): boolean {
   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
 }
 
+/*
+ * 作成がまだ返っていない行。
+ *
+ * 付箋を貼ってすぐ文字を書くと、INSERT の返事より先に同じ行への UPDATE が届く。
+ * サーバーにはまだ行が無いので 0 行で終わり、patch は「すでに消されています」と
+ * 判断して書いた文字を捨てていた（位置の変更も同じく巻き戻っていた）。そのあと
+ * INSERT が通るので、リロードすると文字の無い付箋だけが残る。回線が遅いと人の手でも起きる。
+ *
+ * そこで、同じ行への次の書き込みは、作成の結果が出てからサーバーへ送る。
+ * 画面への反映はこれまでどおりその場でするので、待つのは通信だけ。
+ *
+ * 別の画面が同じ表を別の useOptimisticTable で持っていても取り違えないよう、
+ * フックの中ではなくモジュールに置き、表の名前と id の組で引く。
+ */
+type CreateOutcome = 'saved' | 'queued' | 'failed'
+const pendingCreates = new Map<string, Promise<CreateOutcome>>()
+
+const createKey = (tableName: string, id: string) => `${tableName}:${id}`
+
+/** その行の作成を待つ。作成中でなければ null（ふつうの行） */
+function createOutcome(tableName: string, id: string): Promise<CreateOutcome> | null {
+  return pendingCreates.get(createKey(tableName, id)) ?? null
+}
+
 /**
  * 「保留 → ローカル反映 → 送信 → 失敗なら戻して知らせる」を 1 か所にまとめる。
  *
@@ -106,10 +130,20 @@ export function useOptimisticTable<T extends Row>(
       e: unknown,
       make: () => Parameters<typeof enqueue>[0] | null,
     ): Promise<boolean> {
+      if (decideOnFailure(e) !== 'queue') return false
+      return queueNow(make)
+    }
+
+    /*
+     * 送らずに、そのまま送信箱へ入れる。入れられたら true。
+     *
+     * 作成が送信箱に居る行への変更に使う。サーバーにはまだ行が無いので、送っても
+     * 0 行で終わるだけ。送信箱に入れれば、作成と 1 件に畳まれる（writeQueue.collapse）。
+     */
+    async function queueNow(make: () => Parameters<typeof enqueue>[0] | null): Promise<boolean> {
       const context = contextRef.current
       const queueTable = queueTableOf(tableName)
       if (!context || !queueTable) return false
-      if (decideOnFailure(e) !== 'queue') return false
 
       const op = make()
       if (!op) return false
@@ -128,7 +162,16 @@ export function useOptimisticTable<T extends Row>(
       const releases = rows.map((row) => table.holdLocal(row.id, 'insert'))
       for (const row of rows) table.upsertLocal(row)
 
+      const settle = new Map<string, (outcome: CreateOutcome) => void>()
+      const gates = new Map<string, Promise<CreateOutcome>>()
+      for (const row of rows) {
+        const gate = new Promise<CreateOutcome>((resolve) => settle.set(row.id, resolve))
+        gates.set(row.id, gate)
+        pendingCreates.set(createKey(tableName, row.id), gate)
+      }
+
       const done = new Set<string>()
+      const queued = new Set<string>()
       try {
         for (const chunk of chunks(rows, CHUNK)) {
           const { data, error } = await supabase.from(tableName).insert(chunk).select()
@@ -142,7 +185,6 @@ export function useOptimisticTable<T extends Row>(
         const context = contextRef.current
         const queueTable = queueTableOf(tableName)
 
-        const queued = new Set<string>()
         if (context && queueTable && decideOnFailure(e) === 'queue') {
           for (const row of rest) {
             const ok = await queueOrFail(e, () => ({
@@ -180,6 +222,13 @@ export function useOptimisticTable<T extends Row>(
         return false
       } finally {
         for (const release of releases) release()
+        // 待たせていた同じ行への書き込みを、結果に合わせて先へ進める
+        for (const row of rows) {
+          const key = createKey(tableName, row.id)
+          // 同じ id がもう一度作られている（取り消しで作り直した など）なら、そちらは残す
+          if (pendingCreates.get(key) === gates.get(row.id)) pendingCreates.delete(key)
+          settle.get(row.id)?.(done.has(row.id) ? 'saved' : queued.has(row.id) ? 'queued' : 'failed')
+        }
       }
     }
 
@@ -191,7 +240,34 @@ export function useOptimisticTable<T extends Row>(
 
       const done = new Set<string>()
       try {
-        for (const chunk of chunks(rows, CHUNK)) {
+        /*
+         * 作成中の行は、結果が出てから消す。先に DELETE が届くと 0 行で終わり、
+         * あとから INSERT が通って、消したはずの行が戻ってくる。
+         * 作成に失敗した行はもうどこにも無いので、消せたことにする。
+         * 作成が送信箱に居る行は、その作成を取り消せば送るものが残らない。
+         */
+        const outcomes = await Promise.all(rows.map((row) => createOutcome(tableName, row.id)))
+        const context = contextRef.current
+        const queueTable = queueTableOf(tableName)
+        const sendRows: T[] = []
+        for (const [i, row] of rows.entries()) {
+          if (outcomes[i] === 'failed') {
+            done.add(row.id)
+            continue
+          }
+          if (
+            outcomes[i] === 'queued' &&
+            context &&
+            queueTable &&
+            (await cancelPendingCreate(context.roomId, queueTable, row.id))
+          ) {
+            done.add(row.id)
+            continue
+          }
+          sendRows.push(row)
+        }
+
+        for (const chunk of chunks(sendRows, CHUNK)) {
           const ids = chunk.map((row) => row.id)
           const { data, error } = await supabase
             .from(tableName)
@@ -270,7 +346,65 @@ export function useOptimisticTable<T extends Row>(
         if (before) table.patchLocal(id, pick(before, fields))
       }
 
+      /** 送信箱に入れるときの 1 件 */
+      const updateOp = () => {
+        const context = contextRef.current
+        const queueTable = queueTableOf(tableName)
+        if (!context || !queueTable) return null
+        const locked = lockedFields(queueTable, changes as Record<string, unknown>)
+        return {
+          roomId: context.roomId,
+          table: queueTable,
+          rowId: id,
+          userId: context.userId,
+          kind: 'update' as const,
+          patch: changes as Record<string, unknown>,
+          base: before ? (pick(before, fields) as Record<string, unknown>) : undefined,
+          /*
+           * 文字と意味を持つ列を変えるときだけ、楽観ロックを掛けて送り直す。
+           * 位置や色は掛けない（掛けると譲り合いになって動かせなくなる）。
+           */
+          expectUpdatedAt:
+            locked.length > 0
+              ? (expectUpdatedAt ??
+                ((before as Record<string, unknown> | undefined)?.updated_at as string | undefined))
+              : undefined,
+          label: what,
+          preview: previewOf(
+            (changes as Record<string, unknown>).text ??
+              (changes as Record<string, unknown>).title ??
+              (changes as Record<string, unknown>).body ??
+              (before as Record<string, unknown> | undefined)?.text ??
+              // ゴミ箱に入れるだけの変更は changes に文字が無い。元の行から拾わないと
+              // 送信箱に中身の無い行が並ぶ（コメントは text ではなく body を持つ）
+              (before as Record<string, unknown> | undefined)?.title ??
+              (before as Record<string, unknown> | undefined)?.body,
+          ),
+          seq: nextSeq(),
+        }
+      }
+
       try {
+        // 作ったばかりの行なら、作成の結果が出てから送る（pendingCreates の頭を参照）
+        const created = await createOutcome(tableName, id)
+        if (created === 'failed') {
+          // 作成に失敗したことはもう知らせてあり、行も画面から消えている。重ねて知らせない
+          release()
+          return 'error'
+        }
+        if (created === 'queued') {
+          if (await queueNow(updateOp)) {
+            release()
+            return 'ok'
+          }
+          // 入れられなかった理由（大きすぎる）は queueNow が知らせている
+          release()
+          rollback()
+          return 'error'
+        }
+
+        // 作成が返ったあとなら、expectUpdatedAt は作成前の値のままで合わない。
+        // そのときは下の「updated_at が合わなかった」を 1 回通って揃う
         let expect = expectUpdatedAt
         for (let attempt = 0; attempt < 2; attempt++) {
           let query = supabase.from(tableName).update(changes as Record<string, unknown>).eq('id', id)
@@ -330,47 +464,9 @@ export function useOptimisticTable<T extends Row>(
         }
         throw new Error('他の人の変更と重なりました')
       } catch (e) {
-        const context = contextRef.current
-        const queueTable = queueTableOf(tableName)
-
-        if (context && queueTable && decideOnFailure(e) === 'queue') {
-          const locked = lockedFields(queueTable, changes as Record<string, unknown>)
-          const queued = await queueOrFail(e, () => ({
-            roomId: context.roomId,
-            table: queueTable,
-            rowId: id,
-            userId: context.userId,
-            kind: 'update' as const,
-            patch: changes as Record<string, unknown>,
-            base: before ? (pick(before, fields) as Record<string, unknown>) : undefined,
-            /*
-             * 文字と意味を持つ列を変えるときだけ、楽観ロックを掛けて送り直す。
-             * 位置や色は掛けない（掛けると譲り合いになって動かせなくなる）。
-             */
-            expectUpdatedAt:
-              locked.length > 0
-                ? (expectUpdatedAt ??
-                  ((before as Record<string, unknown> | undefined)?.updated_at as
-                    | string
-                    | undefined))
-                : undefined,
-            label: what,
-            preview: previewOf(
-              (changes as Record<string, unknown>).text ??
-                (changes as Record<string, unknown>).title ??
-                (changes as Record<string, unknown>).body ??
-                (before as Record<string, unknown> | undefined)?.text ??
-                // ゴミ箱に入れるだけの変更は changes に文字が無い。元の行から拾わないと
-                // 送信箱に中身の無い行が並ぶ（コメントは text ではなく body を持つ）
-                (before as Record<string, unknown> | undefined)?.title ??
-                (before as Record<string, unknown> | undefined)?.body,
-            ),
-            seq: nextSeq(),
-          }))
-          if (queued) {
-            release()
-            return 'ok'
-          }
+        if (await queueOrFail(e, updateOp)) {
+          release()
+          return 'ok'
         }
 
         release()
@@ -390,10 +486,60 @@ export function useOptimisticTable<T extends Row>(
       const befores = new Map<string, T | undefined>()
       for (const row of rows) befores.set(row.id, table.patchLocal(row.id, changes))
 
+      /*
+       * 送信箱に入れるときの 1 件。
+       *
+       * 楽観ロックは掛けない。ここへ来るのはゴミ箱の出し入れや一括の色替えで、
+       * 掛けると譲り合いになって動かせなくなる（patch 側と同じ判断）。
+       */
+      const updateOpFor = (row: T) => () => {
+        const context = contextRef.current
+        const queueTable = queueTableOf(tableName)
+        if (!context || !queueTable) return null
+        const before = befores.get(row.id)
+        return {
+          roomId: context.roomId,
+          table: queueTable,
+          rowId: row.id,
+          userId: context.userId,
+          kind: 'update' as const,
+          patch: changes as Record<string, unknown>,
+          base: before ? (pick(before, fields) as Record<string, unknown>) : undefined,
+          label: what,
+          preview: previewOf(
+            (row as unknown as Record<string, unknown>).text ??
+              (row as unknown as Record<string, unknown>).title ??
+              (row as unknown as Record<string, unknown>).body,
+          ),
+          seq: nextSeq(),
+        }
+      }
+
       const done = new Set<string>()
+      const queued = new Set<string>()
       const savedRows: T[] = []
+      let sendRows = rows
       try {
-        for (const chunk of chunks(rows, CHUNK)) {
+        // 作ったばかりの行は、作成の結果が出てから（pendingCreates の頭を参照）
+        const outcomes = await Promise.all(rows.map((row) => createOutcome(tableName, row.id)))
+        if (outcomes.some((outcome) => outcome !== null)) {
+          sendRows = []
+          for (const [i, row] of rows.entries()) {
+            // 作成に失敗した行は、もう画面にも無く、知らせてもある
+            if (outcomes[i] === 'failed') {
+              done.add(row.id)
+              continue
+            }
+            // 作成が送信箱に居るなら、送らずに作成と畳ませる
+            if (outcomes[i] === 'queued' && (await queueNow(updateOpFor(row)))) {
+              queued.add(row.id)
+              continue
+            }
+            sendRows.push(row)
+          }
+        }
+
+        for (const chunk of chunks(sendRows, CHUNK)) {
           const ids = chunk.map((row) => row.id)
           const { data, error } = await supabase
             .from(tableName)
@@ -416,41 +562,18 @@ export function useOptimisticTable<T extends Row>(
         }
         return true
       } catch (e) {
-        const rest = rows.filter((row) => !done.has(row.id))
-        const context = contextRef.current
-        const queueTable = queueTableOf(tableName)
+        const rest = sendRows.filter((row) => !done.has(row.id))
 
         /*
          * まとめての変更も、1 件ずつのときと同じように送信箱へ回す。
          * 回さないでいると、本文の書き換えはためられるのに、ゴミ箱へ入れるのは
          * その場で失敗する——同じ画面の中で挙動が割れる。
-         *
-         * 楽観ロックは掛けない。ここへ来るのはゴミ箱の出し入れや一括の色替えで、
-         * 掛けると譲り合いになって動かせなくなる（patch 側と同じ判断）。
          */
-        const queued = new Set<string>()
-        if (context && queueTable && decideOnFailure(e) === 'queue') {
+        if (decideOnFailure(e) === 'queue') {
           for (const row of rest) {
-            const before = befores.get(row.id)
-            const ok = await queueOrFail(e, () => ({
-              roomId: context.roomId,
-              table: queueTable,
-              rowId: row.id,
-              userId: context.userId,
-              kind: 'update' as const,
-              patch: changes as Record<string, unknown>,
-              base: before ? (pick(before, fields) as Record<string, unknown>) : undefined,
-              label: what,
-              preview: previewOf(
-                (row as unknown as Record<string, unknown>).text ??
-                  (row as unknown as Record<string, unknown>).title ??
-                  (row as unknown as Record<string, unknown>).body,
-              ),
-              seq: nextSeq(),
-            }))
-            if (ok) queued.add(row.id)
+            if (await queueOrFail(e, updateOpFor(row))) queued.add(row.id)
           }
-          if (queued.size === rest.length) return true
+          if (rest.every((row) => queued.has(row.id))) return true
         }
 
         for (const row of rows) {

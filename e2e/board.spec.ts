@@ -35,6 +35,35 @@ test('@smoke 名前を入れて、ボードを作って、付箋を置くと、�
   await expect(page.getByText('合宿の持ち物')).toBeVisible()
 })
 
+/*
+ * 貼った付箋の保存（INSERT）が返る前に文字を書くと、文字の UPDATE が先に届いて
+ * 0 行で終わり、「すでに消されています」として捨てられていた。そのあと INSERT が
+ * 通るので、リロードすると文字の無い付箋だけが残る。
+ *
+ * 上の @smoke が CI でときどき落ちていたのはこれ。手元の DB は速くてまず当たらないので、
+ * INSERT の返事を遅らせて毎回この順番にする。
+ */
+test('付箋を貼る保存が遅くても、すぐ書いた文字はリロードしても残る', async ({ page }) => {
+  await signIn(page, 'ひとり目')
+  await createBoard(page, stamp())
+
+  await page.route('**/rest/v1/notes*', async (route) => {
+    if (route.request().method() === 'POST') {
+      await new Promise((resolve) => setTimeout(resolve, 1500))
+    }
+    await route.continue()
+  })
+
+  await addFirstNote(page)
+  await writeInNote(page, '合宿の持ち物')
+  await waitForSaved(page)
+  await expect(page.getByText(/できませんでした/)).toHaveCount(0)
+
+  await page.reload()
+  await expect(page.locator('[data-ctx-kind="note"]')).toHaveCount(1)
+  await expect(page.getByText('合宿の持ち物')).toBeVisible()
+})
+
 test('共有リンクを開いた 2 人目にも、書いたものが届く', async ({ page, browser }) => {
   await signIn(page, 'ひとり目')
   const url = await createBoard(page, stamp())
