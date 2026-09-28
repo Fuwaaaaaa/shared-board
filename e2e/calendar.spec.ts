@@ -33,14 +33,24 @@ async function addEvent(page: Page, title: string, recurrence?: string) {
   await expect(page.getByPlaceholder('予定のタイトル')).toHaveCount(0)
 }
 
+/**
+ * 翌月を表示する。予定は今日から始まるので、今月の表示で数えると月末の週には
+ * 1〜2 回しか並ばない（9/28 に走らせると、毎週は 9/28 の 1 回だけ）。
+ * 翌月なら、今日がいつでも 4 週ぶん以上並ぶ。
+ */
+async function showNextMonth(page: Page) {
+  await page.getByRole('button', { name: '›', exact: true }).click()
+}
+
 test('繰り返し予定を「この回だけ」変えると、その回にだけ効く', async ({ page }) => {
   await signIn(page, 'ひとり目')
   await createBoard(page, stamp())
   await openCalendar(page)
 
   await addEvent(page, '定例会', '毎週')
+  await showNextMonth(page)
 
-  // 今月のうちに、少なくとも数回は並ぶ
+  // 翌月には、少なくとも数回は並ぶ
   const all = page.getByTitle('定例会', { exact: true })
   await expect
     .poll(async () => await all.count(), { timeout: 20_000 })
@@ -71,6 +81,7 @@ test('繰り返し予定を「この回だけ」削除しても、ほかの回�
   await openCalendar(page)
 
   await addEvent(page, '朝の会', '毎日')
+  await showNextMonth(page)
 
   const all = page.getByTitle('朝の会', { exact: true })
   await expect
@@ -97,6 +108,7 @@ test('繰り返しに曜日を選ぶと、その曜日ぶんだけ並ぶ', async
   await page.getByRole('button', { name: '木', exact: true }).click()
   await page.getByRole('button', { name: '保存', exact: true }).click()
   await expect(page.getByPlaceholder('予定のタイトル')).toHaveCount(0)
+  await showNextMonth(page)
 
   // 1 週に 2 回出るので、月表示では 4 件以上並ぶ
   const all = page.getByTitle('練習', { exact: true })
@@ -159,6 +171,7 @@ test('繰り返し予定の出欠は、その回にだけ付く', async ({ page 
   await openCalendar(page)
 
   await addEvent(page, '合宿の下見', '毎週')
+  await showNextMonth(page)
 
   const all = page.getByTitle('合宿の下見', { exact: true })
   await expect.poll(async () => await all.count(), { timeout: 20_000 }).toBeGreaterThanOrEqual(2)
@@ -174,7 +187,7 @@ test('繰り返し予定の出欠は、その回にだけ付く', async ({ page 
   // その回のチップにだけ ○1 が付く
   await expect(page.getByTitle('1 人が行くと答えています')).toHaveCount(1)
 
-  // 1 回目は空のまま
+  // ほかの回は空のまま
   await all.nth(0).click()
   await expect(page.getByText('○0 △0 ×0')).toBeVisible()
 })
