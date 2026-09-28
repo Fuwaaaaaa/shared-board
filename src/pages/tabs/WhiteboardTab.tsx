@@ -25,6 +25,7 @@ import {
   setClipboardStyle,
 } from '../../lib/boardClipboard'
 import { buildEvent, buildTodo, originChanged, splitNoteText } from '../../lib/convert'
+import { allDayStartIso, localDateTimeIso } from '../../lib/dates'
 import { useUndoStack, type UndoEntry } from '../../hooks/useUndoStack'
 import { planUndoCreate, type NoteDependents } from '../../lib/undoCreate'
 import { notifyUser } from '../../hooks/useNotifications'
@@ -913,11 +914,15 @@ export default function WhiteboardTab({
     const author = { userId, displayName }
     const assignee = memberOptions.find((m) => m.id === plan.assigneeId)
 
-    // 予定は「終日なら 0:00」、やることの期限は常に指定時刻で扱う
+    // 予定は「終日なら JST の 0:00」、やることの期限は常に指定時刻（閲覧者のローカル）で扱う。
+    // 時刻を消していたら、入力欄の既定と同じ 9:00 にする
+    const time = plan.time || '09:00'
     const startIso = plan.date
-      ? new Date(`${plan.date}T${plan.allDay ? '00:00' : plan.time}`).toISOString()
+      ? plan.allDay
+        ? allDayStartIso(plan.date)
+        : localDateTimeIso(plan.date, time)
       : null
-    const dueIso = plan.date ? new Date(`${plan.date}T${plan.time}`).toISOString() : null
+    const dueIso = plan.date ? localDateTimeIso(plan.date, time) : null
 
     const newTodos: Todo[] = []
     const newEvents: CalendarEvent[] = []

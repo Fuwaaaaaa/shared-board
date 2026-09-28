@@ -48,9 +48,10 @@ import { getHolidayName } from '../../lib/holidays'
 import {
   allDayEndIso,
   allDayStartIso,
-  boardDateTimeIso,
   localDateOf,
+  localDateTimeIso,
   occurrenceKeyDate,
+  pinBoardDay,
   toBoardDate,
 } from '../../lib/dates'
 import {
@@ -348,14 +349,15 @@ export default function CalendarTab({
     occurrence: EventOccurrence | null,
     scope: EditScope,
   ) {
-    // 保存する時刻はボードの暦（JST）で解釈する。閲覧者のタイムゾーンには依存しない
+    // 終日はボードの暦（JST）の日付で、時刻のある予定は閲覧者のローカル時刻で読む。
+    // 入力欄をそれぞれその時計で埋めている（buildDraft）ので、読むのも同じ時計にする
     const start = draft.allDay
       ? allDayStartIso(draft.date)
-      : boardDateTimeIso(draft.date, draft.time)
+      : localDateTimeIso(draft.date, draft.time)
     const end = draft.hasEnd
       ? draft.allDay
         ? allDayEndIso(draft.endDate)
-        : boardDateTimeIso(draft.endDate, draft.endTime)
+        : localDateTimeIso(draft.endDate, draft.endTime)
       : null
 
     // 繰り返しの 1 回分だけを変える。
@@ -1554,16 +1556,21 @@ function buildDraft(
 ): EventDraft {
   const source = occurrence ? (scope === 'occurrence' ? occurrence.view : occurrence.event) : null
 
+  // 入力欄はローカルで埋める。元の予定の値は保存したままの時刻なので、終日なら
+  // JST の日付に置き直してから読む（その回の値は expandOccurrences が置き直し済み）。
+  // 置き直さないと、日本より西で開いた人の終日予定が、保存するたびに 1 日ずつ前へずれる
+  const stored = (value: string) => (source?.all_day ? pinBoardDay(value) : parseISO(value))
+
   const start = source
     ? scope === 'occurrence' && occurrence
       ? occurrence.start
-      : parseISO(source.start_at)
+      : stored(source.start_at)
     : defaultDate
 
   const end = source?.end_at
     ? scope === 'occurrence' && occurrence?.end
       ? occurrence.end
-      : parseISO(source.end_at)
+      : stored(source.end_at)
     : null
 
   return {
@@ -1716,7 +1723,7 @@ function RecurrenceFields({
 function SnappedStartHint({ draft, rule }: { draft: EventDraft; rule: RecurrenceRule }) {
   const start = draft.allDay
     ? allDayStartIso(draft.date)
-    : boardDateTimeIso(draft.date, draft.time)
+    : localDateTimeIso(draft.date, draft.time)
   const snapped = firstMatchingStart(start, rule)
   if (toBoardDate(snapped) === toBoardDate(start)) return null
 

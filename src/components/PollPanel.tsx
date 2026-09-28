@@ -8,7 +8,7 @@ import { useNotice } from '../hooks/useNotice'
 import { messageOf } from '../lib/errorMessage'
 import { useRoomData } from '../lib/roomData'
 import { getHolidayName } from '../lib/holidays'
-import { allDayStartIso, boardDateTimeIso } from '../lib/dates'
+import { allDayStartIso, localDateTimeIso } from '../lib/dates'
 import {
   POLL_ANSWER_LABELS,
   type CalendarEvent,
@@ -389,8 +389,9 @@ function CreatePollModal({ onClose }: { onClose: () => void }) {
         id: crypto.randomUUID(),
         poll_id: poll.id,
         room_id: roomId,
-        // 候補日はボードの暦（JST）で解釈する
-        start_at: allDay ? allDayStartIso(date) : boardDateTimeIso(date, time),
+        // 終日の候補はボードの暦（JST）の日付、時刻のある候補は閲覧者のローカル時刻で読む
+        // （カレンダーの予定と同じ。一覧はローカル時刻で出している）
+        start_at: allDay ? allDayStartIso(date) : localDateTimeIso(date, time),
         end_at: null,
         all_day: allDay,
         sort: index,
