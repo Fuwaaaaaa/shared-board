@@ -3,10 +3,8 @@ import { format, parseISO } from 'date-fns'
 import { ja } from 'date-fns/locale'
 import Modal from './Modal'
 import { supabase } from '../lib/supabase'
-import { useIdentity } from '../lib/identity'
 import { useRoomData } from '../lib/roomData'
 import { messageOf } from '../lib/errorMessage'
-import type { SnapshotTable } from '../lib/snapshot'
 
 /**
  * ボードあたりの保存数。増えすぎないよう古いものから捨てる。
@@ -15,13 +13,6 @@ import type { SnapshotTable } from '../lib/snapshot'
  */
 const KEEP = 10
 
-/**
- * 保存点の中身。付箋と線の関係を保つため、表をまとめて出し入れする。
- *
- * どの表を入れるかは lib/snapshot.ts の SNAPSHOT_TABLES が決める。
- * Record にしてあるので、あちらに表を足してここを埋め忘れると型で落ちる。
- */
-type Payload = Record<SnapshotTable, unknown[]>
 interface Snapshot {
   id: string
   label: string
@@ -36,9 +27,7 @@ interface Snapshot {
  * 戻す操作は今の中身を置き換えるので、戻す直前にもう 1 つ自動で保存する。
  */
 export default function SnapshotModal({ onClose }: { onClose: () => void }) {
-  const { userId, displayName } = useIdentity()
-  const room = useRoomData()
-  const { roomId, canEdit, isOwner } = room
+  const { roomId, canEdit, isOwner } = useRoomData()
 
   const [list, setList] = useState<Snapshot[]>([])
   const [busy, setBusy] = useState(false)
@@ -60,34 +49,17 @@ export default function SnapshotModal({ onClose }: { onClose: () => void }) {
     void load()
   }, [load])
 
-  /** いまボードに出ているものを、そのまま控える */
-  function buildPayload(): Payload {
-    return {
-      notes: room.notes.rows,
-      strokes: room.strokes.rows,
-      connectors: room.connectors.rows,
-      frames: room.frames.rows,
-      events: room.events.rows,
-      event_overrides: room.overrides.rows,
-      todos: room.todos.rows,
-      images: room.images.rows,
-      attachments: room.attachments.rows,
-      note_votes: room.votes.rows,
-      note_reactions: room.reactions.rows,
-      polls: room.polls.rows,
-      poll_options: room.pollOptions.rows,
-      poll_votes: room.pollVotes.rows,
-      event_attendance: room.attendance.rows,
-    }
-  }
-
+  /**
+   * いまボードに出ているもの（ゴミ箱の中身を除く）を控える。
+   *
+   * 中身はサーバー側の save_snapshot が DB の行から組み立てる。画面が詰めた
+   * payload を INSERT していたころは、作った人の名前や票を入れた人を書き換えた
+   * 控えを作れて、オーナーが戻すとそのまま入ってしまっていた。
+   */
   async function save(label: string) {
-    const { error: failed } = await supabase.from('snapshots').insert({
-      room_id: roomId,
-      label: label.slice(0, 60),
-      payload: buildPayload(),
-      author_id: userId,
-      author_name: displayName,
+    const { error: failed } = await supabase.rpc('save_snapshot', {
+      p_room_id: roomId,
+      p_label: label.slice(0, 60),
     })
     if (failed) throw new Error(failed.message)
 
