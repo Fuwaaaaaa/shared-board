@@ -19,7 +19,7 @@ begin;
 
 create extension if not exists pgtap;
 
-select plan(353);
+select plan(359);
 
 
 -- =============================================================================
@@ -2998,7 +2998,101 @@ select throws_ok(
 
 
 -- =============================================================================
---  42. 棚卸し — 権限の「形」を固定する
+--  42. 中身のあるボードも消せる
+--
+--      ボードを消すと、中身は on delete cascade で一緒に消える。そのとき
+--      付箋・予定・やること・画像・ファイルの履歴トリガー（tg_log_activity）も
+--      1 行ずつ走るが、親のボードはもう無い。そこで履歴を書こうとすると
+--      外部キーで落ち、ボードの削除ごと巻き戻っていた。
+--      20. で消しているのは中身の無いボードだけだったので、気づけなかった。
+-- =============================================================================
+
+reset role;
+
+--  ひろし（55555555…）は、ここで初めて出てくる人。ボードごと退会させる
+insert into public.rooms (id, slug, name, visibility, owner_id, owner_name) values
+  ('99999999-0000-0000-0000-000000000001', 'fullroom', '中身のあるボード', 'public',
+   '11111111-1111-1111-1111-111111111111', 'ゆうき'),
+  ('99999999-0000-0000-0000-000000000002', 'leaving1', 'やめる人のボード', 'public',
+   '55555555-5555-5555-5555-555555555555', 'ひろし');
+
+insert into public.room_members (room_id, user_id, display_name, role, status, can_edit)
+select id, owner_id, owner_name, 'owner', 'approved', true
+  from public.rooms
+ where id in ('99999999-0000-0000-0000-000000000001', '99999999-0000-0000-0000-000000000002');
+
+-- 履歴トリガーを持つ 5 種類をひととおり入れておく
+insert into public.notes (room_id, text, author_id, author_name)
+select id, '消える付箋', owner_id, owner_name
+  from public.rooms
+ where id in ('99999999-0000-0000-0000-000000000001', '99999999-0000-0000-0000-000000000002');
+
+insert into public.events (room_id, title, start_at, author_id, author_name)
+select id, '消える予定', now(), owner_id, owner_name
+  from public.rooms
+ where id in ('99999999-0000-0000-0000-000000000001', '99999999-0000-0000-0000-000000000002');
+
+insert into public.todos (room_id, title, author_id, author_name)
+select id, '消えるやること', owner_id, owner_name
+  from public.rooms
+ where id in ('99999999-0000-0000-0000-000000000001', '99999999-0000-0000-0000-000000000002');
+
+insert into public.images (room_id, storage_path, author_id, author_name)
+select id, id || '/photo.png', owner_id, owner_name
+  from public.rooms
+ where id in ('99999999-0000-0000-0000-000000000001', '99999999-0000-0000-0000-000000000002');
+
+insert into public.attachments (room_id, storage_path, filename, author_id, author_name)
+select id, id || '/memo.pdf', 'memo.pdf', owner_id, owner_name
+  from public.rooms
+ where id in ('99999999-0000-0000-0000-000000000001', '99999999-0000-0000-0000-000000000002');
+
+set local role authenticated;
+
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき
+
+select is(
+  tests_rowcount($$delete from public.rooms where id = '99999999-0000-0000-0000-000000000001'$$),
+  1, '付箋・予定・やること・画像・ファイルのあるボードも消せる');
+
+reset role;
+
+select is(
+  (select count(*)::int from public.activities
+    where room_id = '99999999-0000-0000-0000-000000000001'),
+  0, '消したボードの履歴は残らない（連鎖削除の途中で書き足さない）');
+
+-- 実体の掃除は、20. と同じくフォルダごと。1 件ずつの予約と二重にならない
+select is(
+  (select count(*)::int from public.purge_queue
+    where path like '99999999-0000-0000-0000-000000000001/%' and kind = 'object'),
+  0, '画像とファイルの実体を 1 件ずつは予約しない');
+
+select is(
+  (select count(*)::int from public.purge_queue
+    where path = '99999999-0000-0000-0000-000000000001/' and kind = 'prefix'),
+  2, '画像とファイルのフォルダごとの掃除は予約される');
+
+set local role authenticated;
+
+select tests_act_as('55555555-5555-5555-5555-555555555555');   -- ひろし
+
+select lives_ok(
+  $$select public.delete_my_account(true)$$,
+  '中身のあるボードを持ったままでも、ボードごと退会できる');
+
+reset role;
+
+select is(
+  (select count(*)::int from public.rooms
+    where id = '99999999-0000-0000-0000-000000000002'),
+  0, '退会と一緒に、作ったボードも消えている');
+
+set local role authenticated;
+
+
+-- =============================================================================
+--  43. 棚卸し — 権限の「形」を固定する
 --
 --      ここだけは中身ではなく形を見ている。ポリシーが増えた・減った、
 --      トリガーが片方の操作にしか付いていない、外から呼べる関数が増えた——を、

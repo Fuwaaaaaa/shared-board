@@ -1389,6 +1389,11 @@ begin
   end if;
 
   if TG_OP = 'DELETE' then
+    -- ボードごと消しているときは、連鎖削除で呼ばれても書かない（親行がもう無い）。
+    -- 書こうとすると外部キーで落ち、ボードの削除ごと巻き戻る
+    if not exists (select 1 from public.rooms r where r.id = OLD.room_id) then
+      return null;
+    end if;
     v_room := OLD.room_id;
     v_action := 'deleted';
   else
