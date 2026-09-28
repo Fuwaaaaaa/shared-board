@@ -171,3 +171,37 @@ describe('Modal — 重ねたとき', () => {
     expect(front.contains(document.activeElement)).toBe(true)
   })
 })
+
+/*
+ * 日本語入力で、変換を取り消す Esc は keydown として window まで届く。
+ * 拾って閉じると、打っていた文ごとモーダルが消える。
+ */
+describe('Modal — 日本語入力の最中', () => {
+  it('変換中の Esc では閉じない（Chrome / Firefox は isComposing）', () => {
+    let closed = 0
+    render(
+      <Modal title="日程調整" onClose={() => (closed += 1)}>
+        <textarea aria-label="説明" />
+      </Modal>,
+    )
+
+    fireEvent.keyDown(window, { key: 'Escape', isComposing: true })
+    expect(closed).toBe(0)
+  })
+
+  it('変換中の Esc では閉じない（Safari は keyCode 229）', () => {
+    let closed = 0
+    render(
+      <Modal title="日程調整" onClose={() => (closed += 1)}>
+        <textarea aria-label="説明" />
+      </Modal>,
+    )
+
+    fireEvent.keyDown(window, { key: 'Escape', keyCode: 229 })
+    expect(closed).toBe(0)
+
+    // 変換が終わったあとの Esc では、ふつうに閉じる
+    press('Escape')
+    expect(closed).toBe(1)
+  })
+})

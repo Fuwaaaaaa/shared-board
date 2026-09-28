@@ -280,3 +280,18 @@ export function isTypingTarget(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null
   return el?.tagName === 'INPUT' || el?.tagName === 'TEXTAREA' || el?.isContentEditable === true
 }
+
+/**
+ * IME で変換している最中のキーか。
+ *
+ * 日本語入力では、変換を確定する Enter も、変換を取り消す Esc も keydown として届く。
+ * そのまま拾うと、確定のつもりの Enter でタグや小項目が半端な読みのまま決まり、
+ * 取り消しのつもりの Esc でモーダルごと閉じて、打っていた文が消える。
+ *
+ * isComposing は Chrome と Firefox が立てる。Safari は確定の Enter を compositionend の
+ * あとに送るので isComposing が false になるが、keyCode は 229 のまま届く。両方を見る。
+ * React のイベントなら nativeEvent を渡す。
+ */
+export function isComposingKey(e: Pick<KeyboardEvent, 'isComposing' | 'keyCode'>): boolean {
+  return e.isComposing || e.keyCode === 229
+}

@@ -1,5 +1,6 @@
 import { memo, useMemo, useRef, useState } from 'react'
 import { FRAME_COLORS, type Frame } from '../../lib/types'
+import { isComposingKey } from '../../lib/shortcuts'
 
 // 色は lib/types.ts に置いてある（PNG の書き出しも同じものを使うため）。
 // これまでここから取っていた呼び出し元のために、名前はそのまま通す
@@ -195,6 +196,7 @@ const FrameItem = memo(function FrameItem({
               if (draft !== frame.title) onCommit(frame.id, { title: draft })
             }}
             onKeyDown={(e) => {
+              if (isComposingKey(e.nativeEvent)) return
               if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
             }}
             className="w-40 bg-transparent text-white outline-none placeholder:text-white/60"

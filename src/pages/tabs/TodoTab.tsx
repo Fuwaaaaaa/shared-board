@@ -26,6 +26,7 @@ import { buildNameLabels } from '../../lib/names'
 import { supabase } from '../../lib/supabase'
 import { useIdentity } from '../../lib/identity'
 import { useRoomData } from '../../lib/roomData'
+import { isComposingKey } from '../../lib/shortcuts'
 import {
   MONTH_WEEK_OPTIONS,
   RECURRENCE_LABELS,
@@ -1269,6 +1270,8 @@ function TodoModal({
               maxLength={100}
               onChange={(e) => setSubtaskDraft(e.target.value)}
               onKeyDown={(e) => {
+                // 変換を確定する Enter で小項目にしない
+                if (isComposingKey(e.nativeEvent)) return
                 if (e.key === 'Enter') {
                   e.preventDefault()
                   addSubtask()

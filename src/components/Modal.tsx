@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react'
 import { registerModal } from '../lib/modalStack'
 import { focusableIn, nextFocus } from '../lib/focusTrap'
+import { isComposingKey } from '../lib/shortcuts'
 
 interface Props {
   title: string
@@ -56,6 +57,8 @@ export default function Modal({ title, onClose, children, footer }: Props) {
       if (!handleRef.current?.isTop()) return
 
       if (e.key === 'Escape') {
+        // 変換を取り消す Esc で閉じない（打っていた文ごと消える）
+        if (isComposingKey(e)) return
         onClose()
         return
       }

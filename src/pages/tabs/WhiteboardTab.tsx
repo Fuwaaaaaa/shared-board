@@ -41,7 +41,7 @@ import { useIdentity } from '../../lib/identity'
 import { useRoomData } from '../../lib/roomData'
 import { useTheme } from '../../lib/theme'
 import { hasOpenModal } from '../../lib/modalStack'
-import { isTypingTarget, matchShortcut, toChord } from '../../lib/shortcuts'
+import { isComposingKey, isTypingTarget, matchShortcut, toChord } from '../../lib/shortcuts'
 import { boundingBox, insideRect } from '../../lib/boardGeometry'
 import { alignNotes, snapToGrid, type AlignKind } from '../../lib/boardAlign'
 import { menuAnchor } from '../../lib/menuPlacement'
@@ -3363,6 +3363,7 @@ function ConnectorLabelInput({
         if (draft !== value) onCommit(draft)
       }}
       onKeyDown={(e) => {
+        if (isComposingKey(e.nativeEvent)) return
         if (e.key === 'Enter') e.currentTarget.blur()
       }}
       className="w-32 shrink-0 rounded-lg border border-slate-300 px-2 py-1 text-sm outline-none focus:border-slate-800"

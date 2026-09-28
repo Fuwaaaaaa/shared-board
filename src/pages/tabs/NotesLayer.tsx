@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { NOTE_COLORS, REACTION_EMOJIS, noteStyle, type Note } from '../../lib/types'
 import { useTheme } from '../../lib/theme'
 import { fontSizeFromDrag, noteFontSize } from '../../lib/noteFont'
+import { isComposingKey } from '../../lib/shortcuts'
 
 /** 付箋ごとの「絵文字 → 件数と自分が押したか」 */
 export type ReactionMap = Record<string, Record<string, { count: number; mine: boolean }>>
@@ -634,6 +635,8 @@ const NoteItem = memo(function NoteItem({
             onChange={(e) => setDraft(e.target.value)}
             onPointerDown={(e) => e.stopPropagation()}
             onKeyDown={(e) => {
+              // 変換を取り消す Esc で編集を終えない
+              if (isComposingKey(e.nativeEvent)) return
               if (e.key === 'Escape') {
                 e.preventDefault()
                 e.stopPropagation()
