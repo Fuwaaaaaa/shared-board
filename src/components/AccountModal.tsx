@@ -2,13 +2,15 @@ import { useEffect, useState } from 'react'
 import Modal from './Modal'
 import { ensureSession, supabase } from '../lib/supabase'
 import { getCaptchaToken } from '../lib/captcha'
+import { useIdentity } from '../lib/identity'
 import { messageOf } from '../lib/errorMessage'
 
 type Mode = 'idle' | 'confirm' | 'linking' | 'sent' | 'signin' | 'signin-sent'
 
-interface OwnedRoom {
+interface RelatedRoom {
   id: string
   name: string
+  /** 自分が作ったボード（delete_my_account(true) で中身ごと消える） */
   mine: boolean
 }
 
@@ -22,12 +24,15 @@ interface OwnedRoom {
  * 結びつけたあとで気が変わることもあるので、切り離しとデータの削除も同じ場所に置く。
  */
 export default function AccountModal({ onClose }: { onClose: () => void }) {
+  const { userId } = useIdentity()
   const [linkedEmail, setLinkedEmail] = useState<string | null>(null)
   const [email, setEmail] = useState('')
   const [mode, setMode] = useState<Mode>('idle')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [rooms, setRooms] = useState<OwnedRoom[] | null>(null)
+  /** null のあいだは読み込み中（読めなかったときも null のまま。消すボタンは押せない） */
+  const [rooms, setRooms] = useState<RelatedRoom[] | null>(null)
+  const [roomsError, setRoomsError] = useState<string | null>(null)
   const [showDelete, setShowDelete] = useState(false)
   const [deleteOwned, setDeleteOwned] = useState(false)
 
@@ -41,19 +46,48 @@ export default function AccountModal({ onClose }: { onClose: () => void }) {
     }
   }, [])
 
-  /** 消す前に「何が消えるのか」を見せる。ボード名が分からないと判断できない */
+  /**
+   * 消す前に「何が消えるのか」を見せる。ボード名が分からないと判断できない。
+   *
+   * 作ったボードは rooms.owner_id で引く。delete_my_account が消すのもこの集合。
+   * 以前は名簿の role で見分けていたが、名簿を自分の行に絞っていなかったので、
+   * 参加しているだけのボードでもオーナーの行が返り、「作った人」と出ていた。
+   * 取り消されたボード（rejected）は退会しても残る記録なので、一覧には出さない。
+   */
   async function loadRooms() {
-    const { data } = await supabase
-      .from('room_members')
-      .select('role, rooms(id, name)')
-      .order('created_at', { ascending: false })
+    setRooms(null)
+    setRoomsError(null)
 
-    const list = (data ?? [])
-      .map((row) => {
-        const r = row as unknown as { role: string; rooms: { id: string; name: string } | null }
-        return r.rooms ? { id: r.rooms.id, name: r.rooms.name, mine: r.role === 'owner' } : null
-      })
-      .filter((v): v is OwnedRoom => v !== null)
+    const [owned, joined] = await Promise.all([
+      supabase
+        .from('rooms')
+        .select('id, name')
+        .eq('owner_id', userId)
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('room_members')
+        .select('rooms(id, name)')
+        .eq('user_id', userId)
+        .neq('status', 'rejected')
+        .order('created_at', { ascending: false }),
+    ])
+
+    const failed = owned.error ?? joined.error
+    if (failed) {
+      setRoomsError(failed.message)
+      return
+    }
+
+    const list: RelatedRoom[] = ((owned.data ?? []) as { id: string; name: string }[]).map(
+      (room) => ({ ...room, mine: true }),
+    )
+    const seen = new Set(list.map((room) => room.id))
+    for (const row of joined.data ?? []) {
+      const room = (row as unknown as { rooms: { id: string; name: string } | null }).rooms
+      if (!room || seen.has(room.id)) continue
+      seen.add(room.id)
+      list.push({ ...room, mine: false })
+    }
 
     setRooms(list)
   }
@@ -143,13 +177,18 @@ export default function AccountModal({ onClose }: { onClose: () => void }) {
 
   /** 自分の参加記録・通知を消す。オーナーのボードごと消すかは選ぶ */
   async function deleteData() {
-    const owned = (rooms ?? []).filter((r) => r.mine)
+    // 一覧を読み終えるまでは消さない。何が消えるかを見せないまま消すことになる
+    if (rooms === null) return
+
+    const owned = rooms.filter((r) => r.mine)
+    // 確認に出した文言と、実際にすることを必ず揃える
+    const withOwned = deleteOwned && owned.length > 0
     const lines = [
       '自分のデータを消します。',
       '',
       '・参加中のボードから抜けます',
       '・受け取ったお知らせを消します',
-      deleteOwned && owned.length > 0
+      withOwned
         ? `・あなたが作ったボード ${owned.length} 件も、中身ごと消します：\n　　${owned
             .map((r) => r.name)
             .join('、')}\n　（ほかの参加者が書いたものも一緒に消えます）`
@@ -164,7 +203,7 @@ export default function AccountModal({ onClose }: { onClose: () => void }) {
     setError(null)
 
     const { error: failed } = await supabase.rpc('delete_my_account', {
-      p_delete_owned: deleteOwned,
+      p_delete_owned: withOwned,
     })
 
     if (failed) {
@@ -302,7 +341,15 @@ export default function AccountModal({ onClose }: { onClose: () => void }) {
               </p>
 
               <ul className="mt-3 max-h-32 space-y-1 overflow-auto text-xs text-slate-600">
-                {(rooms ?? []).length === 0 && <li className="text-slate-400">ボードはありません</li>}
+                {roomsError ? (
+                  <li className="text-rose-700">
+                    ボードの一覧を読めませんでした（{roomsError}）。開き直してお試しください。
+                  </li>
+                ) : rooms === null ? (
+                  <li className="text-slate-400">読み込み中…</li>
+                ) : (
+                  rooms.length === 0 && <li className="text-slate-400">ボードはありません</li>
+                )}
                 {(rooms ?? []).map((room) => (
                   <li key={room.id} className="flex items-center gap-2">
                     <span className="truncate">{room.name}</span>
@@ -332,7 +379,7 @@ export default function AccountModal({ onClose }: { onClose: () => void }) {
               <div className="mt-3 flex gap-2">
                 <button
                   type="button"
-                  disabled={busy}
+                  disabled={busy || rooms === null}
                   onClick={() => void deleteData()}
                   className="rounded-lg border border-rose-300 px-3 py-1.5 text-sm text-rose-700 transition hover:bg-rose-50 disabled:opacity-50"
                 >
