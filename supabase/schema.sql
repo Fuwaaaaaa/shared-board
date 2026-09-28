@@ -2971,7 +2971,11 @@ begin
     delete from public.rooms where owner_id = auth.uid();
   end if;
 
-  delete from public.room_members      where user_id = auth.uid();
+  -- 取り消された行（rejected）は消さない。これはボードの側の判断の記録で、
+  -- 本人の持ち物ではない（room_members_delete のポリシーと同じ線引き）。
+  -- 消せると、退会してから request_access をやり直すだけで、リンク公開の
+  -- ボードではその場で承認され、「アクセスを取り消す」が帳消しになる。
+  delete from public.room_members      where user_id = auth.uid() and status <> 'rejected';
   delete from public.notifications     where user_id = auth.uid();
   delete from public.push_subscriptions where user_id = auth.uid();
   delete from public.client_errors     where user_id = auth.uid();

@@ -19,7 +19,7 @@ begin;
 
 create extension if not exists pgtap;
 
-select plan(359);
+select plan(363);
 
 
 -- =============================================================================
@@ -3092,7 +3092,61 @@ set local role authenticated;
 
 
 -- =============================================================================
---  43. 棚卸し — 権限の「形」を固定する
+--  43. 退会しても、取り消された記録は消えない
+--
+--      取り消された人（status = 'rejected'）は自分の行を消せない（32.）。
+--      行が無い状態から request_access をやり直すと、リンク公開のボードでは
+--      その場で承認されてしまうため。ところが delete_my_account は
+--      security definer で自分の行を全部消していたので、退会してから
+--      入り直せば取り消しが帳消しになっていた。
+-- =============================================================================
+
+reset role;
+
+--  さとる（66666666…）は、ゆうきのボードで取り消された人。
+--  別のリンク公開のボード（linkonly）には、ふつうに参加している
+insert into public.rooms (id, slug, name, visibility, owner_id, owner_name) values
+  ('99999999-0000-0000-0000-000000000003', 'revoked1', '取り消したボード', 'public',
+   '11111111-1111-1111-1111-111111111111', 'ゆうき');
+
+insert into public.room_members (room_id, user_id, display_name, role, status, can_edit) values
+  ('99999999-0000-0000-0000-000000000003', '11111111-1111-1111-1111-111111111111', 'ゆうき', 'owner', 'approved', true),
+  ('99999999-0000-0000-0000-000000000003', '66666666-6666-6666-6666-666666666666', 'さとる', 'member', 'rejected', true),
+  ('ffffffff-ffff-ffff-ffff-ffffffffffff', '66666666-6666-6666-6666-666666666666', 'さとる', 'member', 'approved', true);
+
+set local role authenticated;
+
+select tests_act_as('66666666-6666-6666-6666-666666666666');   -- さとる
+
+select lives_ok(
+  $$select public.delete_my_account()$$,
+  '取り消された人も、退会そのものはできる');
+
+reset role;
+
+select is(
+  (select status from public.room_members
+    where room_id = '99999999-0000-0000-0000-000000000003'
+      and user_id = '66666666-6666-6666-6666-666666666666'),
+  'rejected', '退会しても、取り消された記録は残る（ボードの持ち物）');
+
+select is(
+  (select count(*)::int from public.room_members
+    where room_id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
+      and user_id = '66666666-6666-6666-6666-666666666666'),
+  0, '参加していたボードからは、ちゃんと抜けている');
+
+set local role authenticated;
+
+select tests_act_as('66666666-6666-6666-6666-666666666666');   -- さとる
+
+select is(
+  public.request_access('revoked1', 'さとる'),
+  'pending', '退会してやり直しても、取り消されたボードには承認待ちからしか戻れない');
+
+
+-- =============================================================================
+--  44. 棚卸し — 権限の「形」を固定する
 --
 --      ここだけは中身ではなく形を見ている。ポリシーが増えた・減った、
 --      トリガーが片方の操作にしか付いていない、外から呼べる関数が増えた——を、
