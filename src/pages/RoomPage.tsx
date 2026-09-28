@@ -96,6 +96,12 @@ export default function RoomPage() {
     )
   }
 
+  // 一度も答えをもらえていない。無いと決めつけず、つながるのを待つ
+  // （オンラインに戻れば useRoomAccess が取り直す）
+  if (level === 'unreachable') {
+    return <UnreachablePanel title="ボードを開けませんでした" onRetry={() => void refresh()} />
+  }
+
   if (level === 'notfound' || !preview) {
     return (
       <div className="grid min-h-screen place-items-center bg-slate-50 p-6">
@@ -117,24 +123,7 @@ export default function RoomPage() {
   }
 
   if (level === 'guest') {
-    return (
-      <div className="grid min-h-screen place-items-center bg-slate-50 p-6">
-        <div className="max-w-md rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm">
-          <div className="mb-2 text-3xl">📶</div>
-          <h1 className="font-bold text-slate-800">ボードに入れませんでした</h1>
-          <p className="mt-1 text-sm text-slate-500">
-            通信が届かなかったようです。つながっているか確かめて、もう一度お試しください。
-          </p>
-          <button
-            type="button"
-            onClick={join}
-            className="mt-6 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-700"
-          >
-            もう一度試す
-          </button>
-        </div>
-      </div>
-    )
+    return <UnreachablePanel title="ボードに入れませんでした" onRetry={join} />
   }
 
   if (!canAccess) {
@@ -150,6 +139,28 @@ export default function RoomPage() {
     >
       <RoomShell preview={preview} onRefreshPreview={refresh} />
     </RoomDataProvider>
+  )
+}
+
+/** 通信が届かなかったときの受け皿 */
+function UnreachablePanel({ title, onRetry }: { title: string; onRetry: () => void }) {
+  return (
+    <div className="grid min-h-screen place-items-center bg-slate-50 p-6">
+      <div className="max-w-md rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm">
+        <div className="mb-2 text-3xl">📶</div>
+        <h1 className="font-bold text-slate-800">{title}</h1>
+        <p className="mt-1 text-sm text-slate-500">
+          通信が届かなかったようです。つながっているか確かめて、もう一度お試しください。
+        </p>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="mt-6 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-700"
+        >
+          もう一度試す
+        </button>
+      </div>
+    </div>
   )
 }
 
