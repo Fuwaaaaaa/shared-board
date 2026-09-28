@@ -1264,12 +1264,28 @@ drop function if exists public.tg_touch_updated_at();
 -- notifications の INSERT ポリシーは「同じボードを見られる人なら誰でも」なので、
 -- actor_name をそのまま信じると他人の名前で通知を送れてしまう。
 -- 送った本人の表示名で必ず上書きする。
+--
+-- 流量の門番（tg_throttle_notifications）が数えに使う列も、ここで名乗らせない。
+-- トリガーは名前順に走る（guard → limit_text → throttle）ので、門番より先に揃う。
+--
+--   kind = 'digest' … まとめの行を作れるのは門番だけ。ここに digest で届くのは
+--                     画面から名乗ったものだけで、通すと枠を数えずに積める
+--   created_at      … 枠は直近 1 分で数える。さかのぼれば枠の外に出られ、
+--                     先の日時にすれば枠を埋めたまま本物の通知を押し出せる
+--   folded_count    … まとめの件数。数えるのは門番
 create or replace function public.tg_guard_notification()
 returns trigger language plpgsql security definer
 set search_path = '' as $$
 declare
   v_name text;
 begin
+  if new.kind = 'digest' then
+    raise exception 'まとめの通知は作れません' using errcode = '42501';
+  end if;
+
+  new.created_at   := now();
+  new.folded_count := 0;
+
   select m.display_name into v_name
     from public.room_members m
    where m.room_id = new.room_id and m.user_id = auth.uid()
@@ -2160,11 +2176,8 @@ declare
   v_used   bigint;
   v_digest uuid;
 begin
-  -- まとめ行そのものは数えないし、止めない（下でこの関数が作る）
-  if NEW.kind = 'digest' then
-    return NEW;
-  end if;
-
+  -- まとめ行は、下でこの関数が NEW を書き換えて作るものだけ。
+  -- 画面から digest を名乗った行は、先に走る tg_guard_notification が断っている
   if NEW.kind = 'converted' then
     v_class := 'low';
     v_limit := 10;

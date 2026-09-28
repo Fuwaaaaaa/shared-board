@@ -19,7 +19,7 @@ begin;
 
 create extension if not exists pgtap;
 
-select plan(363);
+select plan(368);
 
 
 -- =============================================================================
@@ -3146,7 +3146,86 @@ select is(
 
 
 -- =============================================================================
---  44. 棚卸し — 権限の「形」を固定する
+--  44. 通知の流量は、差出人が名乗れる列では数えない
+--
+--      13. の流量の枠は created_at で数え、kind = 'digest'（まとめ）の行は
+--      数えずに通していた。どちらも画面から INSERT で渡せたので、
+--      まとめを名乗るか、日時を 1 分より前にずらせば、枠を素通りして
+--      相手の端末の通知（send-reminders の Web Push）を好きなだけ鳴らせた。
+--      先の日時を名乗れば、枠を埋めたまま本物の @メンションを押し出せた。
+-- =============================================================================
+
+reset role;
+
+--  13. の枠と混ざらないよう、専用のボードで数える
+insert into public.rooms (id, slug, name, visibility, owner_id, owner_name) values
+  ('99999999-0000-0000-0000-000000000004', 'notifyrm', '通知を数えるボード', 'public',
+   '11111111-1111-1111-1111-111111111111', 'ゆうき');
+
+insert into public.room_members (room_id, user_id, display_name, role, status, can_edit) values
+  ('99999999-0000-0000-0000-000000000004', '11111111-1111-1111-1111-111111111111', 'ゆうき', 'owner', 'approved', true),
+  ('99999999-0000-0000-0000-000000000004', '22222222-2222-2222-2222-222222222222', 'けいこ', 'member', 'approved', true);
+
+set local role authenticated;
+
+select tests_act_as('22222222-2222-2222-2222-222222222222');   -- けいこ（差出人）
+
+select is(
+  tests_rowcount($$insert into public.notifications (room_id, user_id, kind, body)
+                   values ('99999999-0000-0000-0000-000000000004',
+                           '11111111-1111-1111-1111-111111111111', 'digest', 'まとめを名乗る')$$),
+  -1, 'まとめの行は、画面からは作れない');
+
+-- 1 件目はまとめの件数も名乗ってみる。あとは 1 分より前の日時を名乗って 24 件、
+-- 最後に先の日時を名乗って 1 件。どれも枠の中で数えられるはず
+insert into public.notifications (room_id, user_id, kind, body, created_at, folded_count)
+values ('99999999-0000-0000-0000-000000000004', '11111111-1111-1111-1111-111111111111',
+        'mention', '1 件目', now() - interval '2 minutes', 999);
+
+do $$
+begin
+  for i in 2..25 loop
+    insert into public.notifications (room_id, user_id, kind, body, created_at)
+    values ('99999999-0000-0000-0000-000000000004', '11111111-1111-1111-1111-111111111111',
+            'mention', i || ' 件目', now() - interval '2 minutes');
+  end loop;
+end $$;
+
+insert into public.notifications (room_id, user_id, kind, body, created_at)
+values ('99999999-0000-0000-0000-000000000004', '11111111-1111-1111-1111-111111111111',
+        'mention', '26 件目', now() + interval '1 day');
+
+reset role;
+
+select is(
+  (select count(*)::int from public.notifications
+    where room_id = '99999999-0000-0000-0000-000000000004'
+      and created_at <> now()),
+  0, '通知の日時は名乗れない（入れた時刻になる）');
+
+select is(
+  (select count(*)::int from public.notifications
+    where room_id = '99999999-0000-0000-0000-000000000004'
+      and kind <> 'digest'),
+  20, 'さかのぼった日時を名乗っても、毎分 20 件の枠で数えられる');
+
+select is(
+  (select folded_count::int from public.notifications
+    where room_id = '99999999-0000-0000-0000-000000000004'
+      and kind = 'digest'),
+  6, '枠を超えた 6 件は、まとめの 1 行に入る');
+
+select is(
+  (select folded_count::int from public.notifications
+    where room_id = '99999999-0000-0000-0000-000000000004'
+      and body = '1 件目'),
+  0, 'まとめの件数は名乗れない');
+
+set local role authenticated;
+
+
+-- =============================================================================
+--  45. 棚卸し — 権限の「形」を固定する
 --
 --      ここだけは中身ではなく形を見ている。ポリシーが増えた・減った、
 --      トリガーが片方の操作にしか付いていない、外から呼べる関数が増えた——を、
