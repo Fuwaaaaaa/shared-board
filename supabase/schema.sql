@@ -1535,6 +1535,10 @@ begin
   end if;
 
   if NEW.deleted_at is not distinct from OLD.deleted_at then
+    -- deleted_by を決めるのは、消す・戻すときのこのトリガーだけ。
+    -- ここで持ち越さないと、本人が deleted_by だけを自分に書き換えてから
+    -- 戻すことで、オーナーが消した発言を戻せてしまう
+    NEW.deleted_by := OLD.deleted_by;
     return NEW;
   end if;
 

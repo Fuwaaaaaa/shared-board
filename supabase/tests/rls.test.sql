@@ -19,7 +19,7 @@ begin;
 
 create extension if not exists pgtap;
 
-select plan(368);
+select plan(370);
 
 
 -- =============================================================================
@@ -2853,6 +2853,31 @@ select is(
   '33333333-3333-3333-3333-333333333333'::uuid,
   '渡した「消した人」は無視され、本当に消した人が入る');
 set local role authenticated;
+
+-- 消す・戻すと一緒でなくても、「消した人」だけを書き換えられては同じこと。
+-- 以前は deleted_at が変わらない UPDATE を素通ししていたので、本人が
+-- deleted_by を自分にしてから戻せば、オーナーの消したものを戻せた
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき（オーナー）
+update public.comments set deleted_at = null  where id = '66660000-0000-0000-0000-000000000001';
+update public.comments set deleted_at = now() where id = '66660000-0000-0000-0000-000000000001';
+
+select tests_act_as('33333333-3333-3333-3333-333333333333');   -- みなみ（書いた本人）
+update public.comments
+   set deleted_by = '33333333-3333-3333-3333-333333333333'
+ where id = '66660000-0000-0000-0000-000000000001';
+
+reset role;
+select is(
+  (select deleted_by from public.comments where id = '66660000-0000-0000-0000-000000000001'),
+  '11111111-1111-1111-1111-111111111111'::uuid,
+  'ゴミ箱に入れたままでも、「消した人」は書き換えられない');
+set local role authenticated;
+
+select is(
+  tests_error($$update public.comments set deleted_at = null
+                 where id = '66660000-0000-0000-0000-000000000001'$$),
+  'この発言を戻せるのは、消した人かボードを作った人だけです',
+  '「消した人」を書き換えようとしたあとでも、オーナーが消した発言は戻せない');
 
 select is(
   (select count(*)::int from pg_trigger t
