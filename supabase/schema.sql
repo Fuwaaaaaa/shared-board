@@ -800,9 +800,23 @@ create index if not exists events_source_note_idx  on public.events (room_id, so
 -- 戻すときは元の行より先に次回分が入ることもあるため。
 -- 「同じ元から生まれた未完了の次回分は 1 件だけ」は部分一意インデックスで守る
 -- （2 つのタブで同時に完了しても次回分が 2 つにならない）。
+--
+-- 一意にするのはボードの中だけ。以前は source_todo_id だけで一意にしていたので、
+-- 元のやることの id を知っている人が自分のボードに同じ source_todo_id の行を置くと、
+-- 元のボードで完了にしても次回分を作れなくなった。
 alter table public.todos add column if not exists source_todo_id uuid;
 
-create unique index if not exists todos_next_occurrence_uidx on public.todos (source_todo_id)
+do $$
+begin
+  if exists (select 1 from pg_indexes
+              where schemaname = 'public' and indexname = 'todos_next_occurrence_uidx'
+                and indexdef not like '%(room_id, source_todo_id)%') then
+    drop index public.todos_next_occurrence_uidx;
+  end if;
+end;
+$$;
+
+create unique index if not exists todos_next_occurrence_uidx on public.todos (room_id, source_todo_id)
   where source_todo_id is not null and done = false and deleted_at is null;
 create index if not exists todos_source_todo_idx on public.todos (room_id, source_todo_id);
 
