@@ -10,7 +10,9 @@
 
 // 版を上げると、activate で古いキャッシュがまとめて捨てられる。
 // v1 では失敗した応答も index.html として保存してしまっていたので、一度流す。
-const CACHE = 'board-shell-v2'
+// v2 では、無くなったチャンクの URL に返ってきた index.html を JS として控えていたので、
+// もう一度流す。
+const CACHE = 'board-shell-v3'
 const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png']
 
 // ---------------------------------------------------------------- ライフサイクル
@@ -67,28 +69,36 @@ self.addEventListener('fetch', (event) => {
     return
   }
 
-  // ビルド成果物はファイル名にハッシュが入るので、キャッシュ優先で良い
+  // ビルド成果物はファイル名にハッシュが入るので、キャッシュ優先で良い。
+  // 取れなかったときは、そのまま失敗させる。ここは JS / CSS / 画像なので、
+  // HTML のオフライン画面を返すと構文エラーになるだけ。
   event.respondWith(
     caches.match(request).then((cached) => {
       if (cached) return cached
-      return fetch(request)
-        .then((response) => {
-          if (response.ok && (url.pathname.startsWith('/assets/') || SHELL.includes(url.pathname))) {
-            const copy = response.clone()
-            caches.open(CACHE).then((cache) => cache.put(request, copy))
-          }
-          return response
-        })
-        .catch((e) => {
-          // ここは JS / CSS / 画像。HTML のオフライン画面を返してはいけない。
-          // JS を取りに行って HTML が返ると構文エラーになり、
-          // errorReport 経由で意味のないエラーが溜まるだけになる。
-          if (cached) return cached
-          throw e
-        })
+      return fetch(request).then((response) => {
+        if (response.ok && (isBuildAsset(url, response) || SHELL.includes(url.pathname))) {
+          const copy = response.clone()
+          caches.open(CACHE).then((cache) => cache.put(request, copy))
+        }
+        return response
+      })
     }),
   )
 })
+
+/*
+ * /assets/ の下で、中身も本当にビルド成果物か。
+ *
+ * デプロイをまたいで開いていたタブは、もう無い古いチャンクを取りに行く。
+ * Vercel は無いパスにも index.html を 200 で返す（vercel.json の rewrites）ので、
+ * 名前だけで判断すると HTML を JS の URL で控えてしまい、キャッシュ優先のせいで
+ * そのチャンクの読み込みがずっと壊れたままになる。
+ */
+function isBuildAsset(url, response) {
+  if (!url.pathname.startsWith('/assets/')) return false
+  const type = response.headers.get('Content-Type') || ''
+  return !type.includes('text/html')
+}
 
 function offlineResponse() {
   return new Response(
