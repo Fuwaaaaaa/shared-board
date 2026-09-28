@@ -70,6 +70,7 @@ import { buildIcs, downloadText } from '../../lib/ics'
 import { supabase } from '../../lib/supabase'
 import { useIdentity } from '../../lib/identity'
 import { useRoomData } from '../../lib/roomData'
+import { messageOf } from '../../lib/errorMessage'
 import { HOUR_HEIGHT, dragDeltaMs } from '../../lib/calendarGrid'
 import {
   EVENT_COLORS,
@@ -305,10 +306,11 @@ export default function CalendarTab({
     if (error) attendance.removeLocal(row.id)
   }
 
+  /** その回だけを変える。保存できなければ画面を戻して知らせ、false を返す */
   async function saveOverride(
     occurrence: EventOccurrence,
     patch: Partial<EventOverride> & { canceled: boolean },
-  ) {
+  ): Promise<boolean> {
     const occurrenceDate = occurrenceKeyDate(occurrence.originalStart)
     const existing = overrides.rows.find(
       (o) => o.event_id === occurrence.event.id && o.occurrence_date === occurrenceDate,
@@ -341,7 +343,11 @@ export default function CalendarTab({
     if (error) {
       if (existing) overrides.upsertLocal(existing)
       else overrides.removeLocal(row.id)
+      // 以前は黙って戻すだけで、ドラッグや「この回だけ」の変更が消えた理由が出なかった
+      setNotice(`この回の変更を保存できませんでした: ${messageOf(error)}`)
+      return false
     }
+    return true
   }
 
   async function saveEvent(
@@ -363,7 +369,7 @@ export default function CalendarTab({
     // 繰り返しの 1 回分だけを変える。
     // 繰り返しなしの予定に例外を書いても展開時に読まれないので、そのときは通常の更新に落とす。
     if (occurrence && scope === 'occurrence' && occurrence.event.recurrence !== 'none') {
-      await saveOverride(occurrence, {
+      const saved = await saveOverride(occurrence, {
         canceled: false,
         title: draft.title,
         description: draft.description,
@@ -374,6 +380,8 @@ export default function CalendarTab({
         remind_minutes: draft.remind,
         tags: draft.tags,
       })
+      // 保存できなかったら閉じない。閉じると、書いた中身がそのまま消える
+      if (!saved) return
       setEditing(null)
       setCreatingOn(null)
       return
@@ -446,14 +454,23 @@ export default function CalendarTab({
       const mine = overrides.rows.filter((o) => o.event_id === existing.id)
       const answers = attendance.rows.filter((a) => a.event_id === existing.id)
 
-      if (gridMoved && (mine.length > 0 || answers.length > 0)) {
+      const resetting = gridMoved && (mine.length > 0 || answers.length > 0)
+      if (resetting) {
         if (!window.confirm(describeOccurrenceReset(mine.length, answers.length))) return
 
         for (const override of mine) overrides.removeLocal(override.id)
         for (const answer of answers) attendance.removeLocal(answer.id)
       }
 
-      await eventOps.patch(existing.id, patch, { what: '保存' })
+      // 保存できなかったら閉じない（理由は eventOps が知らせている）
+      if ((await eventOps.patch(existing.id, patch, { what: '保存' })) !== 'ok') {
+        // サーバーは回を落としていないので、先回りして消した分を戻す
+        if (resetting) {
+          for (const override of mine) overrides.upsertLocal(override)
+          for (const answer of answers) attendance.upsertLocal(answer)
+        }
+        return
+      }
     } else {
       const now = new Date().toISOString()
       const event: CalendarEvent = {
@@ -468,7 +485,7 @@ export default function CalendarTab({
         created_at: now,
         updated_at: now,
       }
-      await eventOps.insert([event], '予定の保存')
+      if (!(await eventOps.insert([event], '予定の保存'))) return
     }
 
     setEditing(null)
