@@ -6,6 +6,7 @@ import { supabase } from '../lib/supabase'
 import { useIdentity } from '../lib/identity'
 import { useRoomData } from '../lib/roomData'
 import { messageOf } from '../lib/errorMessage'
+import type { SnapshotTable } from '../lib/snapshot'
 
 /**
  * ボードあたりの保存数。増えすぎないよう古いものから捨てる。
@@ -15,23 +16,12 @@ import { messageOf } from '../lib/errorMessage'
 const KEEP = 10
 
 /**
- * 保存点に入れるテーブル。付箋と線の関係を保つため、まとめて出し入れする。
+ * 保存点の中身。付箋と線の関係を保つため、表をまとめて出し入れする。
  *
- * 並びは復元時に入れ直す順（supabase/schema.sql の restore_snapshot）と同じにしてある。
- * 線は付箋を、「この回だけ」の変更は予定を指すので、指される側を先に入れる。
+ * どの表を入れるかは lib/snapshot.ts の SNAPSHOT_TABLES が決める。
+ * Record にしてあるので、あちらに表を足してここを埋め忘れると型で落ちる。
  */
-type TableName =
-  | 'notes'
-  | 'strokes'
-  | 'connectors'
-  | 'frames'
-  | 'events'
-  | 'event_overrides'
-  | 'todos'
-  | 'images'
-type Row = { id: string; room_id: string; author_id: string }
-type Payload = Record<TableName, Row[]>
-
+type Payload = Record<SnapshotTable, unknown[]>
 interface Snapshot {
   id: string
   label: string
@@ -73,14 +63,21 @@ export default function SnapshotModal({ onClose }: { onClose: () => void }) {
   /** いまボードに出ているものを、そのまま控える */
   function buildPayload(): Payload {
     return {
-      notes: room.notes.rows as unknown as Row[],
-      strokes: room.strokes.rows as unknown as Row[],
-      connectors: room.connectors.rows as unknown as Row[],
-      frames: room.frames.rows as unknown as Row[],
-      events: room.events.rows as unknown as Row[],
-      event_overrides: room.overrides.rows as unknown as Row[],
-      todos: room.todos.rows as unknown as Row[],
-      images: room.images.rows as unknown as Row[],
+      notes: room.notes.rows,
+      strokes: room.strokes.rows,
+      connectors: room.connectors.rows,
+      frames: room.frames.rows,
+      events: room.events.rows,
+      event_overrides: room.overrides.rows,
+      todos: room.todos.rows,
+      images: room.images.rows,
+      attachments: room.attachments.rows,
+      note_votes: room.votes.rows,
+      note_reactions: room.reactions.rows,
+      polls: room.polls.rows,
+      poll_options: room.pollOptions.rows,
+      poll_votes: room.pollVotes.rows,
+      event_attendance: room.attendance.rows,
     }
   }
 
