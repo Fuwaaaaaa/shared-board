@@ -9,6 +9,7 @@ import {
 } from '../lib/outboxStore'
 import { onAnnounce, withFlushLock } from '../lib/writeQueueDb'
 import {
+  alreadyApplied,
   classifyError,
   identityChanged,
   nextRetryState,
@@ -19,6 +20,12 @@ import {
 
 /** 送るものが残っているときの、様子見の間隔 */
 const TICK_MS = 5_000
+
+/** サーバーが返した行の updated_at（持たない表では undefined） */
+function updatedAtOf(row: Record<string, unknown> | null | undefined): string | undefined {
+  const value = row?.updated_at
+  return typeof value === 'string' ? value : undefined
+}
 
 /** 1 件を送る。送れたら true */
 async function send(entry: QueueEntry, userId: string): Promise<boolean> {
@@ -42,19 +49,31 @@ async function send(entry: QueueEntry, userId: string): Promise<boolean> {
       const { data, error } = await query.select()
       if (error) throw error
 
-      if ((data ?? []).length === 0) {
+      const rows = (data ?? []) as Record<string, unknown>[]
+      if (rows.length === 0) {
         /*
          * 0 行。楽観ロックを掛けていたなら、相手が先に変えたということ。
          * 上書きも破棄もしない——長くオフラインだった後はたいてい相手が進んでいるし、
          * どちらを黙って選んでも誰かの書いたものが消える。送信箱で選ばせる。
+         *
+         * ただし、サーバーがもう送ろうとした中身になっていれば、前に送った更新が
+         * 実は届いていた（返事だけが失われた）。競合ではないので片付ける。
          */
         if (entry.expectUpdatedAt) {
-          const { data: latest } = await supabase
+          const { data: latest, error: readError } = await supabase
             .from(entry.table)
             .select('*')
             .eq('id', entry.rowId)
             .maybeSingle()
+          // 読めなかったのを「相手の本文は空」と見せない。送り直しに回す
+          if (readError) throw readError
           const server = latest as Record<string, unknown> | null
+
+          if (alreadyApplied(entry.patch!, server)) {
+            await settleSent(entry.key, entry.rev, false, updatedAtOf(server))
+            return true
+          }
+
           await updateEntry(entry.key, {
             state: 'failed',
             reason: 'conflict',
@@ -66,6 +85,10 @@ async function send(entry: QueueEntry, userId: string): Promise<boolean> {
         // ロックを掛けていないのに 0 行なら、RLS の USING で弾かれている
         throw { code: '42501', message: '書き込む権限がありません' }
       }
+
+      // 送っているあいだに書き足されていたら、送れた行の updated_at でロックを掛け直す
+      await settleSent(entry.key, entry.rev, false, updatedAtOf(rows[0]))
+      return true
     } else {
       /*
        * 本当に消す。送信箱の delete は「作成が送信箱にあった行を消した」ときにしか

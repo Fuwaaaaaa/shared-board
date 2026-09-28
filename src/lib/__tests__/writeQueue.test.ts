@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   afterSend,
+  alreadyApplied,
   classifyError,
   collapse,
   decideOnFailure,
@@ -124,6 +125,34 @@ describe('collapse', () => {
       makeOp({ kind: 'update', patch: { text: 'いろは' }, base: { text: 'あ' } }),
     )!
     expect(entry.base).toEqual({ text: 'もとの文' })
+  })
+
+  it('ロックはいちばん最初のものを保つ', () => {
+    const first = collapse(
+      undefined,
+      makeOp({ kind: 'update', patch: { text: 'あ' }, expectUpdatedAt: 'U0' }),
+    )!
+    const entry = collapse(
+      first,
+      makeOp({ kind: 'update', patch: { text: 'いろは' }, expectUpdatedAt: 'U1' }),
+    )!
+    expect(entry.expectUpdatedAt).toBe('U0')
+  })
+
+  /*
+   * 先にためたのが位置だけ（ロック無し）だと、以前はあとの本文の書き換えの
+   * ロックまで捨てていた。本文が他の人の書き換えを黙って上書きしていた。
+   */
+  it('位置だけの更新に本文の書き換えを畳んでも、ロックは外れない', () => {
+    const moved = collapse(undefined, makeOp({ kind: 'update', patch: { x: 10, y: 20 } }))!
+    expect(moved.expectUpdatedAt).toBeUndefined()
+
+    const entry = collapse(
+      moved,
+      makeOp({ kind: 'update', patch: { text: '書いた' }, expectUpdatedAt: 'U0' }),
+    )!
+    expect(entry.patch).toEqual({ x: 10, y: 20, text: '書いた' })
+    expect(entry.expectUpdatedAt).toBe('U0')
   })
 
   it('update のあとの delete は delete になり、戻り先は保つ', () => {
@@ -389,6 +418,28 @@ describe('lockedFields', () => {
   })
 })
 
+describe('alreadyApplied', () => {
+  /*
+   * 更新は届いたのに返事だけが失われると、ためたときのロックで送り直して 0 行になる。
+   * サーバーがもう送ろうとした中身なら、競合ではなく「送れていた」。
+   */
+  it('送ろうとした列がどれもサーバーと同じなら、送れていた', () => {
+    const server = { id: 'note-1', text: '書いた', tags: ['大事'], x: 10, updated_at: 'U1' }
+    expect(alreadyApplied({ text: '書いた', tags: ['大事'] }, server)).toBe(true)
+  })
+
+  it('1 つでも違えば、送れていない（競合として見せる）', () => {
+    const server = { id: 'note-1', text: 'けいこが書いた', tags: ['大事'] }
+    expect(alreadyApplied({ text: '書いた', tags: ['大事'] }, server)).toBe(false)
+    expect(alreadyApplied({ tags: ['大事', '急ぎ'] }, server)).toBe(false)
+  })
+
+  it('行が無い・変更が空なら、送れていたことにしない', () => {
+    expect(alreadyApplied({ text: '書いた' }, null)).toBe(false)
+    expect(alreadyApplied({}, { text: '書いた' })).toBe(false)
+  })
+})
+
 describe('nextBackoff', () => {
   it('だんだん長くなる', () => {
     expect(nextBackoff(0)).toBe(1_000)
@@ -419,6 +470,26 @@ describe('afterSend', () => {
     const next = afterSend(makeEntry({ kind: 'update', rev: 4 }), 3)
     expect(next).not.toBe('drop')
     expect(next).toMatchObject({ state: 'pending' })
+  })
+
+  /*
+   * いま送った更新で、サーバーの updated_at はもう進んでいる。古いロックのまま
+   * 送り直すと 0 行になり、自分の書き込みが「他の人が先に書き換えました」で止まっていた。
+   */
+  it('更新を送り直すときは、送れた行の updated_at にロックを掛け直す', () => {
+    const next = afterSend(
+      makeEntry({ kind: 'update', rev: 4, patch: { text: 'つづき' }, expectUpdatedAt: 'U0' }),
+      3,
+      false,
+      'U1',
+    )
+    expect(next).toMatchObject({ expectUpdatedAt: 'U1' })
+  })
+
+  it('ロックを掛けていなかった更新には、送り直しでも掛けない', () => {
+    const next = afterSend(makeEntry({ kind: 'update', rev: 4, patch: { x: 5 } }), 3, false, 'U1')
+    expect(next).not.toBe('drop')
+    expect((next as Partial<QueueEntry>).expectUpdatedAt).toBeUndefined()
   })
 
   /*
