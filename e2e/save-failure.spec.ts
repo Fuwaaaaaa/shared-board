@@ -99,6 +99,8 @@ test('予定の時刻を空にしたら、固まらずに理由を出し、埋�
 
   await page.getByRole('button', { name: '予定を追加' }).click()
   await page.getByPlaceholder('予定のタイトル').fill('打ち合わせ')
+  // 新しい予定は終日で始まる。時刻の欄は、終日を外すと出る
+  await page.getByRole('checkbox', { name: '終日' }).uncheck()
   const startTime = page.getByRole('dialog').locator('input[type="time"]').first()
   await startTime.fill('')
 
