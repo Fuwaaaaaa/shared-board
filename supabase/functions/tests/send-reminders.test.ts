@@ -15,7 +15,7 @@
  */
 
 import { assert, assertEquals } from 'jsr:@std/assert@1'
-import { installFetchRouter, restJson, setFunctionEnv } from './helpers.ts'
+import { installFetchRouter, restJson, restRows, setFunctionEnv } from './helpers.ts'
 
 setFunctionEnv()
 Deno.env.set('CRON_SHARED_SECRET', 'reminder-secret')
@@ -66,6 +66,8 @@ interface Routes {
   notifications?: unknown[]
   overrides?: unknown[]
   members?: unknown[]
+  /** 名簿の全員（承認待ち・見送り・取り消しも含む）。user_id で 1 人を引くときに使う */
+  roster?: { user_id: string; status: string }[]
   /** reminder_sends への insert を「すでに誰かが送った」にする */
   alreadySent?: boolean
   /** 予定ごとの「この回だけ」の取得を失敗させる */
@@ -94,17 +96,21 @@ function routes(r: Routes = {}) {
       }
       return new Response(null, { status: 201 })
     }
-    if (url.includes('/rest/v1/rooms')) return restJson(r.rooms ?? [ROOM])
+    if (url.includes('/rest/v1/rooms')) return restRows(url, r.rooms ?? [ROOM])
     if (url.includes('/rest/v1/event_overrides')) {
       // 予定ごとに引くほう（event_id=in.）だけを落とす
       if (r.overridesFail && url.includes('event_id=in.')) return failure()
-      return restJson(r.overrides ?? [])
+      return restRows(url, r.overrides ?? [])
     }
-    if (url.includes('/rest/v1/events')) return restJson(r.events ?? [])
-    if (url.includes('/rest/v1/todos')) return restJson(r.todos ?? [])
-    if (url.includes('/rest/v1/notifications')) return restJson(r.notifications ?? [])
+    if (url.includes('/rest/v1/events')) return restRows(url, r.events ?? [])
+    if (url.includes('/rest/v1/todos')) return restRows(url, r.todos ?? [])
+    if (url.includes('/rest/v1/notifications')) return restRows(url, r.notifications ?? [])
     if (url.includes('/rest/v1/room_members')) {
-      return restJson(r.members ?? [{ user_id: OWNER }])
+      const who = new URL(url).searchParams.get('user_id')
+      if (who?.startsWith('eq.')) {
+        return restJson((r.roster ?? []).filter((m) => m.user_id === who.slice(3)))
+      }
+      return restRows(url, r.members ?? [{ user_id: OWNER }])
     }
     if (url.includes('/rest/v1/push_subscriptions')) {
       return r.subscriptionsFail ? failure() : restJson([])
@@ -302,6 +308,84 @@ Deno.test('購読は宛先を分けて引く', async () => {
   await (await handler(call())).json()
   const queries = net.calls.filter((u) => u.includes('/rest/v1/push_subscriptions'))
   assertEquals(queries.length, 3)
+})
+
+/*
+ * PostgREST は 1 回に 1000 行までしか返さない（Supabase の既定の max_rows）。
+ * 全ボードぶんを 1 回で読んでいたので、通知のある予定や、ボードそのものが
+ * 1000 を超えると、残りの通知は黙って落ちていた。
+ */
+Deno.test('通知のある予定が 1000 件を超えても、全部拾う', async () => {
+  const events = Array.from({ length: 1200 }, (_, i) => ({
+    ...dueNow(),
+    id: `11111111-2222-3333-4444-${String(i).padStart(12, '0')}`,
+  }))
+  routes({ events })
+  const body = await (await handler(call())).json()
+  assertEquals(body.checked, 1200)
+})
+
+Deno.test('ボードが 1000 を超えていても、通知するボードを引ける', async () => {
+  const rooms = Array.from({ length: 1100 }, (_, i) => ({
+    id: `aaaaaaaa-0000-0000-0000-${String(i).padStart(12, '0')}`,
+    slug: `board-${i}`,
+    name: `ボード ${i}`,
+    owner_id: OWNER,
+  }))
+  const last = rooms[rooms.length - 1]
+  routes({ rooms, events: [{ ...dueNow(), room_id: last.id }] })
+  const body = await (await handler(call())).json()
+  assertEquals(body.checked, 1)
+})
+
+/*
+ * 見送り・取り消しの知らせ（join_decided）は、承認済みでない本人に届けるもの。
+ * 宛先を承認済みの参加者に絞っていたので、いつも宛先 0 人で送られなかった。
+ * ただし、取り消された人あての @メンションまで届けると、読めなくなったはずの
+ * 中身が端末に届く。広げるのは join_decided だけ。
+ */
+const REJECTED = '88888888-8888-8888-8888-888888888888'
+
+function notificationTo(userId: string, kind: string, body: string) {
+  return {
+    id: '66666666-7777-8888-9999-000000000000',
+    room_id: ROOM_ID,
+    user_id: userId,
+    kind,
+    actor_name: 'ゆうき',
+    body,
+    created_at: new Date().toISOString(),
+  }
+}
+
+Deno.test('見送り・取り消しの知らせは、その本人に届ける', async () => {
+  routes({
+    notifications: [notificationTo(REJECTED, 'join_decided', '参加は見送られました')],
+    roster: [{ user_id: REJECTED, status: 'rejected' }],
+  })
+  const body = await (await handler(call())).json()
+  assertEquals(body.checked, 1)
+  assertEquals(body.skipped, 0)
+  assert(net.calls.some((u) => u.includes('/rest/v1/reminder_sends')))
+})
+
+Deno.test('取り消された人あてのメンションは届けない', async () => {
+  routes({
+    notifications: [notificationTo(REJECTED, 'mention', '@さとる 見積もりは 30 万です')],
+    roster: [{ user_id: REJECTED, status: 'rejected' }],
+  })
+  const body = await (await handler(call())).json()
+  assertEquals(body.skipped, 1)
+  assertEquals(net.calls.some((u) => u.includes('/rest/v1/reminder_sends')), false)
+})
+
+Deno.test('名簿に載っていない人には、見送りの知らせも届けない', async () => {
+  routes({
+    notifications: [notificationTo(REJECTED, 'join_decided', '参加は見送られました')],
+    roster: [],
+  })
+  const body = await (await handler(call())).json()
+  assertEquals(body.skipped, 1)
 })
 
 /* ゴミ箱に入れた予定を通知しないのは、問い合わせ側の絞り込みで効かせている */

@@ -32,6 +32,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4'
 import { buildIcs, type IcsEventLike, type IcsTodoLike } from '../_shared/ics.ts'
 import type { OverrideLike } from '../_shared/recurrence.ts'
 import { toBoardDate } from '../_shared/dates.ts'
+import { fetchAllPages } from '../_shared/paging.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -215,47 +216,60 @@ export async function handler(request: Request): Promise<Response> {
      * ここから下は service_role なので RLS が効かない。
      * 取得は必ず room_id で絞り、他のボードの行が混ざる余地を作らない。
      */
+    // 1 回に返るのは 1000 行まで（PostgREST の上限）。.limit を大きくしても超えられないので、
+    // ページに分けて MAX_* まで読む
     const [eventsResult, overridesResult, todosResult] = await Promise.all([
-      admin
-        .from('events')
-        /*
-         * 列を足し忘れても何もエラーにならない。ruleOf が undefined を見て
-         * 従来どおりの並びに落ち、購読 URL 経由でだけ違う日に出る。
-         * IcsEventLike の全フィールドが並んでいることを
-         * src/lib/__tests__/ics.test.ts で押さえてある。
-         */
-        .select(
-          'id, title, description, start_at, end_at, all_day, kind, recurrence, recurrence_days, recurrence_week, recurrence_interval, recurrence_until, tags, updated_at',
-        )
-        .eq('room_id', roomId)
-        .is('deleted_at', null)
-        .limit(MAX_EVENTS),
-      admin
-        .from('event_overrides')
-        .select(
-          'event_id, occurrence_date, canceled, title, description, start_at, end_at, all_day, color, remind_minutes, tags, created_at',
-        )
-        .eq('room_id', roomId)
-        .limit(MAX_OVERRIDES),
-      admin
-        .from('todos')
-        .select('id, title, notes, due_at, done, created_at')
-        .eq('room_id', roomId)
-        .is('deleted_at', null)
-        .not('due_at', 'is', null)
-        .limit(MAX_TODOS),
+      fetchAllPages<IcsEventLike & { updated_at: string }>((from, to) =>
+        admin
+          .from('events')
+          /*
+           * 列を足し忘れても何もエラーにならない。ruleOf が undefined を見て
+           * 従来どおりの並びに落ち、購読 URL 経由でだけ違う日に出る。
+           * IcsEventLike の全フィールドが並んでいることを
+           * src/lib/__tests__/ics.test.ts で押さえてある。
+           */
+          .select(
+            'id, title, description, start_at, end_at, all_day, kind, recurrence, recurrence_days, recurrence_week, recurrence_interval, recurrence_until, tags, updated_at',
+          )
+          .eq('room_id', roomId)
+          .is('deleted_at', null)
+          .order('id')
+          .range(from, to),
+        MAX_EVENTS,
+      ),
+      fetchAllPages<OverrideLike & { created_at: string }>((from, to) =>
+        admin
+          .from('event_overrides')
+          .select(
+            'event_id, occurrence_date, canceled, title, description, start_at, end_at, all_day, color, remind_minutes, tags, created_at',
+          )
+          .eq('room_id', roomId)
+          .order('id')
+          .range(from, to),
+        MAX_OVERRIDES,
+      ),
+      fetchAllPages<IcsTodoLike & { created_at: string }>((from, to) =>
+        admin
+          .from('todos')
+          .select('id, title, notes, due_at, done, created_at')
+          .eq('room_id', roomId)
+          .is('deleted_at', null)
+          .not('due_at', 'is', null)
+          .order('id')
+          .range(from, to),
+        MAX_TODOS,
+      ),
     ])
 
     if (eventsResult.error || overridesResult.error || todosResult.error) return notFound()
 
-    const events = (eventsResult.data ?? []) as (IcsEventLike & { updated_at: string })[]
-    const todos = (todosResult.data ?? []) as (IcsTodoLike & { created_at: string })[]
+    const events = eventsResult.data
+    const todos = todosResult.data
 
     // 例外行は「取ってきた予定に属するか」を確かめ直す。
     // room_id で絞っているので混ざらないはずだが、確かめる側を 1 つに保つ
     const eventIds = new Set(events.map((event) => event.id))
-    const overrides = ((overridesResult.data ?? []) as (OverrideLike & { created_at: string })[])
-      .filter((override) => eventIds.has(override.event_id))
+    const overrides = overridesResult.data.filter((override) => eventIds.has(override.event_id))
 
     const stamp = stampFor(
       [

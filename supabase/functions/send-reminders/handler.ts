@@ -21,6 +21,7 @@ import webpush from 'npm:web-push@3.6.7'
 import { expandOccurrences, type Recurrence } from '../_shared/recurrence.ts'
 import { DAY_MS, reminderKey, toBoardDate } from '../_shared/dates.ts'
 import { isCronCaller } from '../_shared/cronAuth.ts'
+import { fetchAllPages } from '../_shared/paging.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -132,6 +133,11 @@ interface Job {
   body: string
   /** 指定があればこの人にだけ送る */
   onlyUserId: string | null
+  /**
+   * 申し込んだ本人あての知らせ（参加の見送り・アクセスの取り消し）。
+   * 本人はもう承認済みではないので、名簿に載っていれば送る
+   */
+  toApplicant?: boolean
 }
 
 const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
@@ -178,15 +184,20 @@ async function fetchOverrides(events: EventRow[]): Promise<OverrideRow[] | null>
   const result: OverrideRow[] = []
 
   for (const ids of chunk([...roomByEvent.keys()], IN_CHUNK)) {
-    const { data, error } = await admin
-      .from('event_overrides')
-      .select(OVERRIDE_COLUMNS)
-      .in('event_id', ids)
+    // 200 件の予定でも、例外行は 1000 を超えうる（毎日の予定の「この回だけ」など）
+    const { data, error } = await fetchAllPages<OverrideRow>((from, to) =>
+      admin
+        .from('event_overrides')
+        .select(OVERRIDE_COLUMNS)
+        .in('event_id', ids)
+        .order('id')
+        .range(from, to),
+    )
     if (error) {
       console.error('event_overrides の取得に失敗。予定の通知は次の実行に回します', error.message)
       return null
     }
-    for (const row of (data ?? []) as OverrideRow[]) {
+    for (const row of data) {
       if (row.room_id !== roomByEvent.get(row.event_id)) {
         console.warn('event_overrides: 所属の合わない例外行を無視しました', row.event_id)
         continue
@@ -197,6 +208,29 @@ async function fetchOverrides(events: EventRow[]): Promise<OverrideRow[] | null>
   return result
 }
 
+/**
+ * 通知に使うボードだけを id で引く。
+ *
+ * 以前は全ボードを 1 回で読んでいたので、ボードが 1000 を超えると 1000 行の上限で
+ * 切られ、そこから外れたボードの通知は黙って落ちていた（毎分、全ボードを読むのも重い）。
+ * 読めなかったボードの通知は見送るだけで、印をつけないので次の実行で拾える。
+ */
+async function fetchRooms(ids: string[]): Promise<Map<string, RoomRow>> {
+  const byId = new Map<string, RoomRow>()
+  for (const part of chunk([...new Set(ids)], IN_CHUNK)) {
+    const { data, error } = await admin
+      .from('rooms')
+      .select('id, slug, name, owner_id')
+      .in('id', part)
+    if (error) {
+      console.error('rooms の取得に失敗', error.message)
+      continue
+    }
+    for (const room of (data ?? []) as RoomRow[]) byId.set(room.id, room)
+  }
+  return byId
+}
+
 async function collectJobs(now: Date): Promise<Job[]> {
   const windowStart = new Date(now.getTime() - WINDOW_BEFORE_MS)
   const windowEnd = new Date(now.getTime() + WINDOW_AFTER_MS)
@@ -205,55 +239,67 @@ async function collectJobs(now: Date): Promise<Job[]> {
   const expandFrom = new Date(now.getTime() - 2 * DAY_MS)
   const expandTo = new Date(now.getTime() + 2 * DAY_MS)
 
-  const [
-    { data: rooms },
-    { data: baseEvents },
-    { data: todos },
-    { data: notifications },
-    { data: remindOverrides },
-  ] = await Promise.all([
-    admin.from('rooms').select('id, slug, name, owner_id'),
-    admin
-      .from('events')
-      .select(EVENT_COLUMNS)
-      .not('remind_minutes', 'is', null)
-      // ゴミ箱に入れたものは通知しない
-      .is('deleted_at', null),
-    admin
-      .from('todos')
-      .select('id, room_id, title, due_at, done, assignee_id, remind_minutes')
-      .eq('done', false)
-      .not('remind_minutes', 'is', null)
-      .not('due_at', 'is', null)
-      .is('deleted_at', null),
+  // どれも全ボードぶんなので、1000 行の上限で切られないようページに分けて読む。
+  // 読めなかった分は通知せずに見送るだけで、印をつけないので次の実行で拾える
+  const [baseEvents, todosResult, notificationsResult, remindOverrides] = await Promise.all([
+    fetchAllPages<EventRow>((from, to) =>
+      admin
+        .from('events')
+        .select(EVENT_COLUMNS)
+        .not('remind_minutes', 'is', null)
+        // ゴミ箱に入れたものは通知しない
+        .is('deleted_at', null)
+        .order('id')
+        .range(from, to),
+    ),
+    fetchAllPages<TodoRow>((from, to) =>
+      admin
+        .from('todos')
+        .select('id, room_id, title, due_at, done, assignee_id, remind_minutes')
+        .eq('done', false)
+        .not('remind_minutes', 'is', null)
+        .not('due_at', 'is', null)
+        .is('deleted_at', null)
+        .order('id')
+        .range(from, to),
+    ),
     // 未読のままのサイト内通知。開いている画面にはその場で出るので、
     // ここで拾えるのは「タブを閉じている人あて」だけになる。
-    admin
-      .from('notifications')
-      .select('id, room_id, user_id, kind, actor_name, body, created_at')
-      .eq('read', false)
-      .gte('created_at', new Date(now.getTime() - WINDOW_BEFORE_MS).toISOString()),
+    fetchAllPages<NotificationRow>((from, to) =>
+      admin
+        .from('notifications')
+        .select('id, room_id, user_id, kind, actor_name, body, created_at')
+        .eq('read', false)
+        .gte('created_at', new Date(now.getTime() - WINDOW_BEFORE_MS).toISOString())
+        .order('id')
+        .range(from, to),
+    ),
     // 元の予定は通知なしでも、「この回だけ」通知ありにした回がありうる。その予定も対象に入れる
-    admin
-      .from('event_overrides')
-      .select('event_id')
-      .eq('canceled', false)
-      .not('remind_minutes', 'is', null)
-      .gte('occurrence_date', toBoardDate(expandFrom))
-      .lte('occurrence_date', toBoardDate(expandTo)),
+    fetchAllPages<{ event_id: string }>((from, to) =>
+      admin
+        .from('event_overrides')
+        .select('event_id')
+        .eq('canceled', false)
+        .not('remind_minutes', 'is', null)
+        .gte('occurrence_date', toBoardDate(expandFrom))
+        .lte('occurrence_date', toBoardDate(expandTo))
+        .order('id')
+        .range(from, to),
+    ),
   ])
+  if (baseEvents.error) console.error('events の取得に失敗', baseEvents.error.message)
+  if (todosResult.error) console.error('todos の取得に失敗', todosResult.error.message)
+  if (notificationsResult.error) {
+    console.error('notifications の取得に失敗', notificationsResult.error.message)
+  }
+  if (remindOverrides.error) {
+    console.error('event_overrides の取得に失敗', remindOverrides.error.message)
+  }
 
-  const roomById = new Map<string, RoomRow>()
-  for (const room of (rooms ?? []) as RoomRow[]) roomById.set(room.id, room)
-
-  const events = [...((baseEvents ?? []) as EventRow[])]
+  const events = [...baseEvents.data]
   const knownIds = new Set(events.map((e) => e.id))
   const extraIds = [
-    ...new Set(
-      ((remindOverrides ?? []) as { event_id: string }[])
-        .map((o) => o.event_id)
-        .filter((id) => !knownIds.has(id)),
-    ),
+    ...new Set(remindOverrides.data.map((o) => o.event_id).filter((id) => !knownIds.has(id))),
   ]
   for (const ids of chunk(extraIds, IN_CHUNK)) {
     const { data } = await admin
@@ -263,6 +309,14 @@ async function collectJobs(now: Date): Promise<Job[]> {
       .is('deleted_at', null)
     events.push(...((data ?? []) as EventRow[]))
   }
+
+  const todos = todosResult.data
+  const notifications = notificationsResult.data
+  const roomById = await fetchRooms([
+    ...events.map((event) => event.room_id),
+    ...todos.map((todo) => todo.room_id),
+    ...notifications.map((notification) => notification.room_id),
+  ])
 
   // 「この回だけ」を読めなければ、予定の通知はこの回は見送る（印をつけないので次の実行で拾える）
   const overrides = await fetchOverrides(events)
@@ -295,7 +349,7 @@ async function collectJobs(now: Date): Promise<Job[]> {
   }
 
   // リマインド
-  for (const todo of (todos ?? []) as TodoRow[]) {
+  for (const todo of todos) {
     const room = roomById.get(todo.room_id)
     if (!room || !todo.due_at || todo.remind_minutes === null) continue
 
@@ -317,7 +371,7 @@ async function collectJobs(now: Date): Promise<Job[]> {
   }
 
   // サイト内通知
-  for (const notification of (notifications ?? []) as NotificationRow[]) {
+  for (const notification of notifications) {
     const room = roomById.get(notification.room_id)
     if (!room) continue
 
@@ -331,6 +385,7 @@ async function collectJobs(now: Date): Promise<Job[]> {
       title: `${icon} ${notification.actor_name || room.name}`,
       body: `${notification.body} — ${room.name}`,
       onlyUserId: notification.user_id,
+      toApplicant: notification.kind === 'join_decided',
     })
   }
 
@@ -366,6 +421,7 @@ async function release(sendKey: string): Promise<void> {
  *
  * 宛先が指定されている（担当者・サイト内通知の user_id）ときも、その人がボードの関係者で
  * なければ送らない。行の user_id を細工して他人に通知を届けることができないようにするため。
+ * 例外は見送り・取り消しの知らせ（toApplicant）で、名簿に載っている本人になら送る。
  */
 async function recipientsFor(job: Job): Promise<string[]> {
   const { data, error } = await admin
@@ -381,7 +437,14 @@ async function recipientsFor(job: Job): Promise<string[]> {
   const participants = new Set<string>((data ?? []).map((row) => row.user_id as string))
   participants.add(job.roomOwnerId)
 
-  if (job.onlyUserId) return participants.has(job.onlyUserId) ? [job.onlyUserId] : []
+  if (job.onlyUserId) {
+    if (participants.has(job.onlyUserId)) return [job.onlyUserId]
+    // 見送られた人・取り消された人は承認済みではないので、上の名簿に入らない。
+    // 広げるのはこの知らせだけ。取り消された人あての @メンションまで送ると、
+    // 読めなくなったはずの中身が端末に届く
+    if (job.toApplicant && (await onRoster(job.roomId, job.onlyUserId))) return [job.onlyUserId]
+    return []
+  }
   return [...participants]
 }
 
@@ -413,6 +476,21 @@ async function subscriptionsFor(userIds: string[]): Promise<SubscriptionRow[] | 
     result.push(...((data ?? []) as SubscriptionRow[]))
   }
   return result
+}
+
+/** そのボードの名簿に載っているか（承認待ち・見送り・取り消しも含む） */
+async function onRoster(roomId: string, userId: string): Promise<boolean> {
+  const { data, error } = await admin
+    .from('room_members')
+    .select('user_id')
+    .eq('room_id', roomId)
+    .eq('user_id', userId)
+    .limit(1)
+  if (error) {
+    console.error('room_members の取得に失敗', roomId, error.message)
+    return false
+  }
+  return (data ?? []).length > 0
 }
 
 async function send(job: Job, subscriptions: SubscriptionRow[]): Promise<number> {

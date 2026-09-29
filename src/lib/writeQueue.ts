@@ -281,6 +281,18 @@ function errorOf(e: unknown): PostgrestLike {
   return { message: String(e) }
 }
 
+/**
+ * 返ってきた error に、HTTP のステータスを添える。
+ *
+ * postgrest-js の error は応答の本文を読んだもので、status は結果の側
+ * （{ data, error, status }）にしか無い。error だけを投げると、下の
+ * decideOnFailure / classifyError が 5xx・429 を見分けられず、混んでいるだけの
+ * 失敗まで巻き戻したり、送信箱で「送れなかった」に落としたりする。
+ */
+export function withStatus(error: object, status: number): PostgrestLike {
+  return { ...(error as PostgrestLike), status }
+}
+
 /** 通信そのものが届かなかったか。navigator.onLine は当てにしない */
 export function isTransportError(e: unknown): boolean {
   if (e && typeof e === 'object' && (e as { isTransport?: boolean }).isTransport) return true
@@ -303,8 +315,8 @@ export function isTransportError(e: unknown): boolean {
 export function decideOnFailure(e: unknown): 'queue' | 'fail' {
   if (isTransportError(e)) return 'queue'
   const status = errorOf(e).status
-  // 中継やゲートウェイの一時的な失敗も、ためて送り直すほうがよい
-  if (status !== undefined && status >= 500) return 'queue'
+  // 中継やゲートウェイの一時的な失敗・混んでいるとき（429）も、ためて送り直すほうがよい
+  if (status !== undefined && (status >= 500 || status === 429)) return 'queue'
   return 'fail'
 }
 
@@ -413,6 +425,27 @@ export function nextRetryState(
     }
   }
   return { state: 'pending', attempts, nextAttemptAt: now + nextBackoff(entry.attempts) }
+}
+
+/**
+ * 送信箱の画面で、送れなかった 1 件を送り直すときの書き換え。
+ *
+ * ロックを外すのは競合のときだけ。競合では両方の文面を見せたうえで「自分の内容にする」を
+ * 選ばせているので、相手の書き換えを上書きしてよいと分かっている。それ以外の
+ * 「もう一度送る」でロックを外すと、そのあいだに他の人が書き換えていても黙って上書きする
+ * （以前はそうなっていた）。ロックを保って送れば、書き換えられていたときは競合として止まる。
+ */
+export function retryPatch(entry: Pick<QueueEntry, 'reason'>): Partial<QueueEntry> {
+  const patch: Partial<QueueEntry> = {
+    state: 'pending',
+    attempts: 0,
+    nextAttemptAt: undefined,
+    reason: undefined,
+    errorText: undefined,
+    serverText: undefined,
+  }
+  if (entry.reason === 'conflict') patch.expectUpdatedAt = undefined
+  return patch
 }
 
 export type Classified =

@@ -92,6 +92,27 @@ export function installFetchRouter(): FetchRouter {
   }
 }
 
+/** Supabase の PostgREST が 1 回に返す行数の上限（既定の max_rows） */
+export const MAX_ROWS = 1000
+
+/**
+ * 本物の PostgREST と同じく、1 回に MAX_ROWS 行までしか返さない応答。
+ *
+ * restJson は渡した行を全部返すので、上限で黙って切られるのを見逃す。
+ * offset / limit（range）でページを切り、id=in.(…) で絞り込む。
+ * それ以外の絞り込み（eq など）は見ない。
+ */
+export function restRows(url: string, rows: unknown[]): Response {
+  const params = new URL(url).searchParams
+  const ids = /^in\.\((.*)\)$/.exec(params.get('id') ?? '')?.[1]?.split(',')
+  const matched = ids
+    ? rows.filter((row) => ids.includes(String((row as { id?: unknown }).id)))
+    : rows
+  const offset = Number(params.get('offset') ?? 0)
+  const limit = Math.min(Number(params.get('limit') ?? MAX_ROWS), MAX_ROWS)
+  return restJson(matched.slice(offset, offset + limit))
+}
+
 /** PostgREST が返す形の応答 */
 export function restJson(rows: unknown): Response {
   return new Response(JSON.stringify(rows), {

@@ -8,7 +8,7 @@
  */
 
 import { assert, assertEquals } from 'jsr:@std/assert@1'
-import { installFetchRouter, restJson, setFunctionEnv } from './helpers.ts'
+import { installFetchRouter, restJson, restRows, setFunctionEnv } from './helpers.ts'
 
 setFunctionEnv()
 // createClient より先に入れる（helpers.ts の installFetchRouter を参照）
@@ -45,9 +45,9 @@ function db(rows: Record<string, unknown[]> = {}) {
     if (url.includes('/rest/v1/room_secrets')) {
       return restJson(table('room_secrets', [{ room_id: ROOM_ID }]))
     }
-    if (url.includes('/rest/v1/event_overrides')) return restJson(table('event_overrides', []))
-    if (url.includes('/rest/v1/events')) return restJson(table('events', [EVENT]))
-    if (url.includes('/rest/v1/todos')) return restJson(table('todos', []))
+    if (url.includes('/rest/v1/event_overrides')) return restRows(url, table('event_overrides', []))
+    if (url.includes('/rest/v1/events')) return restRows(url, table('events', [EVENT]))
+    if (url.includes('/rest/v1/todos')) return restRows(url, table('todos', []))
     if (url.includes('/rest/v1/rooms')) return restJson(table('rooms', [{ name: 'みんなのボード' }]))
     return new Response('想定していない問い合わせ: ' + url, { status: 500 })
   })
@@ -233,6 +233,22 @@ Deno.test('中身が変わらなければ 304 を返す', async () => {
   const again = await handler(ask('/' + TOKEN + '.ics', { headers: { 'if-none-match': etag } }))
   assertEquals(again.status, 304)
   assertEquals(await again.text(), '')
+})
+
+/*
+ * PostgREST は 1 回に 1000 行までしか返さない。.limit(3000) を付けていても
+ * その上限は超えられず、予定が 1000 件を超えるボードでは、残りが購読先に
+ * 黙って出なかった。
+ */
+Deno.test('予定が 1000 件を超えても、全部配る', async () => {
+  const events = Array.from({ length: 1200 }, (_, i) => ({
+    ...EVENT,
+    id: `99999999-8888-7777-6666-${String(i).padStart(12, '0')}`,
+  }))
+  db({ events })
+  const res = await handler(ask('/' + TOKEN + '.ics'))
+  assertEquals(res.status, 200)
+  assertEquals((await res.text()).split('BEGIN:VEVENT').length - 1, 1200)
 })
 
 /*

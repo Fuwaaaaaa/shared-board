@@ -107,6 +107,7 @@ export type ActivityAction =
   | 'board_reopened'
   | 'link_rotated'
   | 'owner_link_rotated'
+  | 'owner_claimed'
   | 'calendar_link_rotated'
   | 'calendar_link_cleared'
   | 'access_mode'

@@ -10,6 +10,7 @@ import {
   type QueueKind,
   type QueueOp,
   type QueueTable,
+  withStatus,
 } from '../lib/writeQueue'
 import type { useRealtimeTable } from './useRealtimeTable'
 
@@ -198,10 +199,13 @@ export function useOptimisticTable<T extends Row>(
      */
     async function queueNow(op: QueueOp | null): Promise<boolean> {
       if (!op) return false
-      if (await enqueue(op)) return true
+      const result = await enqueue(op)
+      if (result === 'queued') return true
 
       notifyRef.current(
-        'この内容は大きすぎて、オフラインのあいだ手元にためておけません。つながってからお試しください。',
+        result === 'other_user'
+          ? '前にこの端末を使っていた人の、まだ送っていない変更が残っています。送信箱を確かめてから、もう一度お試しください。'
+          : 'この内容は大きすぎて、オフラインのあいだ手元にためておけません。つながってからお試しください。',
       )
       return false
     }
@@ -259,8 +263,8 @@ export function useOptimisticTable<T extends Row>(
         }
 
         for (const chunk of chunks(sendRows, CHUNK)) {
-          const { data, error } = await supabase.from(tableName).insert(chunk).select()
-          if (error) throw error
+          const { data, error, status } = await supabase.from(tableName).insert(chunk).select()
+          if (error) throw withStatus(error, status)
           for (const row of chunk) done.add(row.id)
           for (const row of (data ?? []) as T[]) table.applyServerRow(row)
         }
@@ -340,12 +344,12 @@ export function useOptimisticTable<T extends Row>(
 
         for (const chunk of chunks(sendRows, CHUNK)) {
           const ids = chunk.map((row) => row.id)
-          const { data, error } = await supabase
+          const { data, error, status } = await supabase
             .from(tableName)
             .delete()
             .in('id', ids)
             .select('id')
-          if (error) throw error
+          if (error) throw withStatus(error, status)
           for (const row of (data ?? []) as Row[]) done.add(row.id)
 
           // RLS に弾かれると「エラーなし・0 行」になる。サーバーに残っていれば画面に戻す
@@ -449,8 +453,8 @@ export function useOptimisticTable<T extends Row>(
         for (let attempt = 0; attempt < 2; attempt++) {
           let query = supabase.from(tableName).update(changes as Record<string, unknown>).eq('id', id)
           if (expect) query = query.eq('updated_at', expect)
-          const { data, error } = await query.select()
-          if (error) throw error
+          const { data, error, status } = await query.select()
+          if (error) throw withStatus(error, status)
 
           const saved = ((data ?? []) as T[])[0]
           if (saved) {
@@ -465,12 +469,16 @@ export function useOptimisticTable<T extends Row>(
 
           // updated_at が合わなかった。最新行を見て、こちらが触るフィールドが
           // 変わっていなければ（別の理由で updated_at が進んだだけなら）もう 1 回だけ試す
-          const { data: latest, error: latestError } = await supabase
+          const {
+            data: latest,
+            error: latestError,
+            status: latestStatus,
+          } = await supabase
             .from(tableName)
             .select('*')
             .eq('id', id)
             .maybeSingle()
-          if (latestError) throw latestError
+          if (latestError) throw withStatus(latestError, latestStatus)
 
           if (!latest) {
             release()
@@ -574,12 +582,12 @@ export function useOptimisticTable<T extends Row>(
 
         for (const chunk of chunks(sendRows, CHUNK)) {
           const ids = chunk.map((row) => row.id)
-          const { data, error } = await supabase
+          const { data, error, status } = await supabase
             .from(tableName)
             .update(changes as Record<string, unknown>)
             .in('id', ids)
             .select()
-          if (error) throw error
+          if (error) throw withStatus(error, status)
           const saved = (data ?? []) as T[]
           for (const row of saved) {
             done.add(row.id)
