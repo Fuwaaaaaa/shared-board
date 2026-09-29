@@ -15,6 +15,7 @@ import {
   nullOrphanRefs,
   orderForFlush,
   previewOf,
+  retryPatch,
   tooLargeToQueue,
   type QueueEntry,
   type QueueOp,
@@ -657,5 +658,34 @@ describe('tooLargeToQueue', () => {
 
   it('大きすぎるものは、ためずに断る（黙って落とさない）', () => {
     expect(tooLargeToQueue(makeEntry({ row: { points: 'x'.repeat(500_000) } }))).toBe(true)
+  })
+})
+
+describe('retryPatch', () => {
+  const failedUpdate = (over: Partial<QueueEntry>) =>
+    makeEntry({
+      kind: 'update',
+      state: 'failed',
+      attempts: 7,
+      errorText: '何度か試しましたが送れませんでした。',
+      expectUpdatedAt: '2026-09-08T00:00:00.000Z',
+      ...over,
+    })
+
+  /*
+   * 「もう一度送る」は、ロックを保ったまま送り直す。以前は理由を問わずロックを外して
+   * いたので、そのあいだに他の人が本文を書き換えていても、黙って上書きしていた。
+   * 外してよいのは、両方の文面を見たうえで「自分の内容にする」を選んだとき（競合）だけ。
+   */
+  it('競合でなければ、ロックを保ったまま送り直す', () => {
+    const patch = retryPatch(failedUpdate({ reason: 'unknown' }))
+    expect(patch).toMatchObject({ state: 'pending', attempts: 0, reason: undefined })
+    expect(patch).not.toHaveProperty('expectUpdatedAt')
+  })
+
+  it('競合で「自分の内容にする」を選んだときだけ、ロックを外す', () => {
+    const patch = retryPatch(failedUpdate({ reason: 'conflict', serverText: '相手の本文' }))
+    expect(patch).toHaveProperty('expectUpdatedAt', undefined)
+    expect(patch).toMatchObject({ state: 'pending', serverText: undefined })
   })
 })

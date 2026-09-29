@@ -5,7 +5,7 @@ import Modal from './Modal'
 import { useRoomData } from '../lib/roomData'
 import { dropEntry, updateEntry, useOutboxEntries } from '../lib/outboxStore'
 import { isPersistent } from '../lib/writeQueueDb'
-import type { FailureReason, QueueEntry } from '../lib/writeQueue'
+import { retryPatch, type FailureReason, type QueueEntry } from '../lib/writeQueue'
 import { downloadText } from '../lib/ics'
 import {
   outboxAsText,
@@ -58,18 +58,9 @@ export default function OutboxModal({ onClose }: { onClose: () => void }) {
     }
   }
 
-  /** 送り直す。競合したものは、こちらの内容で上書きする */
+  /** 送り直す。競合したものだけは、こちらの内容で上書きする（retryPatch） */
   async function retry(entry: QueueEntry) {
-    await updateEntry(entry.key, {
-      state: 'pending',
-      attempts: 0,
-      nextAttemptAt: undefined,
-      reason: undefined,
-      errorText: undefined,
-      serverText: undefined,
-      // ロックを外して送る（「自分の内容にする」を選んだということ）
-      expectUpdatedAt: undefined,
-    })
+    await updateEntry(entry.key, retryPatch(entry))
   }
 
   async function discard(entry: QueueEntry) {

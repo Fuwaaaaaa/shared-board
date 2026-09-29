@@ -427,6 +427,27 @@ export function nextRetryState(
   return { state: 'pending', attempts, nextAttemptAt: now + nextBackoff(entry.attempts) }
 }
 
+/**
+ * 送信箱の画面で、送れなかった 1 件を送り直すときの書き換え。
+ *
+ * ロックを外すのは競合のときだけ。競合では両方の文面を見せたうえで「自分の内容にする」を
+ * 選ばせているので、相手の書き換えを上書きしてよいと分かっている。それ以外の
+ * 「もう一度送る」でロックを外すと、そのあいだに他の人が書き換えていても黙って上書きする
+ * （以前はそうなっていた）。ロックを保って送れば、書き換えられていたときは競合として止まる。
+ */
+export function retryPatch(entry: Pick<QueueEntry, 'reason'>): Partial<QueueEntry> {
+  const patch: Partial<QueueEntry> = {
+    state: 'pending',
+    attempts: 0,
+    nextAttemptAt: undefined,
+    reason: undefined,
+    errorText: undefined,
+    serverText: undefined,
+  }
+  if (entry.reason === 'conflict') patch.expectUpdatedAt = undefined
+  return patch
+}
+
 export type Classified =
   | { outcome: 'success'; alreadyExisted?: boolean }
   | { outcome: 'retry'; transport?: boolean }
