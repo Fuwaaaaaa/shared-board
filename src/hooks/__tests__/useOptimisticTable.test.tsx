@@ -22,7 +22,7 @@ interface Call {
   filters: [string, unknown][]
 }
 
-type Reply = { data: unknown; error: unknown }
+type Reply = { data: unknown; error: unknown; status?: number }
 
 const server = vi.hoisted(() => ({
   calls: [] as Call[],
@@ -283,5 +283,57 @@ describe('送信箱に分が残っている行への書き込み', () => {
 
     expect(server.calls.filter((c) => c.kind === 'insert')).toHaveLength(0)
     expect(outbox.ops.map((op) => op.kind)).toEqual(['create'])
+  })
+})
+
+/*
+ * サーバーや中継が一時的に断ったとき（5xx・429）は、巻き戻さずに送信箱へためる。
+ *
+ * postgrest-js の error は応答の本文を読んだもので、HTTP のステータスは結果の側
+ * （{ data, error, status }）にしか無い。error だけを投げていたので、判定が
+ * 5xx・429 を一度も見分けられず、混んでいるだけで書いたものが巻き戻っていた。
+ */
+describe('一時的な失敗', () => {
+  it.each([503, 502, 429])('書き換えが %i で返ったら、巻き戻さずに送信箱へためる', async (status) => {
+    const note = newNote({ text: '前' })
+    const { ops, table } = setup([note])
+    server.respond = (call) =>
+      call.kind === 'update'
+        ? Promise.resolve({ data: null, error: { message: 'upstream unavailable' }, status } as Reply)
+        : Promise.resolve({ data: [], error: null })
+
+    await expect(ops.patch(note.id, { text: '後' })).resolves.toBe('ok')
+    expect(table.rows()[0].text).toBe('後')
+    expect(outbox.ops.map((op) => op.kind)).toEqual(['update'])
+  })
+
+  it('作成が 503 で返ったら、消さずに送信箱へためる', async () => {
+    const { ops, table } = setup()
+    const note = newNote()
+    server.respond = (call) =>
+      call.kind === 'insert'
+        ? Promise.resolve({ data: null, error: { message: 'upstream unavailable' }, status: 503 } as Reply)
+        : Promise.resolve({ data: [], error: null })
+
+    await expect(ops.insert([note])).resolves.toBe(true)
+    expect(table.rows().map((r) => r.id)).toEqual([note.id])
+    expect(outbox.ops.map((op) => op.kind)).toEqual(['create'])
+  })
+
+  it('権限で断られた（403）ときは、ためずに巻き戻す', async () => {
+    const note = newNote({ text: '前' })
+    const { ops, table } = setup([note])
+    server.respond = (call) =>
+      call.kind === 'update'
+        ? Promise.resolve({
+            data: null,
+            error: { code: '42501', message: 'permission denied' },
+            status: 403,
+          } as Reply)
+        : Promise.resolve({ data: [], error: null })
+
+    await expect(ops.patch(note.id, { text: '後' })).resolves.toBe('error')
+    expect(table.rows()[0].text).toBe('前')
+    expect(outbox.ops).toEqual([])
   })
 })

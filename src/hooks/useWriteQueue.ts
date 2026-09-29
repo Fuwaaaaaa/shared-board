@@ -16,6 +16,7 @@ import {
   nullOrphanRefs,
   orderForFlush,
   type QueueEntry,
+  withStatus,
 } from '../lib/writeQueue'
 
 /** 送るものが残っているときの、様子見の間隔 */
@@ -41,13 +42,13 @@ async function send(entry: QueueEntry, userId: string): Promise<boolean> {
 
   try {
     if (entry.kind === 'create') {
-      const { error } = await supabase.from(entry.table).insert(entry.row!)
-      if (error) throw error
+      const { error, status } = await supabase.from(entry.table).insert(entry.row!)
+      if (error) throw withStatus(error, status)
     } else if (entry.kind === 'update') {
       let query = supabase.from(entry.table).update(entry.patch!).eq('id', entry.rowId)
       if (entry.expectUpdatedAt) query = query.eq('updated_at', entry.expectUpdatedAt)
-      const { data, error } = await query.select()
-      if (error) throw error
+      const { data, error, status } = await query.select()
+      if (error) throw withStatus(error, status)
 
       const rows = (data ?? []) as Record<string, unknown>[]
       if (rows.length === 0) {
@@ -95,8 +96,8 @@ async function send(entry: QueueEntry, userId: string): Promise<boolean> {
        * 作られない（useOptimisticTable.remove）。作成が実は届いていれば消え、
        * 届いていなければ 0 行で終わる。どちらでも送れたことにしてよい。
        */
-      const { error } = await supabase.from(entry.table).delete().eq('id', entry.rowId)
-      if (error) throw error
+      const { error, status } = await supabase.from(entry.table).delete().eq('id', entry.rowId)
+      if (error) throw withStatus(error, status)
     }
 
     // 送っているあいだに書き足されていたら、消さずに送り直す側へ回す

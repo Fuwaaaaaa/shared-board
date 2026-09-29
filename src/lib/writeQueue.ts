@@ -281,6 +281,18 @@ function errorOf(e: unknown): PostgrestLike {
   return { message: String(e) }
 }
 
+/**
+ * 返ってきた error に、HTTP のステータスを添える。
+ *
+ * postgrest-js の error は応答の本文を読んだもので、status は結果の側
+ * （{ data, error, status }）にしか無い。error だけを投げると、下の
+ * decideOnFailure / classifyError が 5xx・429 を見分けられず、混んでいるだけの
+ * 失敗まで巻き戻したり、送信箱で「送れなかった」に落としたりする。
+ */
+export function withStatus(error: object, status: number): PostgrestLike {
+  return { ...(error as PostgrestLike), status }
+}
+
 /** 通信そのものが届かなかったか。navigator.onLine は当てにしない */
 export function isTransportError(e: unknown): boolean {
   if (e && typeof e === 'object' && (e as { isTransport?: boolean }).isTransport) return true
@@ -303,8 +315,8 @@ export function isTransportError(e: unknown): boolean {
 export function decideOnFailure(e: unknown): 'queue' | 'fail' {
   if (isTransportError(e)) return 'queue'
   const status = errorOf(e).status
-  // 中継やゲートウェイの一時的な失敗も、ためて送り直すほうがよい
-  if (status !== undefined && status >= 500) return 'queue'
+  // 中継やゲートウェイの一時的な失敗・混んでいるとき（429）も、ためて送り直すほうがよい
+  if (status !== undefined && (status >= 500 || status === 429)) return 'queue'
   return 'fail'
 }
 

@@ -18,6 +18,7 @@ import {
   tooLargeToQueue,
   type QueueEntry,
   type QueueOp,
+  withStatus,
 } from '../writeQueue'
 
 function makeOp(over: Partial<QueueOp> = {}): QueueOp {
@@ -367,6 +368,23 @@ describe('decideOnFailure', () => {
 
   it('サーバーの一時的な失敗も、ためる', () => {
     expect(decideOnFailure({ status: 502, message: 'bad gateway' })).toBe('queue')
+  })
+
+  it('混んでいて断られた（429）ときも、ためる', () => {
+    expect(decideOnFailure(withStatus({ message: 'rate limited' }, 429))).toBe('queue')
+  })
+
+  /*
+   * postgrest-js の error には status が無い（結果の側にある）。
+   * 呼ぶ側が withStatus で添えないと、5xx も 429 も見分けられない。
+   */
+  it('status を添えた error なら、送信箱でも送り直しに回す', () => {
+    expect(classifyError(withStatus({ message: 'upstream unavailable' }, 503))).toMatchObject({
+      outcome: 'retry',
+    })
+    expect(classifyError(withStatus({ message: 'rate limited' }, 429))).toMatchObject({
+      outcome: 'retry',
+    })
   })
 
   it('権限や決まりの違反は、ためずにその場で失敗にする', () => {
