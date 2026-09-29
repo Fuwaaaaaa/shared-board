@@ -133,6 +133,11 @@ interface Job {
   body: string
   /** 指定があればこの人にだけ送る */
   onlyUserId: string | null
+  /**
+   * 申し込んだ本人あての知らせ（参加の見送り・アクセスの取り消し）。
+   * 本人はもう承認済みではないので、名簿に載っていれば送る
+   */
+  toApplicant?: boolean
 }
 
 const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
@@ -380,6 +385,7 @@ async function collectJobs(now: Date): Promise<Job[]> {
       title: `${icon} ${notification.actor_name || room.name}`,
       body: `${notification.body} — ${room.name}`,
       onlyUserId: notification.user_id,
+      toApplicant: notification.kind === 'join_decided',
     })
   }
 
@@ -415,6 +421,7 @@ async function release(sendKey: string): Promise<void> {
  *
  * 宛先が指定されている（担当者・サイト内通知の user_id）ときも、その人がボードの関係者で
  * なければ送らない。行の user_id を細工して他人に通知を届けることができないようにするため。
+ * 例外は見送り・取り消しの知らせ（toApplicant）で、名簿に載っている本人になら送る。
  */
 async function recipientsFor(job: Job): Promise<string[]> {
   const { data, error } = await admin
@@ -430,7 +437,14 @@ async function recipientsFor(job: Job): Promise<string[]> {
   const participants = new Set<string>((data ?? []).map((row) => row.user_id as string))
   participants.add(job.roomOwnerId)
 
-  if (job.onlyUserId) return participants.has(job.onlyUserId) ? [job.onlyUserId] : []
+  if (job.onlyUserId) {
+    if (participants.has(job.onlyUserId)) return [job.onlyUserId]
+    // 見送られた人・取り消された人は承認済みではないので、上の名簿に入らない。
+    // 広げるのはこの知らせだけ。取り消された人あての @メンションまで送ると、
+    // 読めなくなったはずの中身が端末に届く
+    if (job.toApplicant && (await onRoster(job.roomId, job.onlyUserId))) return [job.onlyUserId]
+    return []
+  }
   return [...participants]
 }
 
@@ -462,6 +476,21 @@ async function subscriptionsFor(userIds: string[]): Promise<SubscriptionRow[] | 
     result.push(...((data ?? []) as SubscriptionRow[]))
   }
   return result
+}
+
+/** そのボードの名簿に載っているか（承認待ち・見送り・取り消しも含む） */
+async function onRoster(roomId: string, userId: string): Promise<boolean> {
+  const { data, error } = await admin
+    .from('room_members')
+    .select('user_id')
+    .eq('room_id', roomId)
+    .eq('user_id', userId)
+    .limit(1)
+  if (error) {
+    console.error('room_members の取得に失敗', roomId, error.message)
+    return false
+  }
+  return (data ?? []).length > 0
 }
 
 async function send(job: Job, subscriptions: SubscriptionRow[]): Promise<number> {

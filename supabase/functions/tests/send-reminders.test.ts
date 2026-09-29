@@ -66,6 +66,8 @@ interface Routes {
   notifications?: unknown[]
   overrides?: unknown[]
   members?: unknown[]
+  /** 名簿の全員（承認待ち・見送り・取り消しも含む）。user_id で 1 人を引くときに使う */
+  roster?: { user_id: string; status: string }[]
   /** reminder_sends への insert を「すでに誰かが送った」にする */
   alreadySent?: boolean
   /** 予定ごとの「この回だけ」の取得を失敗させる */
@@ -104,6 +106,10 @@ function routes(r: Routes = {}) {
     if (url.includes('/rest/v1/todos')) return restRows(url, r.todos ?? [])
     if (url.includes('/rest/v1/notifications')) return restRows(url, r.notifications ?? [])
     if (url.includes('/rest/v1/room_members')) {
+      const who = new URL(url).searchParams.get('user_id')
+      if (who?.startsWith('eq.')) {
+        return restJson((r.roster ?? []).filter((m) => m.user_id === who.slice(3)))
+      }
       return restRows(url, r.members ?? [{ user_id: OWNER }])
     }
     if (url.includes('/rest/v1/push_subscriptions')) {
@@ -330,6 +336,56 @@ Deno.test('ボードが 1000 を超えていても、通知するボードを引
   routes({ rooms, events: [{ ...dueNow(), room_id: last.id }] })
   const body = await (await handler(call())).json()
   assertEquals(body.checked, 1)
+})
+
+/*
+ * 見送り・取り消しの知らせ（join_decided）は、承認済みでない本人に届けるもの。
+ * 宛先を承認済みの参加者に絞っていたので、いつも宛先 0 人で送られなかった。
+ * ただし、取り消された人あての @メンションまで届けると、読めなくなったはずの
+ * 中身が端末に届く。広げるのは join_decided だけ。
+ */
+const REJECTED = '88888888-8888-8888-8888-888888888888'
+
+function notificationTo(userId: string, kind: string, body: string) {
+  return {
+    id: '66666666-7777-8888-9999-000000000000',
+    room_id: ROOM_ID,
+    user_id: userId,
+    kind,
+    actor_name: 'ゆうき',
+    body,
+    created_at: new Date().toISOString(),
+  }
+}
+
+Deno.test('見送り・取り消しの知らせは、その本人に届ける', async () => {
+  routes({
+    notifications: [notificationTo(REJECTED, 'join_decided', '参加は見送られました')],
+    roster: [{ user_id: REJECTED, status: 'rejected' }],
+  })
+  const body = await (await handler(call())).json()
+  assertEquals(body.checked, 1)
+  assertEquals(body.skipped, 0)
+  assert(net.calls.some((u) => u.includes('/rest/v1/reminder_sends')))
+})
+
+Deno.test('取り消された人あてのメンションは届けない', async () => {
+  routes({
+    notifications: [notificationTo(REJECTED, 'mention', '@さとる 見積もりは 30 万です')],
+    roster: [{ user_id: REJECTED, status: 'rejected' }],
+  })
+  const body = await (await handler(call())).json()
+  assertEquals(body.skipped, 1)
+  assertEquals(net.calls.some((u) => u.includes('/rest/v1/reminder_sends')), false)
+})
+
+Deno.test('名簿に載っていない人には、見送りの知らせも届けない', async () => {
+  routes({
+    notifications: [notificationTo(REJECTED, 'join_decided', '参加は見送られました')],
+    roster: [],
+  })
+  const body = await (await handler(call())).json()
+  assertEquals(body.skipped, 1)
 })
 
 /* ゴミ箱に入れた予定を通知しないのは、問い合わせ側の絞り込みで効かせている */
