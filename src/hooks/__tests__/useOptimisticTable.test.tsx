@@ -74,16 +74,18 @@ const outbox = vi.hoisted(() => ({
   ops: [] as QueueOp[],
   rows: new Set<string>(),
   accept: true,
+  /** accept が false のときに断る理由 */
+  refusal: 'too_large' as 'too_large' | 'other_user',
 }))
 
 vi.mock('../../lib/outboxStore', () => ({
   nextSeq: () => 1,
   hasEntry: (_roomId: string, _table: string, rowId: string) => outbox.rows.has(rowId),
   enqueue: async (op: QueueOp) => {
-    if (!outbox.accept) return false
+    if (!outbox.accept) return outbox.refusal
     outbox.ops.push(op)
     outbox.rows.add(op.rowId)
-    return true
+    return 'queued'
   },
 }))
 
@@ -151,6 +153,7 @@ beforeEach(() => {
   outbox.ops = []
   outbox.rows.clear()
   outbox.accept = true
+  outbox.refusal = 'too_large'
   for (let i = 0; i < 10; i += 1) endWrite(true)
   clearSyncError()
 })
@@ -335,5 +338,23 @@ describe('一時的な失敗', () => {
     await expect(ops.patch(note.id, { text: '後' })).resolves.toBe('error')
     expect(table.rows()[0].text).toBe('前')
     expect(outbox.ops).toEqual([])
+  })
+})
+
+/*
+ * 前にこの端末でサインインしていた人がためた分がある行には、畳まずに断られる
+ * （outboxStore.enqueue）。断られたら巻き戻し、送信箱を確かめるよう知らせる。
+ */
+describe('前の人がためた分がある行', () => {
+  it('今の人の書き換えは巻き戻し、送信箱を確かめるよう知らせる', async () => {
+    const note = newNote({ text: '前' })
+    const { ops, table, notify } = setup([note])
+    outbox.rows.add(note.id)
+    outbox.accept = false
+    outbox.refusal = 'other_user'
+
+    await expect(ops.patch(note.id, { text: '後' })).resolves.toBe('error')
+    expect(table.rows()[0].text).toBe('前')
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining('前にこの端末を使っていた人'))
   })
 })

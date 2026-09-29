@@ -94,21 +94,27 @@ export function nextSeq(): number {
  * 1 件ためる。
  *
  * 同じ行の分があれば畳む（作って消したものも、消す指示の 1 件として残る）。
- * 大きすぎるものは、ためずに false を返す——黙って落とすと
- * 「書いたのに消えた」がいちばん困る形で起きる。
+ * ためられないときは、その理由を返す——黙って落とすと
+ * 「書いたのに消えた」がいちばん困る形で起きる。呼ぶ側が巻き戻して知らせる。
  */
-export async function enqueue(op: QueueOp): Promise<boolean> {
+export type EnqueueResult = 'queued' | 'too_large' | 'other_user'
+
+export async function enqueue(op: QueueOp): Promise<EnqueueResult> {
   const key = keyOf(op.roomId, op.table, op.rowId)
   const existing = entries.find((entry) => entry.key === key)
-  const next = collapse(existing, op)
 
-  if (tooLargeToQueue(next)) return false
+  // 前にこの端末でサインインしていた人がためた分には畳まない。畳むと userId が今の人に
+  // 替わり、前の人の書き換えまで今の人の名前で送ってしまう（identityChanged もすり抜ける）
+  if (existing && existing.userId !== op.userId) return 'other_user'
+
+  const next = collapse(existing, op)
+  if (tooLargeToQueue(next)) return 'too_large'
 
   entries = [...entries.filter((entry) => entry.key !== key), next]
   await put(next)
   announce()
   emit()
-  return true
+  return 'queued'
 }
 
 /**

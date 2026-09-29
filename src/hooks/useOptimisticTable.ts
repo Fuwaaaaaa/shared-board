@@ -199,10 +199,13 @@ export function useOptimisticTable<T extends Row>(
      */
     async function queueNow(op: QueueOp | null): Promise<boolean> {
       if (!op) return false
-      if (await enqueue(op)) return true
+      const result = await enqueue(op)
+      if (result === 'queued') return true
 
       notifyRef.current(
-        'この内容は大きすぎて、オフラインのあいだ手元にためておけません。つながってからお試しください。',
+        result === 'other_user'
+          ? '前にこの端末を使っていた人の、まだ送っていない変更が残っています。送信箱を確かめてから、もう一度お試しください。'
+          : 'この内容は大きすぎて、オフラインのあいだ手元にためておけません。つながってからお試しください。',
       )
       return false
     }
