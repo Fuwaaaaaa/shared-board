@@ -71,6 +71,7 @@ import { supabase } from '../../lib/supabase'
 import { useIdentity } from '../../lib/identity'
 import { useRoomData } from '../../lib/roomData'
 import { messageOf } from '../../lib/errorMessage'
+import { missingDateTime } from '../../lib/eventForm'
 import {
   overrideFields,
   overrideWrite,
@@ -1874,11 +1875,18 @@ function EventModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope])
 
+  // 日付や時刻の欄が空だと読めずに例外になる。空いているあいだは保存させない
+  const missing = missingDateTime(draft)
+
   async function submit() {
-    if (!draft.title.trim() || saving) return
+    if (!draft.title.trim() || missing || saving) return
     setSaving(true)
-    await onSave({ ...draft, title: draft.title.trim() }, occurrence, scope)
-    setSaving(false)
+    try {
+      await onSave({ ...draft, title: draft.title.trim() }, occurrence, scope)
+    } finally {
+      // 保存の途中で例外になっても、「保存中」のまま固まらないようにする
+      setSaving(false)
+    }
   }
 
   function update(patch: Partial<EventDraft>) {
@@ -1968,7 +1976,7 @@ function EventModal({
             <button
               type="button"
               onClick={submit}
-              disabled={!draft.title.trim() || saving}
+              disabled={!draft.title.trim() || missing !== null || saving}
               className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-700 disabled:bg-slate-300"
             >
               保存
@@ -2163,6 +2171,7 @@ function EventModal({
               </button>
             )}
           </div>
+          {missing && <p className="text-xs text-rose-600">{missing}</p>}
         </div>
 
         {isRecurring && scope === 'occurrence' ? (

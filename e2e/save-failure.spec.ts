@@ -85,3 +85,28 @@ test('リマインドの保存に失敗したら、画面を閉じずに入力�
   await expect(page.getByRole('heading', { name: 'リマインドを編集' })).toBeVisible()
   await expect(title).toHaveValue('資料をまとめて送る')
 })
+
+/*
+ * 時刻や日付の欄を空にしたまま保存すると、読めずに例外になり、「保存中」のまま
+ * 画面が固まっていた（閉じるしかなく、書いた中身が消える）。空いている欄を言い、
+ * 埋めるまで保存させない。
+ */
+test('予定の時刻を空にしたら、固まらずに理由を出し、埋めれば保存できる', async ({ page }) => {
+  await signIn(page, 'ひとり目')
+  await createBoard(page, stamp())
+  await page.getByRole('button', { name: 'カレンダー' }).click()
+  await expect(page.getByRole('button', { name: '今日' })).toBeVisible()
+
+  await page.getByRole('button', { name: '予定を追加' }).click()
+  await page.getByPlaceholder('予定のタイトル').fill('打ち合わせ')
+  const startTime = page.getByRole('dialog').locator('input[type="time"]').first()
+  await startTime.fill('')
+
+  await expect(page.getByText('開始の日付と時刻を入れてください')).toBeVisible()
+  await expect(page.getByRole('button', { name: '保存', exact: true })).toBeDisabled()
+
+  await startTime.fill('10:00')
+  await page.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(page.getByPlaceholder('予定のタイトル')).toHaveCount(0)
+  await expect(page.getByTitle('打ち合わせ', { exact: true }).first()).toBeVisible()
+})
