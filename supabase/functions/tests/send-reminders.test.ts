@@ -1,12 +1,14 @@
 /*
  * send-reminders（予定・やること・サイト内通知を Web Push で送る）。
  *
- * 毎分 pg_cron から呼ばれる。見るのは次の 4 つ。
+ * 毎分 pg_cron から呼ばれる。見るのは次の 5 つ。
  *   1. 合言葉なしでは何もしないこと
  *   2. VAPID が無いまま黙って動かないこと
  *   3. 二重に送らないこと（台帳に印をつけられなければ送らない）
  *   4. 宛先がいないときに、印だけ先につけてしまわないこと
  *      （つけると、あとから人が入っても永久に送られない）
+ *   5. 読めなかったものがあるときに、印をつけてしまわないこと
+ *      （つけると、欠けたまま送った通知も、送れなかった通知も、次の実行で直らない）
  *
  * push_subscriptions は常に空を返す。web-push は fetch ではなく node の https を
  * 使うので、ここで差し替えられない。購読が 0 件なら send() が呼ばれる前に返る。
@@ -66,7 +68,17 @@ interface Routes {
   members?: unknown[]
   /** reminder_sends への insert を「すでに誰かが送った」にする */
   alreadySent?: boolean
+  /** 予定ごとの「この回だけ」の取得を失敗させる */
+  overridesFail?: boolean
+  /** プッシュの購読の取得を失敗させる */
+  subscriptionsFail?: boolean
 }
+
+const failure = () =>
+  new Response(JSON.stringify({ message: 'upstream timeout' }), {
+    status: 500,
+    headers: { 'Content-Type': 'application/json' },
+  })
 
 function routes(r: Routes = {}) {
   net.reset()
@@ -83,14 +95,20 @@ function routes(r: Routes = {}) {
       return new Response(null, { status: 201 })
     }
     if (url.includes('/rest/v1/rooms')) return restJson(r.rooms ?? [ROOM])
-    if (url.includes('/rest/v1/event_overrides')) return restJson(r.overrides ?? [])
+    if (url.includes('/rest/v1/event_overrides')) {
+      // 予定ごとに引くほう（event_id=in.）だけを落とす
+      if (r.overridesFail && url.includes('event_id=in.')) return failure()
+      return restJson(r.overrides ?? [])
+    }
     if (url.includes('/rest/v1/events')) return restJson(r.events ?? [])
     if (url.includes('/rest/v1/todos')) return restJson(r.todos ?? [])
     if (url.includes('/rest/v1/notifications')) return restJson(r.notifications ?? [])
     if (url.includes('/rest/v1/room_members')) {
       return restJson(r.members ?? [{ user_id: OWNER }])
     }
-    if (url.includes('/rest/v1/push_subscriptions')) return restJson([])
+    if (url.includes('/rest/v1/push_subscriptions')) {
+      return r.subscriptionsFail ? failure() : restJson([])
+    }
     return new Response('想定していない問い合わせ: ' + url + ' (' + method + ')', { status: 500 })
   })
 }
@@ -238,6 +256,52 @@ Deno.test('所属の合わない例外行は使わない', async () => {
   const body = await (await handler(call())).json()
   // canceled にされていれば checked は 0 になる。無視できていれば拾える
   assertEquals(body.checked, 1)
+})
+
+/*
+ * 「この回だけ」を読めないまま展開すると、取り消した回・動かした回・通知を切った回が
+ * 元のまま通知される。しかも台帳に印をつけるので、次の実行でも直らない。
+ * 読めなかったら予定の通知はこの回は見送り、次の実行（1 分後）でやり直す。
+ */
+Deno.test('「この回だけ」を読めなかったら、予定の通知は送らずに次の実行へ回す', async () => {
+  routes({ events: [{ ...dueNow(), recurrence: 'daily' }], overridesFail: true })
+  const body = await (await handler(call())).json()
+  assertEquals(body.checked, 0)
+  assertEquals(net.calls.some((u) => u.includes('/rest/v1/reminder_sends')), false)
+})
+
+/*
+ * 購読の取得に失敗しても印をつけたままにしていたので、その通知は失われていた
+ * （次の実行では「送信済み」と見なされる）。読めなければ印を外す。
+ */
+Deno.test('購読を読めなかったら、台帳の印を外して次の実行へ回す', async () => {
+  routes({ events: [dueNow()], subscriptionsFail: true })
+  const body = await (await handler(call())).json()
+  assertEquals(body.checked, 1)
+  assertEquals(body.skipped, 1)
+  const removed = net.calls.filter((u) => u.includes('/rest/v1/reminder_sends?send_key=eq.'))
+  assertEquals(removed.length, 1)
+})
+
+/*
+ * 同じ通知は窓（3 分）のあいだ毎分拾われる。送り済みかどうかは印で分かるので、
+ * 送り済みの通知のために購読まで引きに行かない（ジョブごとの問い合わせを増やさない）。
+ */
+Deno.test('送り済みの通知では、購読を引きに行かない', async () => {
+  routes({ events: [dueNow()], alreadySent: true })
+  await (await handler(call())).json()
+  assertEquals(net.calls.some((u) => u.includes('/rest/v1/push_subscriptions')), false)
+})
+
+/* 参加者の多いボードでは、宛先の id を URL に詰めきれない */
+Deno.test('購読は宛先を分けて引く', async () => {
+  const members = Array.from({ length: 450 }, (_, i) => ({
+    user_id: `00000000-0000-0000-0000-${String(i).padStart(12, '0')}`,
+  }))
+  routes({ events: [dueNow()], members })
+  await (await handler(call())).json()
+  const queries = net.calls.filter((u) => u.includes('/rest/v1/push_subscriptions'))
+  assertEquals(queries.length, 3)
 })
 
 /* ゴミ箱に入れた予定を通知しないのは、問い合わせ側の絞り込みで効かせている */

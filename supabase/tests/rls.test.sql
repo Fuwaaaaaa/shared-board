@@ -19,7 +19,7 @@ begin;
 
 create extension if not exists pgtap;
 
-select plan(370);
+select plan(384);
 
 
 -- =============================================================================
@@ -1706,6 +1706,76 @@ select is(
   (select title from public.polls where id = '88880000-0000-0000-0000-000000000001'),
   '次はいつにする？', '日程調整も控えの対象になり、戻すと残る');
 
+-- 控えの中身は、画面ではなくサーバーが DB の行から組み立てる。
+-- 画面が payload を詰めて INSERT していたころは、編集できる人なら、作った人の名前や
+-- 票を入れた人を好きに書いた控えを作れた（他人の控えを UPDATE で書き換えることも）。
+-- 戻す側は控えたときの名前を残すために名前の上書きを止めるので、オーナーが戻すと、
+-- 書いてもいない人の付箋や、押してもいない人の票がそのまま入っていた。
+select tests_act_as('22222222-2222-2222-2222-222222222222');   -- けいこ（編集できる）
+
+select is(
+  tests_rowcount($$insert into public.snapshots (room_id, label, payload, author_id)
+                   values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '偽の控え',
+                           '{"notes": [{"id": "11110000-0000-0000-0000-0000000000aa", "text": "合言葉はこちらへ", "author_name": "ゆうき"}]}',
+                           '22222222-2222-2222-2222-222222222222')$$),
+  -1, '編集できる人でも、控えを画面から直接は作れない');
+
+select is(
+  tests_rowcount($$update public.snapshots set payload = '{}'::jsonb
+                    where id = '99990000-0000-0000-0000-000000000001'$$),
+  0, '他の人の控えの中身は書き換えられない');
+
+select lives_ok(
+  $$select public.save_snapshot('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'けいこが控えた')$$,
+  '編集できる人は、save_snapshot で控えを作れる');
+
+select is(
+  (select e ->> 'author_name'
+     from public.snapshots s, jsonb_array_elements(s.payload -> 'notes') e
+    where s.label = 'けいこが控えた'
+      and e ->> 'id' = '11110000-0000-0000-0000-000000000099'),
+  'むかしの人', '控えの中身は、DB にある行そのもの');
+
+select is(
+  (select jsonb_array_length(s.payload -> 'notes') from public.snapshots s
+    where s.label = 'けいこが控えた'),
+  (select count(*)::int from public.notes
+    where room_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' and deleted_at is null),
+  'ゴミ箱に入っている行は控えない');
+
+select is(
+  (select count(*)::int from public.snapshots s, jsonb_object_keys(s.payload)
+    where s.label = 'けいこが控えた'),
+  15, '戻す側が回す 15 表を、どれも控える');
+
+select is(
+  (select author_name from public.snapshots where label = 'けいこが控えた'),
+  'けいこ', '控えを作った人の名前は、本人の表示名になる');
+
+select tests_act_as('33333333-3333-3333-3333-333333333333');   -- みなみ（閲覧のみ）
+
+select throws_ok(
+  $$select public.save_snapshot('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '閲覧のみ')$$,
+  '42501', '編集できる人だけが保存できます',
+  '閲覧のみの人は、控えを作れない');
+
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき（オーナー）
+
+select throws_ok(
+  $$select public.save_snapshot('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', '終わったあと')$$,
+  'P0001', '終了したボードには書き込めません',
+  '終了したボードでは、オーナーでも控えを作れない');
+
+select lives_ok(
+  format('select public.restore_snapshot(%L)',
+         (select id from public.snapshots where label = 'けいこが控えた')),
+  'save_snapshot で作った控えから、そのまま戻せる');
+
+select is(
+  (select author_name from public.notes
+    where id = '11110000-0000-0000-0000-000000000099' and deleted_at is null),
+  'むかしの人', 'サーバーが作った控えから戻しても、作った人の名前は残る');
+
 
 -- =============================================================================
 --  32. 退出と、取り消しの片付け
@@ -3250,7 +3320,58 @@ set local role authenticated;
 
 
 -- =============================================================================
---  45. 棚卸し — 権限の「形」を固定する
+--  45. 繰り返しのやることの次回分は、ボードの中で 1 件だけ
+--
+--      「同じ元から生まれた未完了の次回分は 1 件だけ」を守る一意インデックスが、
+--      source_todo_id だけで効いていた。source_todo_id には FK もボードの縛りも
+--      無いので、元のやることの id を知っている人（取り消された元参加者など）が
+--      自分のボードに同じ source_todo_id の行を置くと、元のボードで完了にしても
+--      次回分が 23505 で作れなくなった。
+-- =============================================================================
+
+reset role;
+
+insert into public.rooms (id, slug, name, visibility, owner_id, owner_name) values
+  ('99999999-0000-0000-0000-000000000005', 'repeatrm', '繰り返しのボード', 'public',
+   '22222222-2222-2222-2222-222222222222', 'けいこ'),
+  ('99999999-0000-0000-0000-000000000006', 'hanaroom', 'はなのボード', 'public',
+   '88888888-8888-8888-8888-888888888888', 'はな');
+
+insert into public.todos (id, room_id, title, due_at, recurrence, author_id, author_name) values
+  ('77770000-0000-0000-0000-000000000001', '99999999-0000-0000-0000-000000000005',
+   '毎週のゴミ出し', now(), 'weekly', '22222222-2222-2222-2222-222222222222', 'けいこ');
+
+set local role authenticated;
+
+select tests_act_as('88888888-8888-8888-8888-888888888888');   -- はな（元のボードとは無関係。自分のボードで）
+
+select is(
+  tests_rowcount($$insert into public.todos (room_id, title, source_todo_id, author_id)
+                   values ('99999999-0000-0000-0000-000000000006', '先回り',
+                           '77770000-0000-0000-0000-000000000001',
+                           '88888888-8888-8888-8888-888888888888')$$),
+  1, '自分のボードになら、他のボードのやることを元にした行も置ける');
+
+select tests_act_as('22222222-2222-2222-2222-222222222222');   -- けいこ（元のボードで）
+
+select is(
+  tests_rowcount($$insert into public.todos (room_id, title, source_todo_id, author_id)
+                   values ('99999999-0000-0000-0000-000000000005', '毎週のゴミ出し（次回）',
+                           '77770000-0000-0000-0000-000000000001',
+                           '22222222-2222-2222-2222-222222222222')$$),
+  1, '他のボードに同じ元の行があっても、元のボードで次回分を作れる');
+
+select throws_ok(
+  $$insert into public.todos (room_id, title, source_todo_id, author_id)
+    values ('99999999-0000-0000-0000-000000000005', '毎週のゴミ出し（二重）',
+            '77770000-0000-0000-0000-000000000001',
+            '22222222-2222-2222-2222-222222222222')$$,
+  '23505', null,
+  '同じボードの中では、未完了の次回分は 1 件だけ');
+
+
+-- =============================================================================
+--  46. 棚卸し — 権限の「形」を固定する
 --
 --      ここだけは中身ではなく形を見ている。ポリシーが増えた・減った、
 --      トリガーが片方の操作にしか付いていない、外から呼べる関数が増えた——を、
@@ -3350,9 +3471,7 @@ select set_eq(
   ('rooms', 'rooms_select', 'SELECT'),
   ('rooms', 'rooms_update', 'UPDATE'),
   ('snapshots', 'snapshots_delete', 'DELETE'),
-  ('snapshots', 'snapshots_insert', 'INSERT'),
   ('snapshots', 'snapshots_select', 'SELECT'),
-  ('snapshots', 'snapshots_update', 'UPDATE'),
   ('strokes', 'strokes_delete', 'DELETE'),
   ('strokes', 'strokes_insert', 'INSERT'),
   ('strokes', 'strokes_select', 'SELECT'),
@@ -3506,6 +3625,7 @@ select set_eq(
   ('realtime_room_id'),
   ('request_access'),
   ('restore_snapshot'),
+  ('save_snapshot'),
   ('revoke_all_members'),
   ('room_display_name'),
   ('room_is_open'),

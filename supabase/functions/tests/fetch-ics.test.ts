@@ -192,6 +192,24 @@ Deno.test('登録されていないカレンダーは 403', async () => {
   }
 })
 
+Deno.test('止めてあるカレンダーは取りに行かない', async () => {
+  resetRateLimits()
+  // DB には止めてある（enabled = false）行だけがある。止めたものを除いて引けば空になる
+  const net = stubFetch((url) => {
+    if (url.includes('/rest/v1/calendar_feeds')) {
+      return restJson(url.includes('enabled=eq.true') ? [] : [{ url: FEED }])
+    }
+    return new Response(ICS)
+  })
+  try {
+    const res = await handler(get(FEED))
+    assertEquals(res.status, 403)
+    assertEquals(net.calls.some((u) => u.startsWith(FEED)), false)
+  } finally {
+    net.restore()
+  }
+})
+
 Deno.test('登録済みなら取ってきて返す', async () => {
   resetRateLimits()
   const dns = stubDns(DNS)

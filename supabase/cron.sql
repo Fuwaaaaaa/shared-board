@@ -282,6 +282,7 @@ select cron.schedule(
 
 -- 空のまま放置されたボード（週 1、日曜 5:03）
 -- 中身がひとつも無く、作ってから 30 日経ち、30 日以上なにも起きていないものだけ。
+-- 外部カレンダーと保存した状態も中身に数える（重ねて見るだけのボードは、見ても履歴が増えない）。
 -- rooms を消せば参加者・秘密・purge_queue の予約まで連鎖する。
 select cron.unschedule('cleanup-empty-rooms')
  where exists (select 1 from cron.job where jobname = 'cleanup-empty-rooms');
@@ -305,7 +306,9 @@ select cron.schedule(
      and not exists (select 1 from public.comments    x where x.room_id = r.id)
      and not exists (select 1 from public.polls       x where x.room_id = r.id)
      and not exists (select 1 from public.frames      x where x.room_id = r.id)
-     and not exists (select 1 from public.connectors  x where x.room_id = r.id);
+     and not exists (select 1 from public.connectors  x where x.room_id = r.id)
+     and not exists (select 1 from public.calendar_feeds x where x.room_id = r.id)
+     and not exists (select 1 from public.snapshots   x where x.room_id = r.id);
   $$
 );
 

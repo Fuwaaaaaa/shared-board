@@ -169,8 +169,11 @@ export function formatJst(date: Date, allDay = false): string {
  * 食い違う行を通すと、他人のボードの予定の「この回だけ」を乗っ取れてしまう
  * —— canceled にして通知を止める、title / start_at を書き換えて任意の文言を
  * そのボードの参加者全員の端末に配る、といったことができる。
+ *
+ * 1 つでも読めなければ null を返す。欠けたまま展開すると、取り消した回・動かした回・
+ * 通知を切った回が元のまま通知され、台帳に印がつくので次の実行でも直らない。
  */
-async function fetchOverrides(events: EventRow[]): Promise<OverrideRow[]> {
+async function fetchOverrides(events: EventRow[]): Promise<OverrideRow[] | null> {
   const roomByEvent = new Map(events.map((event) => [event.id, event.room_id]))
   const result: OverrideRow[] = []
 
@@ -180,8 +183,8 @@ async function fetchOverrides(events: EventRow[]): Promise<OverrideRow[]> {
       .select(OVERRIDE_COLUMNS)
       .in('event_id', ids)
     if (error) {
-      console.error('event_overrides の取得に失敗', error.message)
-      continue
+      console.error('event_overrides の取得に失敗。予定の通知は次の実行に回します', error.message)
+      return null
     }
     for (const row of (data ?? []) as OverrideRow[]) {
       if (row.room_id !== roomByEvent.get(row.event_id)) {
@@ -261,11 +264,14 @@ async function collectJobs(now: Date): Promise<Job[]> {
     events.push(...((data ?? []) as EventRow[]))
   }
 
+  // 「この回だけ」を読めなければ、予定の通知はこの回は見送る（印をつけないので次の実行で拾える）
   const overrides = await fetchOverrides(events)
+  const occurrences =
+    overrides === null ? [] : expandOccurrences(events, expandFrom, expandTo, overrides)
 
   const jobs: Job[] = []
 
-  for (const occ of expandOccurrences(events, expandFrom, expandTo, overrides)) {
+  for (const occ of occurrences) {
     const room = roomById.get(occ.event.room_id)
     if (!room) continue
 
@@ -347,6 +353,14 @@ async function claim(sendKey: string): Promise<boolean> {
   return false
 }
 
+/** 印を外す。送れなかった通知を、次の実行でもう一度試せるようにする */
+async function release(sendKey: string): Promise<void> {
+  const { error } = await admin.from('reminder_sends').delete().eq('send_key', sendKey)
+  if (error) {
+    console.error('reminder_sends の印を外せませんでした。この通知は送られません', sendKey, error.message)
+  }
+}
+
 /**
  * 通知の宛先。そのボードの承認済みメンバーとオーナーだけに送る。
  *
@@ -371,13 +385,38 @@ async function recipientsFor(job: Job): Promise<string[]> {
   return [...participants]
 }
 
-async function send(job: Job, userIds: string[]): Promise<number> {
-  const { data: subscriptions } = await admin
-    .from('push_subscriptions')
-    .select('id, endpoint, p256dh, auth')
-    .in('user_id', userIds)
+interface SubscriptionRow {
+  id: string
+  endpoint: string
+  p256dh: string
+  auth: string
+}
 
-  if (!subscriptions || subscriptions.length === 0) return 0
+/**
+ * 宛先の人たちのプッシュの購読。読めなければ null。
+ *
+ * 以前は失敗を無視していたので、台帳に印がついたまま、一時的な失敗でもその通知は
+ * 二度と送られなかった。読めなければ呼び出し側が印を外す（release）。宛先の id は、
+ * 参加者の多いボードでは URL に詰めきれないので分けて引く。
+ */
+async function subscriptionsFor(userIds: string[]): Promise<SubscriptionRow[] | null> {
+  const result: SubscriptionRow[] = []
+  for (const ids of chunk(userIds, IN_CHUNK)) {
+    const { data, error } = await admin
+      .from('push_subscriptions')
+      .select('id, endpoint, p256dh, auth')
+      .in('user_id', ids)
+    if (error) {
+      console.error('push_subscriptions の取得に失敗。次の実行に回します', error.message)
+      return null
+    }
+    result.push(...((data ?? []) as SubscriptionRow[]))
+  }
+  return result
+}
+
+async function send(job: Job, subscriptions: SubscriptionRow[]): Promise<number> {
+  if (subscriptions.length === 0) return 0
 
   const payload = JSON.stringify({
     title: job.title,
@@ -395,8 +434,8 @@ async function send(job: Job, userIds: string[]): Promise<number> {
       try {
         await webpush.sendNotification(
           {
-            endpoint: sub.endpoint as string,
-            keys: { p256dh: sub.p256dh as string, auth: sub.auth as string },
+            endpoint: sub.endpoint,
+            keys: { p256dh: sub.p256dh, auth: sub.auth },
           },
           payload,
         )
@@ -405,7 +444,7 @@ async function send(job: Job, userIds: string[]): Promise<number> {
         const status = (e as { statusCode?: number }).statusCode
         // 404 / 410 は購読が失効している。掃除しておく。
         if (status === 404 || status === 410) {
-          expired.push(sub.id as string)
+          expired.push(sub.id)
         } else {
           // 例外の文字列には push のエンドポイント URL が入ることがある。
           // あの URL は「持っていれば誰でもその端末に通知を送れる」鍵そのものなので、
@@ -455,7 +494,16 @@ export async function handler(req: Request): Promise<Response> {
       skipped++
       continue
     }
-    sent += await send(job, userIds)
+    // 購読を読めなければ印を外し、次の実行でやり直す。
+    // 印をつける前に読まないのは、同じ通知が窓（3 分）のあいだ毎分拾われるため。
+    // 前に読むと、送り済みの通知でも毎回購読を引きに行くことになる
+    const subscriptions = await subscriptionsFor(userIds)
+    if (subscriptions === null) {
+      await release(job.sendKey)
+      skipped++
+      continue
+    }
+    sent += await send(job, subscriptions)
   }
 
   return new Response(JSON.stringify({ checked: jobs.length, sent, skipped }), {

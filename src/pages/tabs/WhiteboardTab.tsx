@@ -845,7 +845,19 @@ export default function WhiteboardTab({
    * 最新の内容に戻して知らせる。undo は保存できたときだけ積み、
    * 実行時には getRow で最新の updated_at を見る。
    */
-  function commitNote(id: string, patch: Partial<Note>, label = '付箋の変更') {
+  /**
+   * 付箋の変更を確定する。
+   *
+   * seenUpdatedAt は、変更の元にした版（画面に出していた行の updated_at）。
+   * 渡せばそれでロックする。いまの行でロックすると、元にした版のあとに他の人が
+   * 入れた変更も「見たうえで上書きした」ことになり、競合として止まらない。
+   */
+  function commitNote(
+    id: string,
+    patch: Partial<Note>,
+    label = '付箋の変更',
+    seenUpdatedAt?: string,
+  ) {
     const current = notes.getRow(id)
     if (!current) return
 
@@ -856,7 +868,7 @@ export default function WhiteboardTab({
     void (async () => {
       const result = await noteOps.patch(id, patch, {
         what: '付箋を保存',
-        expectUpdatedAt: touchesText ? current.updated_at : undefined,
+        expectUpdatedAt: touchesText ? (seenUpdatedAt ?? current.updated_at) : undefined,
       })
       // 'conflict' も 'error' も useOptimisticTable が知らせるので、ここでは積まないだけ
       if (result !== 'ok') return
@@ -2596,6 +2608,13 @@ export default function WhiteboardTab({
       ? connectors.rows.find((c) => c.id === selectedOther.id)
       : undefined
   const myStrokeCount = strokes.rows.filter((s) => s.author_id === userId).length
+  // コメント欄の付箋は、開いたときの控えではなく今の行を出す。
+  // 控えのままだと、開いているあいだに他の人が付けたタグが見えず、
+  // そこから組み立てたタグで上書きして消してしまう
+  const commentNote =
+    commentTarget?.kind === 'note'
+      ? (notes.rows.find((n) => n.id === commentTarget.note.id) ?? commentTarget.note)
+      : null
 
   return (
     <div className="flex h-full flex-col">
@@ -3191,9 +3210,9 @@ export default function WhiteboardTab({
           onClose={() => setCommentTarget(null)}
         >
           {/* 何に付けているのかが分かるように、対象そのものを上に出す */}
-          {commentTarget.kind === 'note' && (
+          {commentNote && (
             <p className="mb-4 rounded-lg bg-slate-50 p-3 text-sm whitespace-pre-wrap text-slate-700">
-              {commentTarget.note.text || '（空の付箋）'}
+              {commentNote.text || '（空の付箋）'}
             </p>
           )}
 
@@ -3232,18 +3251,18 @@ export default function WhiteboardTab({
           )}
 
           {/* タグを持てるのは付箋だけ（ほかの 3 つに tags の列が無い） */}
-          {commentTarget.kind === 'note' && (
+          {commentNote && (
             <div className="mb-4">
               <span className="mb-1.5 block text-sm font-medium text-slate-700">タグ</span>
               <TagInput
-                tags={commentTarget.note.tags ?? []}
+                tags={commentNote.tags ?? []}
                 suggestions={allTags}
                 disabled={!canEdit}
-                onChange={(tags) => {
-                  const note = { ...commentTarget.note, tags }
-                  setCommentTarget({ kind: 'note', note })
-                  commitNote(note.id, { tags }, 'タグの変更')
-                }}
+                // 画面に出していた版でロックする。押す直前に他の人の変更が届いていたら、
+                // 黙って上書きせずに競合として知らせる
+                onChange={(tags) =>
+                  commitNote(commentNote.id, { tags }, 'タグの変更', commentNote.updated_at)
+                }
               />
             </div>
           )}

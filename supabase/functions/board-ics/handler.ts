@@ -107,10 +107,15 @@ export function tokenOf(url: URL): string | null {
   return /^[0-9a-f]{32}$/.test(candidate) ? candidate : null
 }
 
-/** ファイル名に使えない文字を落とす */
+/**
+ * ファイル名に使えない文字を落とし、60 文字までにする。
+ *
+ * 数えるのは UTF-16 の単位ではなく文字（コードポイント）。slice で切ると絵文字の
+ * 片割れが残り、encodeURIComponent が URIError を投げて購読 URL が 404 になる。
+ */
 export function safeFileName(name: string): string {
   const cleaned = name.replace(/[\\/:*?"<>|\r\n]/g, '_').trim()
-  return cleaned.slice(0, 60) || 'board'
+  return Array.from(cleaned).slice(0, 60).join('') || 'board'
 }
 
 /**

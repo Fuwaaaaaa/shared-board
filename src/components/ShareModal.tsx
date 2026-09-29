@@ -33,6 +33,9 @@ export default function ShareModal({ preview, onClose, onUpdated }: Props) {
   const [rotateOnRevoke, setRotateOnRevoke] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // 人数の上限と参加期限の、打っている途中の値。null なら保存済みの値を出す
+  const [limitDraft, setLimitDraft] = useState<string | null>(null)
+  const [expiresDraft, setExpiresDraft] = useState<string | null>(null)
 
   const shareUrl = `${window.location.origin}/r/${preview.slug}`
   const mode = accessMode(preview)
@@ -140,6 +143,41 @@ export default function ShareModal({ preview, onClose, onUpdated }: Props) {
       onUpdated()
     }
     setBusy(false)
+  }
+
+  /*
+   * 人数の上限と参加期限は、打ち終えてから（欄を離れたとき・Enter で）保存する。
+   * 1 文字ごとに保存すると、25 と打つ途中の「2」で上限 2 人が保存されて新しい参加が
+   * その場で止まり、保存中に打った「5」は欄が押せないので落ちる。日時の欄も、
+   * 年・月・日を直すたびに途中の日時が保存される。
+   */
+  function commitLimit() {
+    if (limitDraft === null || !settings) return
+    const draft = limitDraft.trim()
+    setLimitDraft(null)
+
+    const next = draft === '' ? null : Number(draft)
+    if (next !== null && !(Number.isInteger(next) && next >= 1 && next <= 500)) {
+      setError('参加できる人数は 1〜500 の数で入れてください')
+      return
+    }
+    if (next === settings.max_members) return
+    void saveSettings({ max_members: next })
+  }
+
+  function commitExpires() {
+    if (expiresDraft === null || !settings) return
+    const draft = expiresDraft
+    setExpiresDraft(null)
+
+    const next = draft ? new Date(draft).toISOString() : null
+    const current = settings.join_expires_at
+    const unchanged =
+      next === null
+        ? current === null
+        : current !== null && new Date(current).getTime() === new Date(next).getTime()
+    if (unchanged) return
+    void saveSettings({ join_expires_at: next })
   }
 
   async function rotateLink() {
@@ -411,17 +449,13 @@ export default function ShareModal({ preview, onClose, onUpdated }: Props) {
                     type="datetime-local"
                     disabled={busy}
                     value={
-                      settings.join_expires_at
+                      expiresDraft ??
+                      (settings.join_expires_at
                         ? format(parseISO(settings.join_expires_at), "yyyy-MM-dd'T'HH:mm")
-                        : ''
+                        : '')
                     }
-                    onChange={(e) =>
-                      void saveSettings({
-                        join_expires_at: e.target.value
-                          ? new Date(e.target.value).toISOString()
-                          : null,
-                      })
-                    }
+                    onChange={(e) => setExpiresDraft(e.target.value)}
+                    onBlur={commitExpires}
                     className="rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-800"
                   />
                   {settings.join_expires_at && (
@@ -451,13 +485,13 @@ export default function ShareModal({ preview, onClose, onUpdated }: Props) {
                     min={1}
                     max={500}
                     disabled={busy}
-                    value={settings.max_members ?? ''}
+                    value={limitDraft ?? settings.max_members ?? ''}
                     placeholder="制限なし"
-                    onChange={(e) =>
-                      void saveSettings({
-                        max_members: e.target.value ? Number(e.target.value) : null,
-                      })
-                    }
+                    onChange={(e) => setLimitDraft(e.target.value)}
+                    onBlur={commitLimit}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.nativeEvent.isComposing) commitLimit()
+                    }}
                     className="w-32 rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-800"
                   />
                   <span className="text-sm text-slate-500">人まで</span>

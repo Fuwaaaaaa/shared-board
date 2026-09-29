@@ -68,6 +68,9 @@ export default function FeedSettingsModal({ errors, loading, onRefresh, onClose 
       .update({ enabled: !feed.enabled })
       .eq('id', feed.id)
     if (error) feeds.upsertLocal(feed)
+    // 中継（fetch-ics）は止めてあるフィードを断る。表示に切り替えた直後の取得が
+    // 保存より先に届くと断られるので、保存できてから取り直す（追加と同じ）
+    else if (!feed.enabled) onRefresh()
   }
 
   async function remove(feed: CalendarFeed) {

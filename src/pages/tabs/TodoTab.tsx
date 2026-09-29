@@ -142,13 +142,14 @@ export default function TodoTab({ reminders, focusId, focusNonce, onJump }: Prop
       done_at: status === 'done' ? (todo.done_at ?? new Date().toISOString()) : null,
     }
     if (sortOrder !== undefined) patch.sort_order = sortOrder
-    await patchTodo(todo, patch)
+    if (!(await patchTodo(todo, patch))) return
 
     if (status === 'done' && !todo.done) await spawnNextOccurrence(todo)
   }
 
-  async function patchTodo(todo: Todo, patch: Partial<Todo>) {
-    await todoOps.patch(todo.id, patch, { what: '保存' })
+  /** 保存できたか（送信箱に入った分も含む）を返す。できなかった理由は todoOps が知らせる */
+  async function patchTodo(todo: Todo, patch: Partial<Todo>): Promise<boolean> {
+    return (await todoOps.patch(todo.id, patch, { what: '保存' })) === 'ok'
   }
 
   /**
@@ -193,7 +194,10 @@ export default function TodoTab({ reminders, focusId, focusNonce, onJump }: Prop
       return
     }
 
-    await patchTodo(todo, { done: true, done_at: new Date().toISOString(), status: 'done' })
+    // 完了にできなかったのに次回分だけ作ると、同じ回が 2 つ並ぶ
+    if (!(await patchTodo(todo, { done: true, done_at: new Date().toISOString(), status: 'done' }))) {
+      return
+    }
     await spawnNextOccurrence(todo)
   }
 
@@ -445,7 +449,9 @@ export default function TodoTab({ reminders, focusId, focusNonce, onJump }: Prop
           onCreateEvent={() => createEventFromTodo(editing)}
           onSave={async (patch) => {
             const before = editing.assignee_id
-            await patchTodo(editing, patch)
+            // 保存できなかったら閉じない（書いた中身が消える）。担当の通知も送らない
+            // （担当になっていないのに「担当になりました」が届く）
+            if (!(await patchTodo(editing, patch))) return
 
             // 新しく担当になった人に知らせる（自分で自分を選んだときは送らない）
             if (

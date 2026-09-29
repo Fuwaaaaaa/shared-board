@@ -104,6 +104,22 @@ Deno.test('日本語のボード名でも、ヘッダに入れられる形にす
   new Response('x', { headers: { 'Content-Disposition': line } })
 })
 
+/*
+ * 60 文字で切るとき、UTF-16 の単位で切ると絵文字（サロゲートペア）の片割れが残る。
+ * encodeURIComponent は片割れを受け付けず URIError を投げるので、上と同じく
+ * 購読 URL が黙って 404 になっていた。ボード名は 100 文字まで入る。
+ */
+Deno.test('絵文字の途中では切らない', () => {
+  const name = 'あ'.repeat(59) + '😀' + 'い'
+  const safe = safeFileName(name)
+  assertEquals(safe, 'あ'.repeat(59) + '😀')
+  assertEquals(safe.isWellFormed(), true)
+
+  const line = contentDisposition(name)
+  assert(line.includes(encodeURIComponent('😀.ics')), line)
+  new Response('x', { headers: { 'Content-Disposition': line } })
+})
+
 Deno.test('ASCII の名前はそのまま出す', () => {
   const line = contentDisposition('Sprint 42')
   assert(line.includes('filename="Sprint 42.ics"'), line)

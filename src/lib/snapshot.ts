@@ -2,7 +2,8 @@
  * 保存した状態（スナップショット）まわりの判断。
  *
  * 控えるのは「いま画面に出ているもの」で、戻すと今の中身がそれに置き換わる。
- * 置き換えはサーバー側の restore_snapshot が行い、控えに無い行はゴミ箱へ入れる。
+ * 控えはサーバー側の save_snapshot が DB の行から作り、置き換えは restore_snapshot が行う。
+ * どちらも同じ表の一覧（schema.sql の snapshot_tables）を回し、控えに無い行はゴミ箱へ入れる。
  */
 
 import type { Comment, CommentTarget } from './types'
@@ -39,54 +40,6 @@ export function estimatePayloadSize(payload: Record<string, unknown[]>): Payload
   }
 
   return { bytes: JSON.stringify(payload).length, biggest }
-}
-
-/*
- * 控える表。並びは restore_snapshot（supabase/schema.sql）が入れ直す順と同じで、
- * 指される側（付箋・予定・日程調整）を先に置いてある。
- *
- * 戻す側は、控えに載っていない今の行を「控えに無いもの」として片付ける。
- * 控える側で 1 つでも落とすと、その表は戻すたびに空になる
- * （以前は 7 表を落としていて、戻すと 👍・日程調整・出欠が消えていた）。
- * 両方の並びが同じであることは snapshot.test.ts で確かめている。
- */
-export const SNAPSHOT_TABLES = [
-  'notes',
-  'strokes',
-  'connectors',
-  'frames',
-  'events',
-  'event_overrides',
-  'todos',
-  'images',
-  'attachments',
-  'note_votes',
-  'note_reactions',
-  'polls',
-  'poll_options',
-  'poll_votes',
-  'event_attendance',
-] as const
-
-export type SnapshotTable = (typeof SNAPSHOT_TABLES)[number]
-
-/** 画面に出す表の名前 */
-export const PAYLOAD_TABLE_LABELS: Record<SnapshotTable, string> = {
-  notes: '付箋',
-  strokes: '手描き',
-  connectors: '線',
-  frames: 'フレーム',
-  events: '予定',
-  event_overrides: '予定の「この回だけ」',
-  todos: 'やること',
-  images: '画像',
-  attachments: 'ファイル',
-  note_votes: '付箋の 👍',
-  note_reactions: '絵文字',
-  polls: '日程調整',
-  poll_options: '候補日',
-  poll_votes: '日程調整の投票',
-  event_attendance: '出欠',
 }
 
 /**

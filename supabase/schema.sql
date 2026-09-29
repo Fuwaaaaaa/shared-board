@@ -800,9 +800,23 @@ create index if not exists events_source_note_idx  on public.events (room_id, so
 -- 戻すときは元の行より先に次回分が入ることもあるため。
 -- 「同じ元から生まれた未完了の次回分は 1 件だけ」は部分一意インデックスで守る
 -- （2 つのタブで同時に完了しても次回分が 2 つにならない）。
+--
+-- 一意にするのはボードの中だけ。以前は source_todo_id だけで一意にしていたので、
+-- 元のやることの id を知っている人が自分のボードに同じ source_todo_id の行を置くと、
+-- 元のボードで完了にしても次回分を作れなくなった。
 alter table public.todos add column if not exists source_todo_id uuid;
 
-create unique index if not exists todos_next_occurrence_uidx on public.todos (source_todo_id)
+do $$
+begin
+  if exists (select 1 from pg_indexes
+              where schemaname = 'public' and indexname = 'todos_next_occurrence_uidx'
+                and indexdef not like '%(room_id, source_todo_id)%') then
+    drop index public.todos_next_occurrence_uidx;
+  end if;
+end;
+$$;
+
+create unique index if not exists todos_next_occurrence_uidx on public.todos (room_id, source_todo_id)
   where source_todo_id is not null and done = false and deleted_at is null;
 create index if not exists todos_source_todo_idx on public.todos (room_id, source_todo_id);
 
@@ -2360,7 +2374,7 @@ declare t text;
 begin
   foreach t in array array[
     'notes', 'strokes', 'events', 'event_overrides', 'todos', 'images',
-    'connectors', 'frames', 'attachments', 'polls', 'calendar_feeds', 'snapshots'
+    'connectors', 'frames', 'attachments', 'polls', 'calendar_feeds'
   ] loop
     execute format('drop policy if exists %I on public.%I', t || '_select', t);
     execute format(
@@ -2384,6 +2398,21 @@ begin
   end loop;
 end;
 $$;
+
+-- ---- 保存した状態 ------------------------------------------------------
+-- 読む・消すは中身と同じ。作るのは save_snapshot だけで、画面からは作らせない。
+-- payload は戻すときにそのまま入る（作った人の名前・票を入れた人もそのまま）ので、
+-- 画面の言い値で作れたり、あとから書き換えられたりすると、なりすましになる。
+drop policy if exists snapshots_select on public.snapshots;
+create policy snapshots_select on public.snapshots for select to authenticated
+  using (public.can_access_room(room_id));
+
+drop policy if exists snapshots_delete on public.snapshots;
+create policy snapshots_delete on public.snapshots for delete to authenticated
+  using (public.can_edit_room(room_id));
+
+drop policy if exists snapshots_insert on public.snapshots;
+drop policy if exists snapshots_update on public.snapshots;
 
 -- ---- コメント ----------------------------------------------------------
 -- 「閲覧のみ」の人でもコメントは書ける（議論には参加できる）。
@@ -3070,6 +3099,76 @@ begin
 end;
 $$;
 
+-- ---- 保存した状態を作る ----------------------------------------------------
+--
+-- 控える表。控える側（save_snapshot）と戻す側（restore_snapshot）で同じものを使う。
+-- 戻す側は、控えに載っていない今の行を片付けるので、控える側が 1 つでも落とすと
+-- その表は戻すたびに空になる（以前は画面が控えを作っていて、7 表を落としていた）。
+-- 並びは入れ直す順で、指される側（付箋・予定・日程調整）が先。
+create or replace function public.snapshot_tables()
+returns text[] language sql immutable
+set search_path = '' as $$
+  select array[
+    -- 親から先に。線は付箋を、「この回だけ」と出欠は予定を指す
+    'notes', 'strokes', 'connectors', 'frames',
+    'events', 'event_overrides', 'todos', 'images', 'attachments',
+    'note_votes', 'note_reactions',
+    'polls', 'poll_options', 'poll_votes', 'event_attendance'
+  ]
+$$;
+
+-- 控えの中身は、ここで DB の今の行から組み立てる。
+--
+-- 以前は画面が「いま見えている行」を payload に詰めて snapshots へ INSERT していた。
+-- payload は言い値なので、編集できる人なら author_name・voter_name・user_id を
+-- 好きに書いた控えを作れた（他人の控えの payload を UPDATE で書き換えることもできた）。
+-- 戻す側は控えたときの名前を残すために名前の上書きを止めるので、オーナーが戻すと、
+-- 書いてもいない人の付箋や、押してもいない人の票がそのまま入った。
+-- snapshots への INSERT / UPDATE は画面に開けず、この関数だけが作る。
+create or replace function public.save_snapshot(p_room_id uuid, p_label text)
+returns uuid
+language plpgsql security definer
+set search_path = '' as $$
+declare
+  v_payload jsonb := '{}'::jsonb;
+  v_rows    jsonb;
+  v_soft    boolean;
+  v_id      uuid;
+  t         text;
+begin
+  if not public.room_is_open(p_room_id) then
+    raise exception '終了したボードには書き込めません';
+  end if;
+  if not public.can_edit_room(p_room_id) then
+    raise exception '編集できる人だけが保存できます' using errcode = 'insufficient_privilege';
+  end if;
+
+  foreach t in array public.snapshot_tables() loop
+    -- ゴミ箱に入っているものは控えない（画面に出ているものだけを控える）
+    select exists (
+      select 1 from information_schema.columns c
+       where c.table_schema = 'public' and c.table_name = t and c.column_name = 'deleted_at'
+    ) into v_soft;
+
+    -- 別名を x にしないこと。付箋などには位置の列 x があり、行ではなくその列を指してしまう
+    execute format(
+      'select coalesce(jsonb_agg(to_jsonb(src.*)), ''[]''::jsonb) from public.%I src
+        where src.room_id = $1 %s',
+      t, case when v_soft then 'and src.deleted_at is null' else '' end)
+      into v_rows using p_room_id;
+
+    v_payload := v_payload || jsonb_build_object(t, v_rows);
+  end loop;
+
+  -- 作った人の名前は tg_force_author_name が本人の表示名で埋める
+  insert into public.snapshots (room_id, label, payload, author_id)
+  values (p_room_id, left(coalesce(p_label, ''), 60), v_payload, auth.uid())
+  returning id into v_id;
+
+  return v_id;
+end;
+$$;
+
 -- ---- 保存した状態から戻す --------------------------------------------------
 --
 -- 以前は画面側から 8 テーブルぶんの delete / insert を並べていた。ここに移した理由:
@@ -3082,8 +3181,9 @@ $$;
 --  2. ボードの中身を全部消して置き換える操作なので、オーナーだけに絞るため。
 --     以前は編集できる人なら誰でも実行でき、ゴミ箱の 30 日猶予も飛ばして消えていた。
 --
--- payload は控えた時点の行をそのまま持っているが、クライアントが作った JSON なので
--- そのまま信じない。security definer は RLS を素通りするため、room_id / author_id を
+-- payload は控えた時点の行をそのまま持っている。いまは save_snapshot が作るが、
+-- それより前の控えは画面が作った JSON なので、そのまま信じない。
+-- security definer は RLS を素通りするため、room_id / author_id を
 -- 言い値のまま入れると「別のボードへ行を注入する」「他人が書いたことにする」経路に
 -- なってしまう。この 2 列だけは必ず上書きする（以前の画面側の実装と同じ扱い）。
 create or replace function public.restore_snapshot(p_snapshot_id uuid)
@@ -3130,13 +3230,7 @@ begin
    * insufficient_privilege を上げ、トランザクションごと巻き戻る。
    * 既存の門番がそのまま新しい経路を守っている（pgTAP で固定してある）。
    */
-  foreach t in array array[
-    -- 親から先に。線は付箋を、「この回だけ」と出欠は予定を指す
-    'notes', 'strokes', 'connectors', 'frames',
-    'events', 'event_overrides', 'todos', 'images', 'attachments',
-    'note_votes', 'note_reactions',
-    'polls', 'poll_options', 'poll_votes', 'event_attendance'
-  ] loop
+  foreach t in array public.snapshot_tables() loop
     select jsonb_agg(e || jsonb_build_object('room_id', v_room, 'author_id', auth.uid()))
       into v_rows
       from jsonb_array_elements(coalesce(v_payload -> t, '[]'::jsonb)) e;
@@ -3222,6 +3316,7 @@ grant execute on function public.claim_owner(text, text, text)     to authentica
 grant execute on function public.revoke_all_members(uuid, boolean) to authenticated;
 grant execute on function public.delete_my_account(boolean)        to authenticated;
 grant execute on function public.restore_snapshot(uuid)            to authenticated;
+grant execute on function public.save_snapshot(uuid, text)         to authenticated;
 
 -- anon（セッションなし）からは何も呼べないようにする。
 -- 画面は必ず匿名サインインを済ませてから RPC を呼ぶので、anon で呼ぶ経路は無い。
@@ -3252,6 +3347,7 @@ begin
     'public.revoke_all_members(uuid, boolean)',
     'public.delete_my_account(boolean)',
     'public.restore_snapshot(uuid)',
+    'public.save_snapshot(uuid, text)',
     -- トリガーの内側からしか呼ばない
     'public.room_display_name(uuid)'
   ] loop
@@ -3263,6 +3359,9 @@ $$;
 -- 変更履歴はトリガーと RPC の内側からしか書けない。
 -- ここを開けておくと、参加者が「オーナーが権限を変えた」ことにできてしまう。
 revoke execute on function public.log_access(uuid, text, text, text) from public, anon, authenticated;
+
+-- 控える表の一覧は、save_snapshot と restore_snapshot の内側からしか使わない
+revoke execute on function public.snapshot_tables() from public, anon, authenticated;
 
 -- 試行回数の台帳も RPC の内側からしか触れない。
 -- 外から record_access_attempt(ok=true) を呼べると、ロックを自分で解除できてしまう。
