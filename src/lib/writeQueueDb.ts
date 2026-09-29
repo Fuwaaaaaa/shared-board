@@ -27,11 +27,22 @@ const LOCK = 'board.outbox.flush'
 let db: IDBDatabase | null = null
 /** IndexedDB が使えないときの置き場。ページを閉じると消える */
 let memory: Map<string, QueueEntry> | null = null
+/**
+ * IndexedDB は開けているのに、書けなかった分。ページを閉じると消える。
+ *
+ * 以前は 1 回書けないと memory に切り替えていたので、そのあとは IndexedDB にある分を
+ * 読まなくなり、新しく入れた分もメモリにしか置かなかった。書けなかった分だけをここに持ち、
+ * 読むときは IndexedDB の分と合わせる。
+ */
+const unsaved = new Map<string, QueueEntry>()
 let channel: BroadcastChannel | null = null
 
-/** IndexedDB が使えているか。使えていなければ、その旨を画面に出す */
+/**
+ * ためた分がすべて端末に残っているか。
+ * 1 件でも書けなかった分があるあいだは false（タブを閉じると消えるものがある、と画面に出す）。
+ */
 export function isPersistent(): boolean {
-  return db !== null
+  return db !== null && unsaved.size === 0
 }
 
 function open(): Promise<IDBDatabase> {
@@ -78,14 +89,37 @@ function request<T>(make: () => IDBRequest<T>): Promise<T> {
   })
 }
 
+/**
+ * 書き込みを 1 つのトランザクションで行い、確定（oncomplete）まで待つ。
+ *
+ * 要求の onsuccess で済ませると、容量不足で取り消されても書けたことになる。
+ * QuotaExceededError は要求ではなく、コミットのときにトランザクションの取り消しとして出る。
+ */
+function write(run: (store: IDBObjectStore) => void): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (!db) throw new Error('IndexedDB is not available')
+    const transaction = db.transaction(STORE, 'readwrite')
+    transaction.oncomplete = () => resolve()
+    transaction.onabort = () => reject(transaction.error ?? new Error('IndexedDB transaction aborted'))
+    transaction.onerror = () => reject(transaction.error)
+    run(transaction.objectStore(STORE))
+  })
+}
+
 export async function readAll(): Promise<QueueEntry[]> {
   if (memory) return [...memory.values()]
-  if (!db) return []
+  if (!db) return [...unsaved.values()]
+
+  let stored: QueueEntry[] = []
   try {
-    return await request<QueueEntry[]>(() => tx('readonly').getAll() as IDBRequest<QueueEntry[]>)
+    stored = await request<QueueEntry[]>(() => tx('readonly').getAll() as IDBRequest<QueueEntry[]>)
   } catch {
-    return []
+    stored = []
   }
+  // 書けなかった分は、IndexedDB に残っている同じ key の版より新しい
+  const byKey = new Map(stored.map((entry) => [entry.key, entry]))
+  for (const [key, entry] of unsaved) byKey.set(key, entry)
+  return [...byKey.values()]
 }
 
 export async function put(entry: QueueEntry): Promise<void> {
@@ -95,19 +129,23 @@ export async function put(entry: QueueEntry): Promise<void> {
   }
   if (!db) return
   try {
-    await request(() => tx('readwrite').put(entry))
+    await write((store) => store.put(entry))
+    unsaved.delete(entry.key)
   } catch {
     // 置けなかったら、せめてメモリに残す（このタブが開いているあいだは拾える）
-    memory = memory ?? new Map()
-    memory.set(entry.key, entry)
+    unsaved.set(entry.key, entry)
   }
 }
 
 export async function remove(key: string): Promise<void> {
-  if (memory) memory.delete(key)
+  if (memory) {
+    memory.delete(key)
+    return
+  }
+  unsaved.delete(key)
   if (!db) return
   try {
-    await request(() => tx('readwrite').delete(key))
+    await write((store) => store.delete(key))
   } catch {
     // 消せなくても、次の読み込みで拾い直せる
   }
