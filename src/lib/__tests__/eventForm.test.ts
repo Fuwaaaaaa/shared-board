@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { localDateTimeIso } from '../dates'
-import { missingDateTime } from '../eventForm'
+import { hasStart, missingDateTime } from '../eventForm'
 
 /*
  * 予定の編集画面で、日付や時刻の欄が空のまま保存させない。
@@ -43,5 +43,20 @@ describe('missingDateTime', () => {
     expect(missingDateTime({ ...draft, endTime: '' })).toBeNull()
     expect(missingDateTime({ ...draft, hasEnd: true, endTime: '' })).toMatch(/^終了の日付と時刻/)
     expect(missingDateTime({ ...draft, hasEnd: true, endDate: '' })).toMatch(/^終了の日付と時刻/)
+  })
+})
+
+/*
+ * 「最初は〇月〇日からになります」の案内（SnappedStartHint）は、描くたびに開始を読む。
+ * 時刻や日付の欄が空のまま読むと例外になり、カレンダーのタブごと落ちていた。
+ * 案内は、開始がそろっているときだけ出す。
+ */
+describe('hasStart', () => {
+  it('開始の日付と時刻がそろっているか', () => {
+    expect(hasStart(draft)).toBe(true)
+    expect(hasStart({ ...draft, time: '' })).toBe(false)
+    expect(hasStart({ ...draft, date: '' })).toBe(false)
+    expect(hasStart({ ...draft, allDay: true, time: '' })).toBe(true)
+    expect(hasStart({ ...draft, allDay: true, date: '' })).toBe(false)
   })
 })

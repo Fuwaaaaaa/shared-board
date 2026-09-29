@@ -71,7 +71,7 @@ import { supabase } from '../../lib/supabase'
 import { useIdentity } from '../../lib/identity'
 import { useRoomData } from '../../lib/roomData'
 import { messageOf } from '../../lib/errorMessage'
-import { missingDateTime } from '../../lib/eventForm'
+import { hasStart, missingDateTime } from '../../lib/eventForm'
 import {
   overrideFields,
   overrideWrite,
@@ -1793,6 +1793,9 @@ function RecurrenceFields({
  * （金曜の予定に「毎週 火」を選ぶと、開始は次の火曜になる）。
  */
 function SnappedStartHint({ draft, rule }: { draft: EventDraft; rule: RecurrenceRule }) {
+  // 欄が空のあいだは開始を読めない（読むと例外になり、タブごと落ちる）。理由は欄の下に出ている
+  if (!hasStart(draft)) return null
+
   const start = draft.allDay
     ? allDayStartIso(draft.date)
     : localDateTimeIso(draft.date, draft.time)
