@@ -1,3 +1,4 @@
+import { format, parseISO } from 'date-fns'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   allDayEndIso,
@@ -6,7 +7,9 @@ import {
   boardStamp,
   daysInMonth,
   fromBoardParts,
+  localDateTimeIso,
   occurrenceKeyDate,
+  pinBoardDay,
   reminderKey,
   toBoardDate,
   toBoardParts,
@@ -88,5 +91,53 @@ describe('dates（ボードの暦 = Asia/Tokyo）', () => {
     expect(toBoardDate('2026-08-31T15:00:00.000Z')).toBe('2026-09-01')
     expect(boardDateTimeIso('2026-09-01', '10:30')).toBe('2026-09-01T01:30:00.000Z')
     expect(untilLimit('2026-09-30')?.toISOString()).toBe('2026-09-30T15:00:00.000Z')
+  })
+})
+
+/*
+ * 入力欄の読み書きは、閲覧者の時計で揃える。
+ *
+ * 時刻のある予定・やることは、画面ではローカル時刻で出し、入力欄もローカルで埋めている。
+ * 以前は保存だけ JST で読んでいたので、日本以外から開いた人がタイトルだけ直して
+ * 保存しても、時差ぶん時刻がずれていった（ニューヨークなら 13 時間）。
+ */
+describe('入力欄の日時（閲覧者の時計）', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('日本で開いている人には、JST として読むのと同じ', () => {
+    expect(localDateTimeIso('2026-09-01', '10:30')).toBe(boardDateTimeIso('2026-09-01', '10:30'))
+  })
+
+  it('入力欄を埋めた値をそのまま保存しても、時刻は動かない（ニューヨーク）', () => {
+    vi.stubEnv('TZ', 'America/New_York')
+    const saved = '2026-10-01T01:00:00.000Z' // JST 10:00 = NY 前日 21:00
+
+    // 入力欄はローカルで埋める
+    const date = format(parseISO(saved), 'yyyy-MM-dd')
+    const time = format(parseISO(saved), 'HH:mm')
+    expect([date, time]).toEqual(['2026-09-30', '21:00'])
+
+    // 同じ時計で読めば、元の時刻に戻る
+    expect(localDateTimeIso(date, time)).toBe(saved)
+  })
+
+  it('形が崩れていたら RangeError', () => {
+    expect(() => localDateTimeIso('2026-09-01', '')).toThrow(RangeError)
+    expect(() => localDateTimeIso('', '10:00')).toThrow(RangeError)
+  })
+
+  /*
+   * 終日は JST 0:00 で保存している。そのまま format() すると日本より西では前日になり、
+   * 保存するたびに 1 日ずつ前へずれていた。
+   */
+  it('終日の日時は、JST の日付のままローカルの 0:00 に置き直す', () => {
+    vi.stubEnv('TZ', 'America/New_York')
+    const stored = allDayStartIso('2026-10-01') // 2026-09-30T15:00Z
+
+    expect(format(parseISO(stored), 'yyyy-MM-dd')).toBe('2026-09-30') // 置き直さないと前日
+    expect(format(pinBoardDay(stored), 'yyyy-MM-dd')).toBe('2026-10-01')
+    expect(allDayStartIso(format(pinBoardDay(stored), 'yyyy-MM-dd'))).toBe(stored)
   })
 })

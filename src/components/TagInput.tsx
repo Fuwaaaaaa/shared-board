@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { isComposingKey } from '../lib/shortcuts'
 
 interface Props {
   tags: string[]
@@ -61,6 +62,8 @@ export default function TagInput({ tags, onChange, suggestions = [], disabled }:
             maxLength={20}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
+              // 変換を確定する Enter でタグにしない（読みのまま決まってしまう）
+              if (isComposingKey(e.nativeEvent)) return
               if (e.key === 'Enter' || e.key === ',') {
                 e.preventDefault()
                 add(draft)

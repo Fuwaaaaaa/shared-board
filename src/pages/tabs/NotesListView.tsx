@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useState } from 'react'
 import { NOTE_COLORS, noteStyle, type Note } from '../../lib/types'
 import { useTheme } from '../../lib/theme'
+import { isComposingKey } from '../../lib/shortcuts'
 import type { LinkCounts } from './NotesLayer'
 
 interface Props {
@@ -155,6 +156,7 @@ function NotesListView({
                     rows={4}
                     onChange={(e) => setDraft(e.target.value)}
                     onKeyDown={(e) => {
+                      if (isComposingKey(e.nativeEvent)) return
                       if (e.key === 'Escape') e.currentTarget.blur()
                     }}
                     onBlur={() => finishEdit(note)}

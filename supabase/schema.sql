@@ -1264,12 +1264,28 @@ drop function if exists public.tg_touch_updated_at();
 -- notifications の INSERT ポリシーは「同じボードを見られる人なら誰でも」なので、
 -- actor_name をそのまま信じると他人の名前で通知を送れてしまう。
 -- 送った本人の表示名で必ず上書きする。
+--
+-- 流量の門番（tg_throttle_notifications）が数えに使う列も、ここで名乗らせない。
+-- トリガーは名前順に走る（guard → limit_text → throttle）ので、門番より先に揃う。
+--
+--   kind = 'digest' … まとめの行を作れるのは門番だけ。ここに digest で届くのは
+--                     画面から名乗ったものだけで、通すと枠を数えずに積める
+--   created_at      … 枠は直近 1 分で数える。さかのぼれば枠の外に出られ、
+--                     先の日時にすれば枠を埋めたまま本物の通知を押し出せる
+--   folded_count    … まとめの件数。数えるのは門番
 create or replace function public.tg_guard_notification()
 returns trigger language plpgsql security definer
 set search_path = '' as $$
 declare
   v_name text;
 begin
+  if new.kind = 'digest' then
+    raise exception 'まとめの通知は作れません' using errcode = '42501';
+  end if;
+
+  new.created_at   := now();
+  new.folded_count := 0;
+
   select m.display_name into v_name
     from public.room_members m
    where m.room_id = new.room_id and m.user_id = auth.uid()
@@ -1389,6 +1405,11 @@ begin
   end if;
 
   if TG_OP = 'DELETE' then
+    -- ボードごと消しているときは、連鎖削除で呼ばれても書かない（親行がもう無い）。
+    -- 書こうとすると外部キーで落ち、ボードの削除ごと巻き戻る
+    if not exists (select 1 from public.rooms r where r.id = OLD.room_id) then
+      return null;
+    end if;
     v_room := OLD.room_id;
     v_action := 'deleted';
   else
@@ -1514,6 +1535,10 @@ begin
   end if;
 
   if NEW.deleted_at is not distinct from OLD.deleted_at then
+    -- deleted_by を決めるのは、消す・戻すときのこのトリガーだけ。
+    -- ここで持ち越さないと、本人が deleted_by だけを自分に書き換えてから
+    -- 戻すことで、オーナーが消した発言を戻せてしまう
+    NEW.deleted_by := OLD.deleted_by;
     return NEW;
   end if;
 
@@ -2155,11 +2180,8 @@ declare
   v_used   bigint;
   v_digest uuid;
 begin
-  -- まとめ行そのものは数えないし、止めない（下でこの関数が作る）
-  if NEW.kind = 'digest' then
-    return NEW;
-  end if;
-
+  -- まとめ行は、下でこの関数が NEW を書き換えて作るものだけ。
+  -- 画面から digest を名乗った行は、先に走る tg_guard_notification が断っている
   if NEW.kind = 'converted' then
     v_class := 'low';
     v_limit := 10;
@@ -2966,7 +2988,11 @@ begin
     delete from public.rooms where owner_id = auth.uid();
   end if;
 
-  delete from public.room_members      where user_id = auth.uid();
+  -- 取り消された行（rejected）は消さない。これはボードの側の判断の記録で、
+  -- 本人の持ち物ではない（room_members_delete のポリシーと同じ線引き）。
+  -- 消せると、退会してから request_access をやり直すだけで、リンク公開の
+  -- ボードではその場で承認され、「アクセスを取り消す」が帳消しになる。
+  delete from public.room_members      where user_id = auth.uid() and status <> 'rejected';
   delete from public.notifications     where user_id = auth.uid();
   delete from public.push_subscriptions where user_id = auth.uid();
   delete from public.client_errors     where user_id = auth.uid();

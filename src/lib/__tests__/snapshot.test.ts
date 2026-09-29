@@ -1,10 +1,41 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import {
   estimatePayloadSize,
   isOrphanComment,
   missingBlobPaths,
   PAYLOAD_LIMIT,
+  PAYLOAD_TABLE_LABELS,
+  SNAPSHOT_TABLES,
 } from '../snapshot'
+
+describe('SNAPSHOT_TABLES', () => {
+  /*
+   * restore_snapshot は、回す表のうち控えに載っていない今の行を片付ける。
+   * 控える側がどれか 1 つでも落とすと、その表は戻すたびに空になる
+   * （以前は 8 表しか控えておらず、👍・絵文字・日程調整・出欠が消えていた）。
+   */
+  it('restore_snapshot が回す表と、同じものを同じ順で控える', () => {
+    const source = readFileSync(new URL('../../../supabase/schema.sql', import.meta.url), 'utf8')
+    const match =
+      /function public\.restore_snapshot[\s\S]*?foreach t in array array\[([\s\S]*?)\] loop/.exec(
+        source,
+      )
+    expect(match, 'restore_snapshot の表の並びが見つかりません').not.toBeNull()
+
+    const tables = match![1]
+      .replace(/--.*$/gm, '')
+      .split(',')
+      .map((name) => name.trim().replace(/^'|'$/g, ''))
+      .filter(Boolean)
+
+    expect([...SNAPSHOT_TABLES]).toEqual(tables)
+  })
+
+  it('どの表にも、断るときに見せる名前がある', () => {
+    expect(Object.keys(PAYLOAD_TABLE_LABELS).sort()).toEqual([...SNAPSHOT_TABLES].sort())
+  })
+})
 
 describe('estimatePayloadSize', () => {
   /*

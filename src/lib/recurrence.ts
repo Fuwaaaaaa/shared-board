@@ -23,7 +23,7 @@ import {
   stepDates,
   type RecurrenceRule,
 } from '../../supabase/functions/_shared/recurrence.ts'
-import { DAY_MS, isBoardTimeZone, localDateOf, toBoardDate } from './dates'
+import { DAY_MS, isBoardTimeZone, pinBoardDay } from './dates'
 import {
   MONTH_WEEK_LABELS,
   RECURRENCE_INTERVAL_UNITS,
@@ -94,10 +94,10 @@ function intersects(start: Date, end: Date | null, rangeStart: Date, rangeEnd: D
 function pinAllDay(occurrence: EventOccurrence): EventOccurrence {
   if (!occurrence.view.all_day) return occurrence
 
-  const start = localDateOf(toBoardDate(occurrence.start))
+  const start = pinBoardDay(occurrence.start)
   let end: Date | null = null
   if (occurrence.end) {
-    end = localDateOf(toBoardDate(occurrence.end))
+    end = pinBoardDay(occurrence.end)
     end.setHours(23, 59, 0, 0)
   }
   return { ...occurrence, start, end }

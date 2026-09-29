@@ -25,7 +25,9 @@ import {
   setClipboardStyle,
 } from '../../lib/boardClipboard'
 import { buildEvent, buildTodo, originChanged, splitNoteText } from '../../lib/convert'
-import { useUndoStack } from '../../hooks/useUndoStack'
+import { allDayStartIso, localDateTimeIso } from '../../lib/dates'
+import { useUndoStack, type UndoEntry } from '../../hooks/useUndoStack'
+import { planUndoCreate, type NoteDependents } from '../../lib/undoCreate'
 import { notifyUser } from '../../hooks/useNotifications'
 import { buildNameLabels } from '../../lib/names'
 import { useSignedUrls } from '../../hooks/useSignedUrls'
@@ -39,7 +41,7 @@ import { useIdentity } from '../../lib/identity'
 import { useRoomData } from '../../lib/roomData'
 import { useTheme } from '../../lib/theme'
 import { hasOpenModal } from '../../lib/modalStack'
-import { isTypingTarget, matchShortcut, toChord } from '../../lib/shortcuts'
+import { isComposingKey, isTypingTarget, matchShortcut, toChord } from '../../lib/shortcuts'
 import { boundingBox, insideRect } from '../../lib/boardGeometry'
 import { alignNotes, snapToGrid, type AlignKind } from '../../lib/boardAlign'
 import { menuAnchor } from '../../lib/menuPlacement'
@@ -190,6 +192,7 @@ export default function WhiteboardTab({
     events,
     todos,
     approvedMembers,
+    trash,
   } = useRoomData()
   const { resolved: theme } = useTheme()
   const undoStack = useUndoStack()
@@ -678,6 +681,62 @@ export default function WhiteboardTab({
     return noteOps.remove(rows, '削除')
   }
 
+  /*
+   * 付箋にぶら下がっているもの（作成の取り消しで見る）。
+   *
+   * 取り消しの項目は作った時点の描画で作られるので、rows をそのまま閉じ込めると
+   * 取り消すときに古い中身を見てしまう。毎回の描画で最新に差し替えておく。
+   */
+  const noteDependentsRef = useRef<NoteDependents | null>(null)
+  noteDependentsRef.current = {
+    connectors: connectors.rows,
+    trashedConnectors: trash.connectors,
+    votes: votes.rows,
+    reactions: reactions.rows,
+    comments: comments.rows,
+    derived: [...todos.rows, ...events.rows, ...trash.todos, ...trash.events],
+  }
+
+  /**
+   * 付箋を作った操作の、取り消しとやり直し。
+   *
+   * 取り消しは、誰の手も入っていない付箋だけ本当に消し、あとはゴミ箱へ入れる
+   * （lib/undoCreate.ts）。本当に消すと、他の人がつないだ線や 👍 まで
+   * on delete cascade で消え、ゴミ箱にも残らないため。
+   * やり直しは、取り消したときの道に合わせて戻す。ゴミ箱へ入れたものを
+   * 作ったときの行で入れ直すと、他の人の書き換えが消える。
+   */
+  function createdNotesEntry(label: string, created: Note[]): UndoEntry {
+    // 取り消しが途中で失敗して押し直したとき、先に済んだぶんを忘れないよう足していく
+    // （済んだ付箋は、押し直しの振り分けでは「もう無い・ゴミ箱にある」で外れる）
+    const dropped = new Map<string, Note>()
+    const trashed = new Map<string, Note>()
+    return {
+      label,
+      undo: async () => {
+        const plan = planUndoCreate(
+          created,
+          (id) => notes.getRow(id),
+          noteDependentsRef.current!,
+          userId,
+        )
+        for (const note of plan.drop) dropped.set(note.id, note)
+        for (const note of plan.trash) trashed.set(note.id, note)
+        const results = await Promise.all([deleteNotes(plan.drop), trashNotes(plan.trash)])
+        await must(Promise.resolve(results.every(Boolean)))
+      },
+      redo: async () => {
+        const results = await Promise.all([
+          insertNotes([...dropped.values()]),
+          restoreNotes([...trashed.values()]),
+        ])
+        await must(Promise.resolve(results.every(Boolean)))
+        dropped.clear()
+        trashed.clear()
+      },
+    }
+  }
+
   /**
    * 付箋の一部を変える。
    * lock=true なら、本文・タグの変更に楽観ロックをかける（undo / redo から使う）。
@@ -747,11 +806,7 @@ export default function WhiteboardTab({
     setSelectedIds([note.id])
     setMode('select')
     if (!(await insertNotes([note]))) return
-    undoStack.push({
-      label: kind === 'text' ? 'テキストの追加' : '付箋の追加',
-      undo: () => must(deleteNotes([note])),
-      redo: () => must(insertNotes([note])),
-    })
+    undoStack.push(createdNotesEntry(kind === 'text' ? 'テキストの追加' : '付箋の追加', [note]))
   }
 
   /** 改行区切りのテキストから付箋をまとめて作る */
@@ -780,11 +835,7 @@ export default function WhiteboardTab({
 
     setShowBulk(false)
     if (!(await insertNotes(rows))) return
-    undoStack.push({
-      label: `${rows.length} 枚の付箋を作成`,
-      undo: () => must(deleteNotes(rows)),
-      redo: () => must(insertNotes(rows)),
-    })
+    undoStack.push(createdNotesEntry(`${rows.length} 枚の付箋を作成`, rows))
   }
 
   /**
@@ -863,11 +914,15 @@ export default function WhiteboardTab({
     const author = { userId, displayName }
     const assignee = memberOptions.find((m) => m.id === plan.assigneeId)
 
-    // 予定は「終日なら 0:00」、やることの期限は常に指定時刻で扱う
+    // 予定は「終日なら JST の 0:00」、やることの期限は常に指定時刻（閲覧者のローカル）で扱う。
+    // 時刻を消していたら、入力欄の既定と同じ 9:00 にする
+    const time = plan.time || '09:00'
     const startIso = plan.date
-      ? new Date(`${plan.date}T${plan.allDay ? '00:00' : plan.time}`).toISOString()
+      ? plan.allDay
+        ? allDayStartIso(plan.date)
+        : localDateTimeIso(plan.date, time)
       : null
-    const dueIso = plan.date ? new Date(`${plan.date}T${plan.time}`).toISOString() : null
+    const dueIso = plan.date ? localDateTimeIso(plan.date, time) : null
 
     const newTodos: Todo[] = []
     const newEvents: CalendarEvent[] = []
@@ -964,11 +1019,7 @@ export default function WhiteboardTab({
     const note = buildNote(0, 0, 'sticky')
     const placed = { ...note, ...gridPosition(notes.rows.length) }
     if (!(await insertNotes([placed]))) return
-    undoStack.push({
-      label: '付箋の追加',
-      undo: () => must(deleteNotes([placed])),
-      redo: () => must(insertNotes([placed])),
-    })
+    undoStack.push(createdNotesEntry('付箋の追加', [placed]))
   }
 
   /**
@@ -1207,11 +1258,7 @@ export default function WhiteboardTab({
 
     setSelectedIds(copies.map((n) => n.id))
     if (!(await insertNotes(copies))) return
-    undoStack.push({
-      label: '複製',
-      undo: () => must(deleteNotes(copies)),
-      redo: () => must(insertNotes(copies)),
-    })
+    undoStack.push(createdNotesEntry('複製', copies))
   }
 
   // ---- コピー・貼り付け ---------------------------------------------------
@@ -1244,11 +1291,7 @@ export default function WhiteboardTab({
 
     setSelectedIds(rows.map((n) => n.id))
     if (!(await insertNotes(rows))) return
-    undoStack.push({
-      label: '貼り付け',
-      undo: () => must(deleteNotes(rows)),
-      redo: () => must(insertNotes(rows)),
-    })
+    undoStack.push(createdNotesEntry('貼り付け', rows))
   }
 
   /** 選んだ付箋をまとめて囲むフレームを作る（Figma の "Wrap selection in frame"） */
@@ -2048,11 +2091,7 @@ export default function WhiteboardTab({
     }))
 
     if (!(await insertNotes(rows))) return
-    undoStack.push({
-      label: `テンプレート「${template.name}」`,
-      undo: () => must(deleteNotes(rows)),
-      redo: () => must(insertNotes(rows)),
-    })
+    undoStack.push(createdNotesEntry(`テンプレート「${template.name}」`, rows))
   }
 
   /** 選んだ付箋だけを書き出すときの、まわりの余白 */
@@ -3324,6 +3363,7 @@ function ConnectorLabelInput({
         if (draft !== value) onCommit(draft)
       }}
       onKeyDown={(e) => {
+        if (isComposingKey(e.nativeEvent)) return
         if (e.key === 'Enter') e.currentTarget.blur()
       }}
       className="w-32 shrink-0 rounded-lg border border-slate-300 px-2 py-1 text-sm outline-none focus:border-slate-800"

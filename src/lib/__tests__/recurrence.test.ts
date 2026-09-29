@@ -816,10 +816,19 @@ describe('n 回ごと（interval）', () => {
   })
 
   it('繰り返しやることの次回は interval ぶん進む', () => {
-    const due = boardDateTimeIso('2026-09-01', '09:00')
-    const rule = { recurrence: 'weekly' as const, days: [], week: null, interval: 2 }
-    // 期限より前に完了しても、次回は 2 週間後
-    expect(toBoardDate(nextDueDate(due, rule)!)).toBe('2026-09-15')
+    // nextDueDate は「今より後」の回を返すので、時計を期限の前に止めておく。
+    // 止めないと、9/15 を過ぎた日に走らせたとき 9/29 が返って落ちる
+    // （止めるのは Date だけ。理由は ics.test.ts の freezeAt を参照）
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(boardDateTimeIso('2026-08-31', '12:00')))
+    try {
+      const due = boardDateTimeIso('2026-09-01', '09:00')
+      const rule = { recurrence: 'weekly' as const, days: [], week: null, interval: 2 }
+      // 期限より前に完了しても、次回は 2 週間後
+      expect(toBoardDate(nextDueDate(due, rule)!)).toBe('2026-09-15')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

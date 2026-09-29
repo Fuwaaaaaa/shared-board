@@ -370,15 +370,15 @@ src/
 
 ## テスト
 
-テストは 5 つの層に分かれていて、**合計 1,223 件**です（667 + 93 + 67 + 43 + 353）。層ごとに走らせ方も速さも違うので、表では層ごとの数を並べています。
+テストは 5 つの層に分かれていて、**合計 1,277 件**です（689 + 108 + 67 + 43 + 370）。層ごとに走らせ方も速さも違うので、表では層ごとの数を並べています。
 
 | 層 | 道具 | 件数 | 走らせ方 |
 | --- | --- | --- | --- |
-| 純粋関数 | Vitest（node） | 667 件（29 本） | `npm test` |
-| コンポーネント | Vitest（jsdom） | 93 件（13 本） | `npm test` |
+| 純粋関数 | Vitest（node） | 689 件（30 本） | `npm test` |
+| コンポーネント | Vitest（jsdom） | 108 件（16 本） | `npm test` |
 | Edge Function | Deno | 67 件 | `npm run test:functions` |
 | ブラウザ | Playwright | 43 件（Chromium 39、Firefox と WebKit は `@smoke` の 2 件ずつ） | `npm run test:e2e` |
-| 権限（RLS） | pgTAP | 353 件 | `npm run test:db` |
+| 権限（RLS） | pgTAP | 370 件 | `npm run test:db` |
 
 それぞれが見ているもの:
 
@@ -403,7 +403,7 @@ CI では「Supabase につながらないから飛ばす」をしません。�
 
 ### 権限（RLS）のテスト
 
-[`supabase/tests/rls.test.sql`](supabase/tests/rls.test.sql) に、**サーバー側の権限が効いているか**を確かめるテストが 353 件あります。次のようなことを、許可・拒否の両方向から見ています。
+[`supabase/tests/rls.test.sql`](supabase/tests/rls.test.sql) に、**サーバー側の権限が効いているか**を確かめるテストが 370 件あります。次のようなことを、許可・拒否の両方向から見ています。
 
 - 終了したボードへの書き込み、閲覧のみの人の編集
 - 変更履歴の偽造、書いた人の名前の上書き

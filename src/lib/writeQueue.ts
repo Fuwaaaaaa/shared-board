@@ -169,7 +169,10 @@ export function collapse(existing: QueueEntry | undefined, op: QueueOp): QueueEn
       patch: { ...existing.patch, ...op.patch },
       // 取り消しの戻り先は「いちばん最初の値」でなければならない
       base: { ...op.base, ...existing.base },
-      expectUpdatedAt: existing.expectUpdatedAt,
+      // ロックもいちばん最初のもの。ただ、先にためたのが位置や色だけ（ロック無し）なら、
+      // あとから畳んだ本文の書き換えのロックを使う。捨てると、本文が
+      // 他の人の書き換えを黙って上書きする
+      expectUpdatedAt: existing.expectUpdatedAt ?? op.expectUpdatedAt,
     }
   }
 
@@ -225,6 +228,31 @@ const LOCKED_FIELDS: Record<QueueTable, string[]> = {
 /** その変更が、楽観ロックを掛けるべき列を含むか */
 export function lockedFields(table: QueueTable, patch: Record<string, unknown>): string[] {
   return LOCKED_FIELDS[table].filter((field) => field in patch)
+}
+
+/**
+ * ロックを掛けた更新が 0 行で返ったとき、サーバーの行がもう送ろうとした中身に
+ * なっているか。
+ *
+ * 更新は届いたのに返事だけが失われると、送信箱はためたときのロックのまま送り直す。
+ * サーバーの updated_at は自分の書き込みで進んでいるので 0 行になり、
+ * 自分の書いたものが「他の人が先に書き換えました」と出てしまう。
+ * 送ろうとした列がどれもサーバーと同じなら、送れたものとして片付けてよい
+ * （他の人が偶然同じ中身にしていた場合も、結果は同じなので失うものは無い）。
+ *
+ * 見比べは JSON の文字列で行う。時刻のように書き方が揺れる値は一致しないことが
+ * あるが、そのときは今までどおり競合として見せるだけで、黙って捨てはしない。
+ */
+export function alreadyApplied(
+  patch: Record<string, unknown>,
+  serverRow: Record<string, unknown> | null,
+): boolean {
+  if (!serverRow) return false
+  const fields = Object.keys(patch)
+  return (
+    fields.length > 0 &&
+    fields.every((field) => JSON.stringify(patch[field]) === JSON.stringify(serverRow[field]))
+  )
 }
 
 /** 待ち時間（ミリ秒）。最後は 5 分で頭打ち */
@@ -300,11 +328,17 @@ export function decideOnFailure(e: unknown): 'queue' | 'fail' {
  * 「作成は前にもう届いていた」ことだけで、そのあとに畳んだ書き換えは届いていない
  * （重複で断られた INSERT に入っていただけ）。書き換えがあれば更新として送り直し、
  * 無ければ片付ける。これを「全部送れた」と数えると、作ったあとに書いた文字が消える。
+ *
+ * serverUpdatedAt は、送れた更新のあとの updated_at（サーバーが返した行のもの）。
+ * 更新を送り直すときのロックはこれに掛け直す。いま送った更新で updated_at は
+ * もう進んでいるので、ためたときの古いロックのままだと、自分の書き込みと
+ * 競合したことになり「他の人が先に書き換えました」で止まる。
  */
 export function afterSend(
   entry: QueueEntry,
   sentRev: number,
   alreadyExisted = false,
+  serverUpdatedAt?: string,
 ): 'drop' | Partial<QueueEntry> {
   const fresh = {
     state: 'pending' as const,
@@ -323,7 +357,11 @@ export function afterSend(
 
   if (entry.rev === sentRev) return 'drop'
 
-  if (entry.kind !== 'create') return fresh
+  if (entry.kind !== 'create') {
+    return entry.expectUpdatedAt && serverUpdatedAt
+      ? { ...fresh, expectUpdatedAt: serverUpdatedAt }
+      : fresh
+  }
 
   const row = { ...(entry.row ?? {}) }
   delete row.id

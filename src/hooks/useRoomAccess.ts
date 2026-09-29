@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { useIdentity } from '../lib/identity'
 import { samePreview } from '../lib/access'
@@ -18,6 +18,7 @@ const HIDDEN_REFRESH_MS = 30000
 export type AccessLevel =
   | 'loading'
   | 'notfound'
+  | 'unreachable' // 最初の 1 回から通信で失敗した。ボードが無いのかどうかはまだ分からない
   | 'owner' // 作成者
   | 'member' // 承認済み参加者
   | 'guest' // リンク公開のボードに来た直後。登録（request_access）が済むまで中身は読めない
@@ -36,13 +37,32 @@ export function useRoomAccess(slug: string | undefined) {
   const { userId, displayName } = useIdentity()
   const [preview, setPreview] = useState<RoomPreview | null>(null)
   const [level, setLevel] = useState<AccessLevel>('loading')
+  /** この slug で一度でもサーバーから答えをもらえたか */
+  const answeredSlugRef = useRef<string | null>(null)
 
   const refresh = useCallback(async () => {
     if (!slug) return
     const { data, error } = await supabase.rpc('get_room_preview', { p_slug: slug })
-    const room = (data as RoomPreview[] | null)?.[0]
 
-    if (error || !room) {
+    /*
+     * 通信の失敗は「ボードが無い」ではない。
+     *
+     * オフラインのあいだも書ける（送信箱にためる）ので、取り直しに失敗した
+     * だけで今のボードを外すと、送信箱も Undo も開いていた編集も一緒に消える。
+     * 一度でも答えをもらえていれば今の判定のまま待ち、次の取り直し
+     * （オンラインに戻る・表に戻る・60 秒ごと）に任せる。
+     */
+    if (error) {
+      if (answeredSlugRef.current === slug) return
+      setPreview(null)
+      setLevel('unreachable')
+      return
+    }
+    answeredSlugRef.current = slug
+
+    // サーバーが答えたうえで行が無い。リンクの作り直し・削除・URL の間違い
+    const room = (data as RoomPreview[] | null)?.[0]
+    if (!room) {
       setPreview(null)
       setLevel('notfound')
       return

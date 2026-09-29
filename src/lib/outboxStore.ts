@@ -136,16 +136,18 @@ export async function dropEntry(key: string): Promise<void> {
  * 送っているあいだに同じ行へ書き足されていたら、消さずに送り直す側へ回す
  * （判断は writeQueue.afterSend）。key だけで消すと、その書き足しごと消える。
  * alreadyExisted は、作成が主キーの重複で返ってきたとき。
+ * serverUpdatedAt は、送れた更新のあとの updated_at（送り直すときのロックになる）。
  */
 export async function settleSent(
   key: string,
   sentRev: number,
   alreadyExisted = false,
+  serverUpdatedAt?: string,
 ): Promise<void> {
   const current = entries.find((entry) => entry.key === key)
   if (!current) return
 
-  const next = afterSend(current, sentRev, alreadyExisted)
+  const next = afterSend(current, sentRev, alreadyExisted, serverUpdatedAt)
   if (next === 'drop') {
     await dropEntry(key)
     return

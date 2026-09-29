@@ -12,7 +12,7 @@ import { useOptimisticTable } from '../../hooks/useOptimisticTable'
 import { useNotice } from '../../hooks/useNotice'
 import { useFocusJump } from '../../hooks/useFocusJump'
 import { nextDueDate, normalizeRule, recurrenceLabel, ruleOf } from '../../lib/recurrence'
-import { boardDateTimeIso, localDateOf } from '../../lib/dates'
+import { localDateOf, localDateTimeIso } from '../../lib/dates'
 import {
   acknowledgeOrigin,
   buildEvent,
@@ -26,6 +26,7 @@ import { buildNameLabels } from '../../lib/names'
 import { supabase } from '../../lib/supabase'
 import { useIdentity } from '../../lib/identity'
 import { useRoomData } from '../../lib/roomData'
+import { isComposingKey } from '../../lib/shortcuts'
 import {
   MONTH_WEEK_OPTIONS,
   RECURRENCE_LABELS,
@@ -971,7 +972,9 @@ function TodoModal({
       notes: notes.trim(),
       assignee_id: assigneeId || null,
       assignee_name: assignee?.name ?? '',
-      due_at: date ? boardDateTimeIso(date, time) : null,
+      // 入力欄はローカル時刻で埋めている（上の useState）ので、読むのもローカル。
+      // 時刻を消していたら、既定の 9:00 にする
+      due_at: date ? localDateTimeIso(date, time || '09:00') : null,
       remind_minutes: date ? remind : null,
       recurrence: rule.recurrence,
       recurrence_days: rule.days,
@@ -1267,6 +1270,8 @@ function TodoModal({
               maxLength={100}
               onChange={(e) => setSubtaskDraft(e.target.value)}
               onKeyDown={(e) => {
+                // 変換を確定する Enter で小項目にしない
+                if (isComposingKey(e.nativeEvent)) return
                 if (e.key === 'Enter') {
                   e.preventDefault()
                   addSubtask()

@@ -19,7 +19,7 @@ begin;
 
 create extension if not exists pgtap;
 
-select plan(353);
+select plan(370);
 
 
 -- =============================================================================
@@ -2854,6 +2854,31 @@ select is(
   '渡した「消した人」は無視され、本当に消した人が入る');
 set local role authenticated;
 
+-- 消す・戻すと一緒でなくても、「消した人」だけを書き換えられては同じこと。
+-- 以前は deleted_at が変わらない UPDATE を素通ししていたので、本人が
+-- deleted_by を自分にしてから戻せば、オーナーの消したものを戻せた
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき（オーナー）
+update public.comments set deleted_at = null  where id = '66660000-0000-0000-0000-000000000001';
+update public.comments set deleted_at = now() where id = '66660000-0000-0000-0000-000000000001';
+
+select tests_act_as('33333333-3333-3333-3333-333333333333');   -- みなみ（書いた本人）
+update public.comments
+   set deleted_by = '33333333-3333-3333-3333-333333333333'
+ where id = '66660000-0000-0000-0000-000000000001';
+
+reset role;
+select is(
+  (select deleted_by from public.comments where id = '66660000-0000-0000-0000-000000000001'),
+  '11111111-1111-1111-1111-111111111111'::uuid,
+  'ゴミ箱に入れたままでも、「消した人」は書き換えられない');
+set local role authenticated;
+
+select is(
+  tests_error($$update public.comments set deleted_at = null
+                 where id = '66660000-0000-0000-0000-000000000001'$$),
+  'この発言を戻せるのは、消した人かボードを作った人だけです',
+  '「消した人」を書き換えようとしたあとでも、オーナーが消した発言は戻せない');
+
 select is(
   (select count(*)::int from pg_trigger t
      join pg_class c on c.oid = t.tgrelid
@@ -2998,7 +3023,234 @@ select throws_ok(
 
 
 -- =============================================================================
---  42. 棚卸し — 権限の「形」を固定する
+--  42. 中身のあるボードも消せる
+--
+--      ボードを消すと、中身は on delete cascade で一緒に消える。そのとき
+--      付箋・予定・やること・画像・ファイルの履歴トリガー（tg_log_activity）も
+--      1 行ずつ走るが、親のボードはもう無い。そこで履歴を書こうとすると
+--      外部キーで落ち、ボードの削除ごと巻き戻っていた。
+--      20. で消しているのは中身の無いボードだけだったので、気づけなかった。
+-- =============================================================================
+
+reset role;
+
+--  ひろし（55555555…）は、ここで初めて出てくる人。ボードごと退会させる
+insert into public.rooms (id, slug, name, visibility, owner_id, owner_name) values
+  ('99999999-0000-0000-0000-000000000001', 'fullroom', '中身のあるボード', 'public',
+   '11111111-1111-1111-1111-111111111111', 'ゆうき'),
+  ('99999999-0000-0000-0000-000000000002', 'leaving1', 'やめる人のボード', 'public',
+   '55555555-5555-5555-5555-555555555555', 'ひろし');
+
+insert into public.room_members (room_id, user_id, display_name, role, status, can_edit)
+select id, owner_id, owner_name, 'owner', 'approved', true
+  from public.rooms
+ where id in ('99999999-0000-0000-0000-000000000001', '99999999-0000-0000-0000-000000000002');
+
+-- 履歴トリガーを持つ 5 種類をひととおり入れておく
+insert into public.notes (room_id, text, author_id, author_name)
+select id, '消える付箋', owner_id, owner_name
+  from public.rooms
+ where id in ('99999999-0000-0000-0000-000000000001', '99999999-0000-0000-0000-000000000002');
+
+insert into public.events (room_id, title, start_at, author_id, author_name)
+select id, '消える予定', now(), owner_id, owner_name
+  from public.rooms
+ where id in ('99999999-0000-0000-0000-000000000001', '99999999-0000-0000-0000-000000000002');
+
+insert into public.todos (room_id, title, author_id, author_name)
+select id, '消えるやること', owner_id, owner_name
+  from public.rooms
+ where id in ('99999999-0000-0000-0000-000000000001', '99999999-0000-0000-0000-000000000002');
+
+insert into public.images (room_id, storage_path, author_id, author_name)
+select id, id || '/photo.png', owner_id, owner_name
+  from public.rooms
+ where id in ('99999999-0000-0000-0000-000000000001', '99999999-0000-0000-0000-000000000002');
+
+insert into public.attachments (room_id, storage_path, filename, author_id, author_name)
+select id, id || '/memo.pdf', 'memo.pdf', owner_id, owner_name
+  from public.rooms
+ where id in ('99999999-0000-0000-0000-000000000001', '99999999-0000-0000-0000-000000000002');
+
+set local role authenticated;
+
+select tests_act_as('11111111-1111-1111-1111-111111111111');   -- ゆうき
+
+select is(
+  tests_rowcount($$delete from public.rooms where id = '99999999-0000-0000-0000-000000000001'$$),
+  1, '付箋・予定・やること・画像・ファイルのあるボードも消せる');
+
+reset role;
+
+select is(
+  (select count(*)::int from public.activities
+    where room_id = '99999999-0000-0000-0000-000000000001'),
+  0, '消したボードの履歴は残らない（連鎖削除の途中で書き足さない）');
+
+-- 実体の掃除は、20. と同じくフォルダごと。1 件ずつの予約と二重にならない
+select is(
+  (select count(*)::int from public.purge_queue
+    where path like '99999999-0000-0000-0000-000000000001/%' and kind = 'object'),
+  0, '画像とファイルの実体を 1 件ずつは予約しない');
+
+select is(
+  (select count(*)::int from public.purge_queue
+    where path = '99999999-0000-0000-0000-000000000001/' and kind = 'prefix'),
+  2, '画像とファイルのフォルダごとの掃除は予約される');
+
+set local role authenticated;
+
+select tests_act_as('55555555-5555-5555-5555-555555555555');   -- ひろし
+
+select lives_ok(
+  $$select public.delete_my_account(true)$$,
+  '中身のあるボードを持ったままでも、ボードごと退会できる');
+
+reset role;
+
+select is(
+  (select count(*)::int from public.rooms
+    where id = '99999999-0000-0000-0000-000000000002'),
+  0, '退会と一緒に、作ったボードも消えている');
+
+set local role authenticated;
+
+
+-- =============================================================================
+--  43. 退会しても、取り消された記録は消えない
+--
+--      取り消された人（status = 'rejected'）は自分の行を消せない（32.）。
+--      行が無い状態から request_access をやり直すと、リンク公開のボードでは
+--      その場で承認されてしまうため。ところが delete_my_account は
+--      security definer で自分の行を全部消していたので、退会してから
+--      入り直せば取り消しが帳消しになっていた。
+-- =============================================================================
+
+reset role;
+
+--  さとる（66666666…）は、ゆうきのボードで取り消された人。
+--  別のリンク公開のボード（linkonly）には、ふつうに参加している
+insert into public.rooms (id, slug, name, visibility, owner_id, owner_name) values
+  ('99999999-0000-0000-0000-000000000003', 'revoked1', '取り消したボード', 'public',
+   '11111111-1111-1111-1111-111111111111', 'ゆうき');
+
+insert into public.room_members (room_id, user_id, display_name, role, status, can_edit) values
+  ('99999999-0000-0000-0000-000000000003', '11111111-1111-1111-1111-111111111111', 'ゆうき', 'owner', 'approved', true),
+  ('99999999-0000-0000-0000-000000000003', '66666666-6666-6666-6666-666666666666', 'さとる', 'member', 'rejected', true),
+  ('ffffffff-ffff-ffff-ffff-ffffffffffff', '66666666-6666-6666-6666-666666666666', 'さとる', 'member', 'approved', true);
+
+set local role authenticated;
+
+select tests_act_as('66666666-6666-6666-6666-666666666666');   -- さとる
+
+select lives_ok(
+  $$select public.delete_my_account()$$,
+  '取り消された人も、退会そのものはできる');
+
+reset role;
+
+select is(
+  (select status from public.room_members
+    where room_id = '99999999-0000-0000-0000-000000000003'
+      and user_id = '66666666-6666-6666-6666-666666666666'),
+  'rejected', '退会しても、取り消された記録は残る（ボードの持ち物）');
+
+select is(
+  (select count(*)::int from public.room_members
+    where room_id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
+      and user_id = '66666666-6666-6666-6666-666666666666'),
+  0, '参加していたボードからは、ちゃんと抜けている');
+
+set local role authenticated;
+
+select tests_act_as('66666666-6666-6666-6666-666666666666');   -- さとる
+
+select is(
+  public.request_access('revoked1', 'さとる'),
+  'pending', '退会してやり直しても、取り消されたボードには承認待ちからしか戻れない');
+
+
+-- =============================================================================
+--  44. 通知の流量は、差出人が名乗れる列では数えない
+--
+--      13. の流量の枠は created_at で数え、kind = 'digest'（まとめ）の行は
+--      数えずに通していた。どちらも画面から INSERT で渡せたので、
+--      まとめを名乗るか、日時を 1 分より前にずらせば、枠を素通りして
+--      相手の端末の通知（send-reminders の Web Push）を好きなだけ鳴らせた。
+--      先の日時を名乗れば、枠を埋めたまま本物の @メンションを押し出せた。
+-- =============================================================================
+
+reset role;
+
+--  13. の枠と混ざらないよう、専用のボードで数える
+insert into public.rooms (id, slug, name, visibility, owner_id, owner_name) values
+  ('99999999-0000-0000-0000-000000000004', 'notifyrm', '通知を数えるボード', 'public',
+   '11111111-1111-1111-1111-111111111111', 'ゆうき');
+
+insert into public.room_members (room_id, user_id, display_name, role, status, can_edit) values
+  ('99999999-0000-0000-0000-000000000004', '11111111-1111-1111-1111-111111111111', 'ゆうき', 'owner', 'approved', true),
+  ('99999999-0000-0000-0000-000000000004', '22222222-2222-2222-2222-222222222222', 'けいこ', 'member', 'approved', true);
+
+set local role authenticated;
+
+select tests_act_as('22222222-2222-2222-2222-222222222222');   -- けいこ（差出人）
+
+select is(
+  tests_rowcount($$insert into public.notifications (room_id, user_id, kind, body)
+                   values ('99999999-0000-0000-0000-000000000004',
+                           '11111111-1111-1111-1111-111111111111', 'digest', 'まとめを名乗る')$$),
+  -1, 'まとめの行は、画面からは作れない');
+
+-- 1 件目はまとめの件数も名乗ってみる。あとは 1 分より前の日時を名乗って 24 件、
+-- 最後に先の日時を名乗って 1 件。どれも枠の中で数えられるはず
+insert into public.notifications (room_id, user_id, kind, body, created_at, folded_count)
+values ('99999999-0000-0000-0000-000000000004', '11111111-1111-1111-1111-111111111111',
+        'mention', '1 件目', now() - interval '2 minutes', 999);
+
+do $$
+begin
+  for i in 2..25 loop
+    insert into public.notifications (room_id, user_id, kind, body, created_at)
+    values ('99999999-0000-0000-0000-000000000004', '11111111-1111-1111-1111-111111111111',
+            'mention', i || ' 件目', now() - interval '2 minutes');
+  end loop;
+end $$;
+
+insert into public.notifications (room_id, user_id, kind, body, created_at)
+values ('99999999-0000-0000-0000-000000000004', '11111111-1111-1111-1111-111111111111',
+        'mention', '26 件目', now() + interval '1 day');
+
+reset role;
+
+select is(
+  (select count(*)::int from public.notifications
+    where room_id = '99999999-0000-0000-0000-000000000004'
+      and created_at <> now()),
+  0, '通知の日時は名乗れない（入れた時刻になる）');
+
+select is(
+  (select count(*)::int from public.notifications
+    where room_id = '99999999-0000-0000-0000-000000000004'
+      and kind <> 'digest'),
+  20, 'さかのぼった日時を名乗っても、毎分 20 件の枠で数えられる');
+
+select is(
+  (select folded_count::int from public.notifications
+    where room_id = '99999999-0000-0000-0000-000000000004'
+      and kind = 'digest'),
+  6, '枠を超えた 6 件は、まとめの 1 行に入る');
+
+select is(
+  (select folded_count::int from public.notifications
+    where room_id = '99999999-0000-0000-0000-000000000004'
+      and body = '1 件目'),
+  0, 'まとめの件数は名乗れない');
+
+set local role authenticated;
+
+
+-- =============================================================================
+--  45. 棚卸し — 権限の「形」を固定する
 --
 --      ここだけは中身ではなく形を見ている。ポリシーが増えた・減った、
 --      トリガーが片方の操作にしか付いていない、外から呼べる関数が増えた——を、
