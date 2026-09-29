@@ -71,6 +71,11 @@ import { supabase } from '../../lib/supabase'
 import { useIdentity } from '../../lib/identity'
 import { useRoomData } from '../../lib/roomData'
 import { messageOf } from '../../lib/errorMessage'
+import {
+  overrideFields,
+  overrideWrite,
+  type OverrideWrite,
+} from '../../lib/overrides'
 import { HOUR_HEIGHT, dragDeltaMs } from '../../lib/calendarGrid'
 import {
   EVENT_COLORS,
@@ -113,6 +118,18 @@ interface Props {
   onJump: (tab: 'board' | 'todo', id: string | null) => void
 }
 
+/** 更新の結果を error にする。RLS で弾かれた・行が消えていた、はどちらも 0 行で返る */
+function updatedOrError(result: {
+  data: unknown[] | null
+  error: { message: string } | null
+}): { message: string } | null {
+  if (result.error) return result.error
+  if ((result.data ?? []).length === 0) {
+    return { message: '保存されませんでした（権限がないか、すでに消えています）' }
+  }
+  return null
+}
+
 export default function CalendarTab({
   reminders,
   focusId,
@@ -136,6 +153,8 @@ export default function CalendarTab({
   } = useRoomData()
 
   const [notice, setNotice] = useNotice()
+  /** 送っている途中の「この回だけ」の作成。同じ行の更新は、これが終わるのを待つ */
+  const pendingOverrideInserts = useRef(new Map<string, Promise<unknown>>())
 
   // 予定の書き込みは 1 か所に寄せる。散らばっていたころは、失敗しても
   // 画面が黙って元に戻るだけで、理由が出なかった
@@ -306,6 +325,42 @@ export default function CalendarTab({
     if (error) attendance.removeLocal(row.id)
   }
 
+  /**
+   * 「この回だけ」の 1 行を書き込む。失敗したら error を返す。
+   *
+   * 他の人が作った回は、作った人の列に触れずに更新する（lib/overrides.ts）。
+   * 手元にまだ届いていない行を他の人が作っていたら、入れようとして重なる（23505）ので、
+   * そのときもその行の更新に回す。
+   *
+   * 作っている途中の行（続けて 2 回ドラッグしたときの 1 回目など）を更新するときは、
+   * 作り終わるのを待つ。待たないと、まだ無い行を更新しようとして 0 行で終わる。
+   */
+  async function writeOverride(write: OverrideWrite): Promise<{ message: string } | null> {
+    if (write.kind === 'update') {
+      await pendingOverrideInserts.current.get(write.id)
+      return updatedOrError(
+        await supabase.from('event_overrides').update(write.fields).eq('id', write.id).select('id'),
+      )
+    }
+
+    const inserting = Promise.resolve(supabase.from('event_overrides').insert(write.row))
+    pendingOverrideInserts.current.set(write.row.id, inserting)
+    const { error } = await inserting.finally(() => {
+      if (pendingOverrideInserts.current.get(write.row.id) === inserting) {
+        pendingOverrideInserts.current.delete(write.row.id)
+      }
+    })
+    if (error?.code !== '23505') return error
+    return updatedOrError(
+      await supabase
+        .from('event_overrides')
+        .update(overrideFields(write.row))
+        .eq('event_id', write.row.event_id)
+        .eq('occurrence_date', write.row.occurrence_date)
+        .select('id'),
+    )
+  }
+
   /** その回だけを変える。保存できなければ画面を戻して知らせ、false を返す */
   async function saveOverride(
     occurrence: EventOccurrence,
@@ -329,16 +384,15 @@ export default function CalendarTab({
       color: null,
       remind_minutes: null,
       tags: null,
-      author_id: userId,
-      author_name: displayName,
+      // 作った人は替えない（DB も UPDATE で変えさせない）
+      author_id: existing?.author_id ?? userId,
+      author_name: existing?.author_name ?? displayName,
       created_at: existing?.created_at ?? new Date().toISOString(),
       ...patch,
     }
 
     overrides.upsertLocal(row)
-    const { error } = await supabase
-      .from('event_overrides')
-      .upsert(row, { onConflict: 'event_id,occurrence_date' })
+    const error = await writeOverride(overrideWrite(existing, row))
 
     if (error) {
       if (existing) overrides.upsertLocal(existing)

@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { createBoard, signIn } from './helpers'
+import { createBoard, openAsGuest, signIn } from './helpers'
 
 /*
  * 繰り返し予定の「この回だけ」。
@@ -190,4 +190,51 @@ test('繰り返し予定の出欠は、その回にだけ付く', async ({ page 
   // ほかの回は空のまま
   await all.nth(0).click()
   await expect(page.getByText('○0 △0 ×0')).toBeVisible()
+})
+
+/*
+ * 他の人が「この回だけ」変えた回を、別の人がもう一度変えられる。
+ *
+ * 以前は既存の行も作った人（author_id）を自分にして upsert していた。作った人の列は
+ * 書き換えられない（tg_freeze_columns）ので DB に断られ、その回は作った本人にしか
+ * 変えられなかった。
+ */
+test('他の人が変えた「この回だけ」を、もう一度変えられる', async ({ page, browser }) => {
+  await signIn(page, 'ひとり目')
+  const url = await createBoard(page, stamp())
+  await openCalendar(page)
+  await addEvent(page, '定例会', '毎週')
+  await showNextMonth(page)
+
+  // ひとり目が 2 つ目の回を変える
+  const all = page.getByTitle('定例会', { exact: true })
+  await expect.poll(async () => await all.count(), { timeout: 20_000 }).toBeGreaterThanOrEqual(2)
+  await all.nth(1).click()
+  await expect(page.getByRole('radio', { name: 'この回だけ変更' })).toBeChecked()
+  await page.getByPlaceholder('予定のタイトル').fill('定例会（場所を変えた）')
+  await page.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(page.getByTitle('定例会（場所を変えた）', { exact: true })).toHaveCount(1)
+
+  const { context, page: guest } = await openAsGuest(browser, url, 'ふたり目')
+  try {
+    await openCalendar(guest)
+    await showNextMonth(guest)
+
+    // ふたり目が、同じ回をもう一度変える
+    const changed = guest.getByTitle('定例会（場所を変えた）', { exact: true })
+    await expect(changed).toHaveCount(1, { timeout: 20_000 })
+    await changed.click()
+    await expect(guest.getByRole('radio', { name: 'この回だけ変更' })).toBeChecked()
+    await guest.getByPlaceholder('予定のタイトル').fill('定例会（時間も変えた）')
+    await guest.getByRole('button', { name: '保存', exact: true }).click()
+
+    // 断られずに閉じ、どちらの画面でも新しい名前になる
+    await expect(guest.getByPlaceholder('予定のタイトル')).toHaveCount(0)
+    await expect(guest.getByTitle('定例会（時間も変えた）', { exact: true })).toHaveCount(1)
+    await expect(page.getByTitle('定例会（時間も変えた）', { exact: true })).toHaveCount(1, {
+      timeout: 20_000,
+    })
+  } finally {
+    await context.close()
+  }
 })
