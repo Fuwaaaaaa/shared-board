@@ -19,7 +19,7 @@ begin;
 
 create extension if not exists pgtap;
 
-select plan(384);
+select plan(385);
 
 
 -- =============================================================================
@@ -1058,6 +1058,15 @@ select is(
     where room_id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
       and user_id = '11111111-1111-1111-1111-111111111111'),
   'member', '元のオーナーは参加者として残る');
+
+-- オーナーが替わったことは、📣 更新に残る。
+-- 以前は何も残らず、復帰リンクが漏れてオーナーを取られても、元のオーナーは
+-- 気づく手がかりが無かった（自分が一般の参加者に下げられたことも残らない）。
+select is(
+  (select actor_name || ' / ' || target_label from public.activities
+    where room_id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
+      and action = 'owner_claimed'),
+  'たかし / ゆうき', 'オーナーが替わったことが、新旧の名前つきで履歴に残る');
 
 
 -- =============================================================================

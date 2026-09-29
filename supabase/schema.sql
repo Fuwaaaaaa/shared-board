@@ -3095,6 +3095,13 @@ begin
      set owner_name = coalesce(nullif(p_name, ''), owner_name)
    where id = v_room.id;
 
+  -- オーナーが替わったことを 📣 更新に残す（前のオーナーの名前を添える）。
+  -- 名簿のトリガーはオーナーの行の追加も、前のオーナーを参加者に下げたことも残さないので、
+  -- ここで書かないと、復帰リンクが漏れてオーナーを取られても誰も気づけない。
+  -- 新しいオーナーの名前は、上で入れた名簿の行から log_access が引く
+  perform public.log_access(v_room.id, 'owner_claimed',
+                            coalesce(nullif(v_room.owner_name, ''), '名前なし'));
+
   return true;
 end;
 $$;
